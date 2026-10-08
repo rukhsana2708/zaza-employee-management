@@ -5,5 +5,7 @@ include README.md LICENSE
 recursive-include deskmate/apps *.md app.py pipe.md
 recursive-include deskmate/ui/static *.html *.css *.js
 recursive-include docs *.md
+recursive-include deskmate/zaza_server/postgres/migrations *.py *.mako
+include .env.example
 global-exclude __pycache__ *.py[cod]
 prune deskmate/apps/**/output

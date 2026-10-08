@@ -42,8 +42,8 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 1 | Windows activity agent (local only) | DeskMate-derived agent that observes activity metadata, writes nothing beyond local disk |
 | 2 | Local SQLite storage & aggregation | Reliable local event queue + local roll-up into activity periods, idle periods, work sessions, daily app usage; sync metadata; retention; crash recovery; privacy exclusions |
 | 3 | Central synchronization API | Versioned batch API + per-device token auth + agent sync worker with offline retry/backoff, idempotent versioned upserts, per-record acknowledgement; development storage behind a repository interface |
-| 4 | PostgreSQL central storage | Durable multi-employee store, source of truth |
-| 5 | Attendance & work-time calculations | Deterministic daily/weekly/monthly aggregation jobs |
+| 4 | PostgreSQL central storage | Typed, constrained PostgreSQL schema (Alembic migrations) behind the Phase 3 repository interface; concurrency-safe idempotent upserts; device registry and append-only audit log; small connection pool. Built and tested locally; VPS database created only in Phase 10 |
+| 5 | Attendance & work-time calculations | Deterministic daily/weekly/monthly summaries in PostgreSQL (authoritative for Sheets/dashboard), with DST-correct schedule resolution including overnight shifts, fair data-quality handling, and recalculation commands |
 | 6 | Google Sheets live synchronization | Push summarized data into the 5 required sheets |
 | 7 | Manager web dashboard | KPIs, filters, employee detail views |
 | 8 | Interactive charts & automatic analysis | Charting + deterministic insights (no AI yet) |
@@ -92,6 +92,6 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 3 (synchronization — see
-DEVELOPMENT_STATUS.md). Phase 4 (PostgreSQL central storage) does not begin
-until Phase 3 is separately approved.
+Awaiting review/approval of Phase 5 (attendance & work-time calculations —
+see DEVELOPMENT_STATUS.md). Phase 6 (Google Sheets) does not begin until
+Phase 5 is separately approved.

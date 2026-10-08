@@ -265,10 +265,10 @@ roughly a few hundred periods per working day, that is a few MB per year.
   process, own port, own database/schema, no shared state with existing
   applications.
 
-Phase 3 implements the sync contract, a development server
-(`deskmate/zaza_server/`), and the agent's sync client
-(`deskmate/zaza/sync/`). PostgreSQL (Phase 4) and deployment (Phase 10) are
-not part of it.
+Phase 3 implemented the sync contract, the server (`deskmate/zaza_server/`)
+and the agent's sync client (`deskmate/zaza/sync/`). Phase 4 added the
+PostgreSQL repository behind the same interface (§4). Deployment comes in
+Phase 10.
 
 ```
 agent sampler ──> local SQLite ──> sync worker (own thread, own DB connection)
@@ -282,7 +282,7 @@ agent sampler ──> local SQLite ──> sync worker (own thread, own DB conne
                        CentralRepository (repository.py)
                          ├─ InMemoryRepository   (tests)
                          ├─ SqliteDevRepository  (local development)
-                         └─ PostgreSQL           (Phase 4, same interface)
+                         └─ PostgresRepository   (Phase 4, production; §4)
 ```
 
 ### 3.1 API contract (`/api/v1`, `deskmate/zaza/sync/protocol.py`)
@@ -418,56 +418,575 @@ record counts.
 - **Failures keep data:** an authentication failure never deletes local data
   or credentials.
 
-### 3.7 Phase 4 repository boundary
+### 3.7 Repository boundary
 
-`CentralRepository` (`zaza_server/repository.py`) is the only persistence
-interface. It covers device and token registry calls (`add_device`,
-`get_device`, `set_device_status`, `add_token`, `find_token`,
-`revoke_tokens`) and record calls (`upsert_records` — batch-atomic,
-returning one outcome per record; `get_record`, `list_records`,
-`count_records`).
+```
+FastAPI app (app.py)          — HTTP, auth headers, size limits; no SQL
+      │
+SyncService (service.py)      — per-record validation, device/employee binding
+      │
+CentralRepository (repository.py, a Protocol)
+      ├── InMemoryRepository        tests
+      ├── SqliteDevRepository       local development (generic JSON table)
+      └── PostgresRepository        production (postgres/repository.py)
+```
 
-The version and idempotency decision is the shared pure function
-`decide()`, so every backend behaves identically. Phase 4 adds a PostgreSQL
-implementation, with typed tables instead of the dev store's JSON payloads,
-and runs the same repository tests against it. The wire protocol and the
-agent do not change.
+`CentralRepository` is the only persistence interface. It covers:
+- **Employees:** `add_employee`, `get_employee`, `list_employees`.
+- **Devices and tokens:** `add_device`, `get_device`, `list_devices`,
+  `set_device_status`, `add_token`, `find_token`, `revoke_tokens`,
+  `touch_device`.
+- **Records:** `upsert_records` (one outcome per record), `get_record`,
+  `list_records`, `count_records`.
+- **Lifecycle:** `close`.
 
-### 3.8 Development server
+The version and idempotency decision is the shared pure function `decide()`,
+so every backend behaves identically. The same API conformance tests
+(`tests/zaza_agent/test_sync_server.py`) run against all three backends. The
+wire protocol and the agent did not change for PostgreSQL.
 
-`python -m deskmate.zaza_server serve` runs on `127.0.0.1:8765` with a SQLite
-development database (`~/.zaza_server_dev/central_dev.db`). Admin commands:
-`register-device`, `rotate-token`, `disable-device` / `enable-device`,
-`list-devices`, and `records`. Plain HTTP is for localhost development
-only. The agent refuses `http://` to any other host unless
-`ZAZA_SYNC_ALLOW_INSECURE_HTTP=1` is set explicitly.
+Rules every backend enforces:
+- A device belongs to an existing employee.
+- An activity or idle period's `session_id` names a work session already
+  synced **by the same device**. Otherwise the period is `rejected` with
+  "session_id is not a synced work_session of this device". The agent sends
+  rows in `local_seq` order, so a session always precedes its periods. A
+  period rejected this way stays FAILED on the agent and is retried, so it
+  heals itself once the session arrives.
 
-## 4. Component 3 — PostgreSQL central storage
+### 3.8 Running the server, and choosing a backend
 
-Uses the VPS's existing PostgreSQL 16 instance. **No new PostgreSQL server is
-created**; this system gets its own database/schema within it, and existing
-VPS services/databases are left untouched.
+`python -m deskmate.zaza_server serve` listens on `127.0.0.1:8765` by
+default. The backend comes from `--backend` or `ZAZA_SERVER_BACKEND`:
+- `sqlite` (default) uses `~/.zaza_server_dev/central_dev.db`.
+- `postgres` reads the settings in §4.1.
 
-### 4.1 Core data structures (eventual, built out across Phases 4–5)
+Admin commands:
+- `add-employee`, `list-employees`
+- `register-device`, `rotate-token`
+- `disable-device` / `enable-device`
+- `list-devices`, `records`
+- PostgreSQL only: `migrate`, `db-status`
 
-- `employees` — identity, role, employment status
-- `manager_users` — dashboard login accounts (PM / manager role)
-- `devices` — registered machine per employee
-- `work_schedules` — configured expected hours per employee/day
-- `work_sessions` — login→logout spans
-- `activity_periods` — summarized active/idle windows (not raw per-second ticks)
-- `application_usage` — time-per-application rollups
-- `idle_periods` — idle spans with start/end/duration
-- `daily_summaries`, `weekly_summaries`, `monthly_summaries` — precomputed
-  attendance/work-time rollups (see ARCHITECTURE §6)
-- `sync_state` — per-device sync watermark / dedup bookkeeping
-- `audit_logs` — who changed what (schedules, employee records, manager
-  actions) — this is an access/change audit log, not an activity surveillance
-  log
+Plain HTTP is for localhost development only. The agent refuses `http://` to
+any other host unless `ZAZA_SYNC_ALLOW_INSECURE_HTTP=1` is set explicitly.
 
-Raw per-tick agent events are retained only as long as needed to build
-`activity_periods`/`application_usage`; the system is designed around
-summarized periods, not an unbounded raw event firehose.
+## 4. Component 3 — PostgreSQL central storage (Phase 4)
+
+PostgreSQL is the central source of truth. In production it will be the
+VPS's existing PostgreSQL 16 instance: **no new PostgreSQL server is
+created**. This system gets its own database there, created only in
+Phase 10 with separate approval, and other VPS databases are left
+untouched. Phase 4 was built and tested locally only; nothing connected to
+the VPS.
+
+**Libraries** (optional extra `pip install -e .[zaza-postgres]`):
+- **psycopg 3** is the driver, with `psycopg_pool` for connection pooling.
+  It is mature, typed and has native TIMESTAMPTZ, UUID and JSONB support.
+  The repository uses plain SQL, which keeps it simple, explicit and
+  reviewable, with no ORM.
+- **Alembic** is used for migrations only. It needs SQLAlchemy, but no
+  SQLAlchemy models exist.
+  - On Windows machines with Application Control (Smart App Control),
+    SQLAlchemy's optional compiled extensions can be blocked, so
+    `migrate.py` uses its pure-Python mode.
+
+### 4.1 Configuration (environment only)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ZAZA_SERVER_BACKEND` | `sqlite` | `postgres` for production |
+| `ZAZA_DATABASE_URL` | — | `postgresql://user:pass@host:5432/db` (percent-encode the password) |
+| `ZAZA_DB_HOST` / `_PORT` / `_NAME` / `_USER` | `127.0.0.1` / `5432` / `zaza` / — | separate parts (override the URL) |
+| `ZAZA_DB_PASSWORD_FILE` | — | preferred: file readable only by the service account |
+| `ZAZA_DB_PASSWORD` | — | alternative to the file |
+| `ZAZA_DB_SSLMODE` | `prefer` | libpq sslmode |
+| `ZAZA_DB_SCHEMA` | (public) | optional dedicated schema (sets `search_path`) |
+| `ZAZA_DB_POOL_MIN` / `_MAX` | `1` / `4` | pool size; max is capped at 20 |
+| `ZAZA_DB_POOL_TIMEOUT` | `10` s | wait for a free connection, then 503 |
+| `ZAZA_DB_CONNECT_TIMEOUT` | `5` s | |
+| `ZAZA_DB_STATEMENT_TIMEOUT_MS` | `15000` | per statement |
+
+`.env.example` lists these with placeholders only. Real `.env` files are
+git-ignored. Every session runs with `TimeZone=UTC`.
+
+### 4.2 Schema (migration `0001_initial`)
+
+| Table | Key | Purpose |
+|---|---|---|
+| `employees` | `employee_id` | name, role (EMPLOYEE/MANAGER/ADMIN), `is_active`, reporting `timezone` (IANA, validated by a trigger) |
+| `devices` | `device_id` | owning employee, display name, `status`, `disabled_at`, `last_seen_at` |
+| `device_tokens` | `token_id` | `token_hash` (SHA-256 hex only), status, `created_at` / `last_used_at` / `revoked_at` |
+| `work_schedules` | `schedule_id` | a weekly rule (`day_of_week` + effective range) **or** a one-off `schedule_date`; working day, start/end time, expected seconds, timezone. Prepared only: no attendance logic yet (Phase 5). |
+| `work_sessions` | `session_id` | start/end/heartbeat, status, reasons, tracked/active/idle/unknown/locked seconds |
+| `activity_periods` | `period_id` | session, start/end, duration, status (+ detail), app, privacy-safe title/domain, `privacy_excluded`, reasons |
+| `idle_periods` | `idle_id` | session, start/end, duration, end reason |
+| `application_usage_daily` | `usage_id` | device-local `usage_date` with its exact UTC bounds, app, active/idle/unknown seconds, period count |
+| `audit_logs` | `audit_id` (identity) | actor type and id, action (`entity.verb`), entity, old/new values (JSONB), `occurred_at`. **Append-only** (triggers block UPDATE, DELETE and TRUNCATE). |
+
+**Sync and idempotency columns.** Each of the four synced tables also has:
+- Identity and ownership: `device_id`, `employee_id`.
+- Versioning: `record_version`, `local_seq`, `content_hash`.
+- Agent timestamps: `device_created_at` and `device_updated_at` (from the
+  agent).
+- Server bookkeeping: `first_received_at`, `last_received_at`,
+  `last_batch_id`.
+- `payload`: the validated wire record as received, in JSONB.
+
+Reporting must use the **typed columns**. `payload` exists for audit and
+forward compatibility only.
+
+**Time.** Every instant is `TIMESTAMPTZ`. Nothing stores ambiguous local
+time. The only local-calendar value is `usage_date`, which is always paired
+with `day_start_utc` / `day_end_utc`. Reporting time zones are separate
+columns (`employees.timezone`, `work_schedules.timezone`).
+
+**Schedule day rule (binding for Phase 5 attendance calculations).** A
+schedule belongs to the local calendar date or day on which the shift
+**starts** (`schedule_date` / `day_of_week`, in `work_schedules.timezone`).
+- If `end_time` is later than `start_time`, the shift ends the same day.
+- If `end_time` is earlier, the shift ends on the **following** local day.
+- Examples: 09:00→17:00 on Monday is Monday 09:00 to Monday 17:00, an 8 h
+  span. 20:00→04:00 on Monday is Monday 20:00 to Tuesday 04:00, also 8 h.
+- Phase 5 turns this into UTC instants, using the time-zone rules in force
+  on those dates, before comparing with activity. Schedules are never
+  stored as timestamps.
+- A schedule is time-of-day plus a time zone. Across a DST change the real
+  elapsed time can differ from the nominal span by ±1 h. The database
+  checks the nominal span; Phase 5 uses the real instants.
+
+The Phase 5 summary tables (migration `0002_attendance_summaries`) are
+described in §4.11.
+
+**Not here, on purpose:**
+- `manager_users` (Phase 7).
+- A central `sync_state` table: per-record versions plus `content_hash` are
+  the idempotency state, and there is no server-side watermark.
+
+### 4.3 Relationships
+
+```
+employees ─┬─< devices ──< device_tokens
+           ├─< work_schedules
+           │
+           │   (every synced row: device_id → devices, employee_id → employees)
+           │
+           └─< work_sessions ─┬─< activity_periods   FK (session_id, device_id)
+                              └─< idle_periods       FK (session_id, device_id)
+               application_usage_daily               UNIQUE (device_id, usage_date, app_name)
+
+audit_logs — entity_type + entity_id (no FK: entries outlive what they describe)
+```
+
+- **Sessions are per device.** Periods reference `(session_id, device_id)` →
+  `work_sessions(session_id, device_id)`, so a period can only attach to a
+  session of the **same device**.
+- **The employee on a record is the device's employee at sync time.** This
+  is deliberately not a foreign key through `devices`, so reassigning a
+  device later never rewrites history.
+- **App usage is keyed by device, day and app.** The agent's deterministic
+  `usage_id` (UUIDv5 of device, date and app) maps 1:1 to that unique key.
+  It references employee and device directly.
+
+### 4.4 Integrity constraints (enforced by PostgreSQL, not only Python)
+
+All constraints are named, so a violation maps to a short, safe error
+without echoing row data.
+- **Keys:** primary keys; foreign keys with `ON DELETE RESTRICT`; unique
+  token hash; unique device/day/app usage; and per-employee unique
+  schedules (partial unique indexes).
+- **Versions and ordering:** `record_version >= 1` and `local_seq >= 0`.
+- **Content hash:** `content_hash` must be 64 hex characters.
+- **Durations:** `BETWEEN 0 AND max`, which also rejects NaN and Infinity.
+  The maximum is 10 years, or 26 h for daily app usage.
+- **Time order:** end ≥ start for sessions and periods. Usage day bounds
+  must be ordered and at most 26 h apart.
+- **Valid states:**
+  - Allowed values for every status and role.
+  - `OPEN` sessions have no end; `CLOSED` and `INTERRUPTED` have one.
+  - A disabled device has `disabled_at`, and a revoked token has
+    `revoked_at`.
+- **Privacy:** `privacy_excluded` periods may only carry the fixed
+  placeholders "Excluded / Private" (title) and "Excluded / Private Site"
+  (domain).
+- **Text and identifiers:** text length limits mirror the wire protocol, and
+  employee and device ids follow the protocol's identifier pattern.
+- **Schedules:**
+  - A rule is either weekly or a single date, never both.
+  - A working day has a start and an end that differ (equal times are
+    rejected, never read as a 24-hour shift; `24:00` is not allowed). The
+    shift may cross midnight. Expected seconds must be **> 0** and no longer
+    than the shift's span.
+  - A day off has no hours, and expected seconds are NULL or 0.
+- **Time zones:** an invalid IANA time zone is rejected by a trigger.
+
+### 4.5 Idempotency and concurrency
+
+The Phase 3 outcome table (§3.2) is preserved exactly; the same
+conformance tests prove it. For each record, the repository runs:
+
+1. `SELECT … FOR UPDATE` on the record's row. Concurrent requests for the
+   same record queue up here.
+2. If there is no row: `INSERT … ON CONFLICT (id) DO NOTHING RETURNING`.
+   - A returned row means the record was inserted: `accepted`.
+   - If nothing comes back, another request inserted it a moment earlier.
+     The repository waits for that request's commit, re-selects the row
+     `FOR UPDATE`, and decides against it.
+3. `decide(existing, incoming)` runs on the **locked, committed** row. Only
+   `updated` writes.
+
+So two submissions can never both win. A lower version never overwrites a
+higher one. Of N identical concurrent inserts, exactly one is `accepted` and
+the rest are `already_current`. Tests cover all three races: mixed versions,
+identical submissions, and same version with different content.
+
+`last_received_at` is set from `clock_timestamp()`, never `now()`.
+PostgreSQL's `now()` is the time the transaction *started*. A request that
+waited on another request's row lock can have started before that row was
+first received, which would break `last_received_at >= first_received_at`.
+The 160-submission race test caught exactly this.
+
+### 4.6 Transactions
+
+**Design:** one transaction per batch, and one **savepoint per record**.
+- A constraint failure (CHECK, FK or UNIQUE) or bad data rolls back to that
+  record's savepoint only. That record is `rejected` with a short reason,
+  and the rest of the batch commits. This keeps Phase 3's per-record
+  results.
+- The batch commits all its successful records together. The database is
+  never left half-written by a crash mid-batch.
+- A **deadlock or serialization failure** (SQLSTATE class 40) rolls back the
+  whole batch transaction, which is then retried, up to 3 attempts. If every
+  attempt fails, the API answers 503 and the agent retries later.
+- Isolation is READ COMMITTED. Correctness comes from row locks and the
+  primary-key conflict, not from SERIALIZABLE.
+- Admin changes (employee, device, token) run in their own transaction
+  together with their audit row, so they are audited atomically.
+
+Within a batch, records are processed in submission order (`local_seq`). A
+session therefore precedes its periods, and two concurrent batches from one
+device lock rows in the same order.
+
+### 4.7 Migrations (Alembic)
+
+- **Location:** revisions live in
+  `deskmate/zaza_server/postgres/migrations/versions/` and are version
+  controlled and shipped in the wheel.
+- **Format:** each revision is explicit SQL with named constraints.
+- **Running them:** an operator runs `python -m deskmate.zaza_server
+  migrate`, which upgrades to the latest revision.
+  - It is idempotent: at the latest revision it reports "already up to date"
+    and changes nothing.
+  - Each revision runs in its own transaction. PostgreSQL DDL is
+    transactional, so a failed migration leaves the previous revision
+    intact.
+- **The server never migrates.** `serve` (and the repository) checks the
+  schema revision at start-up. If it is not current, it refuses to start and
+  says to run `migrate`, so there are no silent or destructive schema
+  changes.
+- **Inspecting:** `db-status` shows the current and latest revision.
+  `render_sql()` produces the DDL offline for review (unit tests check it).
+- **Rules for future revisions:**
+  - Preserve data: add or alter rather than drop. A column holding data is
+    only removed after a copy step.
+  - Keep TIMESTAMPTZ and named constraints.
+  - Downgrade functions exist for completeness, but the CLI does not expose
+    them.
+
+### 4.8 Connection pooling
+
+`psycopg_pool.ConnectionPool` uses `min_size=1`, `max_size=4` by default.
+Both are configurable, and the maximum is capped at 20. Idle connections
+close after 5 min, and every connection is recycled after 1 h. Five agents
+syncing once a minute need about one connection. When the pool is exhausted
+for `ZAZA_DB_POOL_TIMEOUT` seconds the API answers 503 with `Retry-After`,
+and the agents back off. Repository calls run in the API's thread pool,
+never on the event loop.
+
+### 4.9 Indexes
+
+| Query (known future need) | Index |
+|---|---|
+| employee + date range / start time | `(employee_id, started_at)` on sessions, activity periods, idle periods |
+| app usage by employee / day; daily summaries input | `(employee_id, usage_date)` on `application_usage_daily` |
+| currently open / recent sessions | partial `(employee_id, last_heartbeat_at) WHERE status = 'OPEN'` |
+| session → periods (and the composite FKs) | `(session_id, device_id)` on activity and idle periods |
+| device + sync order | `(device_id, local_seq)` on all four synced tables |
+| devices / tokens of an employee or device | `devices(employee_id)`, `device_tokens(device_id)` |
+| audit history of an entity / time | `(entity_type, entity_id, occurred_at)`, `(occurred_at)` |
+
+Nothing else is indexed yet. Phase 5 adds indexes for its summary tables
+when the queries are known.
+
+### 4.10 Production deployment assumptions (Phase 10, needs separate approval)
+
+1. **Database:** create a dedicated database (e.g. `zaza`) on the existing
+   PostgreSQL 16 instance, using two roles:
+   - `zaza_owner` owns the schema and runs `migrate`.
+   - `zaza_app` runs the API with least privilege. The grants are in
+     SECURITY.md §6.2.
+2. **API placement:** the API listens on `127.0.0.1` behind an HTTPS reverse
+   proxy. The database connection is local (`sslmode=prefer`), or
+   `require`/`verify-full` if it is ever remote.
+3. **Credentials:** use the service account's environment or
+   `ZAZA_DB_PASSWORD_FILE`, never a committed file.
+4. **Upgrade order:** stop the API, back up (`pg_dump`), `migrate`, start
+   the API.
+5. **Pool sizing:** keep it at the defaults. Check the instance's
+   `max_connections` headroom before deploying.
+
+These steps were rehearsed locally on a throwaway PostgreSQL 16:
+- Owner migrated, app role granted.
+- The app role was refused DROP, DELETE and CREATE.
+- The live agent synced, an outage was simulated, and it caught up.
+- No secret appeared in any log.
+
+### 4.11 Attendance & work-time summaries (Phase 5)
+
+`daily_summaries`, `weekly_summaries` and `monthly_summaries` (migration
+`0002_attendance_summaries`) hold the **authoritative** attendance figures.
+Google Sheets, the dashboard and charts (Phases 6–8) read these rows and
+must never recalculate them.
+
+**Code:** `deskmate/zaza_server/attendance/`:
+- `calculator.py`: the daily calculation, a pure function. The same inputs
+  always give the same output.
+- `schedule.py`: schedule resolution and DST-correct UTC times.
+- `timeline.py`: overlap removal.
+- `rollup.py`: week and month.
+- `summary_service.py`: orchestration.
+- `postgres_store.py`: storage.
+
+No calculation lives in FastAPI routes.
+
+Activity is a *proxy* for work, not proof of it. None of these figures is a
+productivity score, and the UI must not present them as one.
+
+#### 4.11.1 Inputs
+
+- **Used:** `employees` (time zone), `work_schedules`, `activity_periods`
+  (from all of the employee's devices), `work_sessions` (count, open or
+  interrupted state), and `devices` (`status`, `last_seen_at`).
+- **`idle_periods` are not added to the totals.** They describe the same
+  time as the IDLE activity periods, so adding them would count idle time
+  twice.
+- **`application_usage_daily` is not folded into attendance.** Its date is
+  the *device's* calendar day, which for an overnight shift is not the
+  shift's date. The dashboard reads app usage from that table directly.
+
+#### 4.11.2 Which schedule applies to a date
+
+For employee E and local date D:
+1. A one-off rule with `schedule_date = D` wins.
+2. Otherwise, a weekly rule with `day_of_week = ISO weekday(D)` (1 = Monday)
+   and `effective_from ≤ D ≤ effective_to` (open-ended when NULL). If
+   several rules match, the newest `effective_from` wins.
+3. Otherwise there is no schedule, and the status is `NO_SCHEDULE`.
+
+**Shift times.** A shift belongs to the date it **starts** on, in the rule's
+time zone:
+- The shift starts at D `start_time`.
+- It ends at D `end_time` if `end_time > start_time`. Otherwise it ends at
+  (D+1) `end_time`, i.e. the next day.
+- Both are converted to UTC with the IANA rules in force on those dates. A
+  local time that doesn't exist (spring-forward gap) moves forward by the
+  gap; an ambiguous one (fall-back) takes its first occurrence. A shift that
+  is affected gets the informational flag `DST_ADJUSTED`.
+- `scheduled_seconds = min(expected_work_seconds, real shift length)`.
+  Example: a 22:00→06:00 night that loses an hour to DST really lasts 7 h,
+  so 7 h are expected, not 8. On the night clocks go back, the shift lasts
+  9 h and 8 h are still expected.
+
+#### 4.11.3 Which date an instant belongs to (no double counting)
+
+Every instant belongs to **exactly one** local date:
+1. the date whose shift contains it; if shifts overlap, the earliest-starting
+   one (flag `SCHEDULE_OVERLAP`);
+2. otherwise, the date of the nearest shift that starts or ends within
+   `attribution_margin` (4 h by default) of it;
+3. otherwise, its calendar date in `employees.timezone`.
+
+Because this is a function of the instant alone, the days partition time. A
+week or month never counts a moment twice. A calendar day without a shift
+also follows DST, so it can be 23 or 25 h long.
+
+Examples:
+- **20:00→04:00 shift on Monday:** activity from 19:30 to 04:45 belongs to
+  Monday. That is 30 min before the shift, 8 h in it, and 45 min after it.
+- **09:00→17:00 shifts on Monday and Tuesday:**
+  - Work until 20:30 on Monday belongs to Monday, because it's within 4 h of
+    Monday's shift end.
+  - Work from 00:00 to 01:00 on Tuesday belongs to Tuesday, as its calendar
+    date. It counts as Tuesday time before the shift, but it can't hide a
+    late arrival on Tuesday (see Late in §4.11.4).
+
+#### 4.11.4 Daily formulas
+
+**The timeline.** Periods from all devices are merged into one
+non-overlapping timeline. Where periods overlap, the instant takes one
+status, by priority:
+- ACTIVE > IDLE > LOCKED > UNKNOWN.
+- Overlaps are never added twice, and `OVERLAPPING_PERIODS` records that the
+  input overlapped.
+- Time with no data at all (PC off, agent not running) is **untracked** and
+  belongs to none of the four statuses.
+
+Everything below is measured inside the date's window from §4.11.3.
+
+| Metric | Exact rule |
+|---|---|
+| **Active Hours** (`active_seconds`) | time whose status is ACTIVE. Login time is never used. |
+| **Idle Hours** (`idle_seconds`) | IDLE time. The agent's 5-minute idle grace is already applied (Phase 2), and nothing more is subtracted. |
+| **Unknown Hours** (`unknown_seconds`) | UNKNOWN time: monitoring unavailable or uncertain. Never counted as active or idle. |
+| **Locked Hours** (`locked_seconds`) | LOCKED time. Never counted as idle. |
+| **Tracked Hours** (`tracked_seconds`) | active + idle + unknown + locked: the time covered by monitoring data. A database CHECK enforces the sum. |
+| `active_in_shift_seconds` | ACTIVE time inside [shift start, shift end) |
+| `pre_shift_active_seconds` / `post_shift_active_seconds` | ACTIVE time in the window before / after the shift |
+| **First / last activity** | first and last ACTIVE instant in the window. With no ACTIVE time they are NULL; `first_tracked_at` / `last_tracked_at` give the first and last instant with any data. |
+| **Late** (`late_seconds`) | Only on a working day, and looking only at the shift neighbourhood [start − 4 h, end + 4 h).<br>• Let *f* be the first ACTIVE instant there. Late counts only if *f* − start > `late_grace` (0 by default).<br>• Then late = *f* − max(start, end of any UNKNOWN time between start and *f*). Uncertain monitoring goes to the employee's benefit, with flag `START_UNCERTAIN`.<br>• Never negative. |
+| **Early Leave** (`early_leave_seconds`) | Only after the shift has ended.<br>• Let *l* be the last ACTIVE instant in the neighbourhood. Early leave counts only if end − *l* > `early_leave_grace` (0 by default) and *l* is after the shift start.<br>• Then early leave = min(end, start of any UNKNOWN time after *l*) − *l*.<br>• It is **not charged** (`END_UNCERTAIN`) if the agent session covering *l* ended INTERRUPTED (crash or power loss), or a device hasn't contacted the server since the shift ended. |
+| **Overtime** (`overtime_seconds`) | **ACTIVE time only.**<br>• On a working day: active before the shift (configurable, on by default) + active after the shift. Each side counts only if it is ≥ `overtime_min` (0 by default).<br>• On a day off: all ACTIVE time.<br>• With no schedule: 0, because overtime can't be defined.<br>• Idle, locked and unknown time outside the shift is never overtime. |
+| **Detected Break / Idle** (`detected_break_seconds`) | Inside the shift: unbroken runs of IDLE or LOCKED time (no ACTIVE, UNKNOWN or untracked time in between) lasting at least 15 min (`break_min`). It is **not** an official break: label it "Detected Break / Idle". It is not subtracted from anything. |
+| `scheduled_seconds` | §4.11.2. 0 on days off and days without a schedule. |
+| `measurable_scheduled_seconds` | scheduled − UNKNOWN time in the shift. The time that could actually be observed. |
+
+All seconds are stored as whole numbers. Tracked is the sum of the rounded
+parts, so the figures always add up.
+
+#### 4.11.5 Attendance status (one primary state per day)
+
+| Situation | Status |
+|---|---|
+| No schedule rule applies | `NO_SCHEDULE` |
+| Day off, no ACTIVE time | `DAY_OFF` |
+| Day off with ACTIVE time | `WORKED_DAY_OFF` (all of it is overtime; never late or absent) |
+| Working day, ACTIVE time in the shift | `PRESENT`, `LATE`, `EARLY_LEAVE` or `LATE_AND_EARLY` (from late/early > 0) |
+| Working day, no ACTIVE in the shift, shift not over yet | `PENDING`, never "absent" while the shift is running |
+| Working day, no ACTIVE in the shift, shift over, and **any** of: UNKNOWN covers ≥ 50% of the shift; the employee has no enabled device; a device hasn't contacted the server since the shift ended | `DATA_INCOMPLETE` |
+| Otherwise | `ABSENT` |
+
+- **Days without in-shift ACTIVE time carry no lateness or early leave,**
+  because absence is not lateness. A database CHECK enforces this. Activity
+  outside the shift on such a day still appears as overtime.
+- **Overtime is a metric,** not a status, so it combines with any status.
+- **ABSENT needs reliable data.** For example, an idle PC with a little
+  UNKNOWN time is still ABSENT, because no input was seen all day.
+- **The 50% threshold** is `incomplete_unknown_ratio` and is configurable.
+
+#### 4.11.6 Data quality (`data_quality` + `quality_flags`)
+
+Each day gets flags, which then set its quality level.
+
+| Flag | Meaning |
+|---|---|
+| `PROVISIONAL` | the day isn't over, or a session or period is still open. The summary will change. |
+| `UNKNOWN_TIME` | some time was UNKNOWN |
+| `START_UNCERTAIN` / `END_UNCERTAIN` | the start or end couldn't be judged, so nothing was charged for it |
+| `AWAITING_DEVICE_SYNC` | a device hasn't contacted the server since the shift or day ended; data may be in its backlog |
+| `NO_DEVICE` | the employee has no enabled device |
+| `NO_SCHEDULE` | no schedule rule applies to the date |
+| `INTERRUPTED_SESSION` | the agent stopped without a clean end |
+| `OVERLAPPING_PERIODS` | input periods overlapped; the overlap was removed, not added |
+| `SCHEDULE_OVERLAP` | this shift overlaps another date's shift |
+| `DST_ADJUSTED` | informational only; doesn't lower quality |
+
+- **`INSUFFICIENT`:** the status is `DATA_INCOMPLETE`, or UNKNOWN covers at
+  least 50% of the shift.
+- **`PARTIAL`:** any non-informational flag.
+- **`COMPLETE`:** no flags.
+
+Missing telemetry is never turned into employee fault. It shows up as a flag
+or as `DATA_INCOMPLETE`.
+
+**Provisional summaries.** Today can be calculated at any time while
+sessions are open, and is marked provisional. Recalculate recent days
+regularly, e.g. the last 7 days each night (§4.11.10), so provisional
+figures and late syncs settle.
+
+#### 4.11.7 Attendance %
+
+Per day:
+- **Basis** (`attendance_basis_seconds`) = `measurable_scheduled_seconds` on
+  working days whose status is not `PENDING` or `DATA_INCOMPLETE`;
+  otherwise 0.
+- **Credit** (`attendance_credit_seconds`) = min(`active_in_shift_seconds`,
+  basis).
+- **Attendance %** = credit ÷ basis × 100, rounded to 2 decimals. It is
+  NULL when the basis is 0.
+
+For a week or month: **Attendance %** = Σ credit ÷ Σ basis × 100.
+
+So it means "the share of scheduled, observable working time with active
+computer use". It is capped at 100% per day, so overtime on one day can't
+make up for an absence on another. Absent days count fully against it. Time
+the system couldn't observe (UNKNOWN, or a `DATA_INCOMPLETE` day) counts on
+neither side.
+
+#### 4.11.8 Weekly summary (`weekly_summaries`)
+
+- **Week:** ISO, Monday → Sunday local dates (`week_start` must be a Monday,
+  enforced by a CHECK).
+- **Source:** built only from the stored daily rows. Every seconds figure is
+  the plain sum of the days.
+
+| Field | Rule |
+|---|---|
+| `working_days` | days with a working-day schedule |
+| `days_worked` | days with any ACTIVE time |
+| `absent_days`, `late_days`, `early_leave_days`, `incomplete_days`, `worked_day_off_days`, `pending_days` | counts of those daily statuses. LATE_AND_EARLY counts in both late and early. |
+| `average_active_seconds_per_worked_day` | active ÷ `days_worked`; NULL if no day was worked |
+| attendance % | §4.11.7 |
+| `data_quality` | COMPLETE if every day is COMPLETE; INSUFFICIENT if more than half of the working days are INSUFFICIENT; otherwise PARTIAL |
+| `is_provisional` | any day is provisional, or the week isn't finished yet |
+
+#### 4.11.9 Monthly summary (`monthly_summaries`)
+
+The same fields and rules as the weekly summary, over calendar-month local
+dates (`month` is the first day). `working_days` is the number of days
+scheduled.
+
+#### 4.11.10 Recalculation and idempotency
+
+- **Keys:** summaries are upserted on (employee_id, local_date), (employee_id,
+  week_start) and (employee_id, month). Each row stores a `summary_hash`.
+  When a recalculation gives the same result, nothing is written and
+  `updated_at` doesn't change.
+- **New data:** a higher synced version of a period, or a new period, gives
+  a different result on the next calculation, and the row is updated.
+- **Rows also store** `calculation_version` (currently 1) and the `policy`
+  used (as JSON), so rows made by older formulas can be found and
+  recalculated.
+- **`recalculate`** covers whole weeks and months, so roll-ups are always
+  built from fresh days. It never creates rows for future dates; a week or
+  month in progress shows its figures so far and is marked provisional.
+
+#### 4.11.11 Commands
+
+All need `ZAZA_SERVER_BACKEND=postgres`:
+- `add-schedule --employee-id E (--weekdays 1-5 | --date D) --start 09:00 --end 17:00 --expected-hours 8 --timezone Asia/Dhaka [--day-off] [--effective-from/--effective-to]`.
+  It is audited as `work_schedule.create`.
+- `list-schedules --employee-id E`
+- `summarize-day --date D [--employee-id E]`
+- `summarize-week --date D`
+- `summarize-month --month 2026-10`
+- `recalculate --from D --to D | --recent-days 7`
+
+Without `--employee-id`, every active employee is processed. There is no
+production scheduler yet. A later phase runs `recalculate --recent-days 7`
+periodically.
+
+#### 4.11.12 Settings (environment)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ZAZA_ATTENDANCE_LATE_GRACE_SECONDS` | 0 | lateness up to this is ignored |
+| `ZAZA_ATTENDANCE_EARLY_LEAVE_GRACE_SECONDS` | 0 | early leave up to this is ignored |
+| `ZAZA_ATTENDANCE_OVERTIME_MIN_SECONDS` | 0 | minimum before or after the shift to count as overtime |
+| `ZAZA_ATTENDANCE_BREAK_MIN_SECONDS` | 900 | minimum IDLE/LOCKED run for "Detected Break / Idle" |
+
+The attribution margin (4 h), whether pre-shift work counts as overtime
+(yes), and the UNKNOWN threshold for `DATA_INCOMPLETE` (50%) are
+`AttendancePolicy` fields in code.
 
 ## 5. Component 4 — Google Sheets live reporting layer
 

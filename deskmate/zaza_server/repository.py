@@ -1,9 +1,13 @@
 """Central persistence boundary.
 
-:class:`CentralRepository` is the interface Phase 4 implements on
-PostgreSQL. Phase 3 provides :class:`InMemoryRepository` (tests) and
-:class:`SqliteDevRepository` (local development; deliberately simple, no
-production migrations).
+:class:`CentralRepository` is the one interface the service layer talks to.
+Implementations:
+
+- :class:`InMemoryRepository` — tests.
+- :class:`SqliteDevRepository` — local development; deliberately simple
+  (one generic JSON table, no production migrations).
+- :class:`deskmate.zaza_server.postgres.PostgresRepository` — production:
+  typed, constrained tables managed by Alembic migrations.
 
 Idempotency lives here, in :func:`decide`, and is shared by every backend:
 
@@ -13,6 +17,11 @@ Idempotency lives here, in :func:`decide`, and is shared by every backend:
 - higher version                      -> ``updated`` (replace)
 - lower version                       -> ``stale`` (server keeps the newer one)
 - id owned by a different device      -> ``rejected``
+
+Every backend also requires a period's ``session_id`` to name a work
+session already synced *by the same device* (PostgreSQL enforces this with
+a composite foreign key; the dev backends check it in code). The agent
+always sends a session before its periods, so this only rejects orphans.
 """
 
 from __future__ import annotations
@@ -31,12 +40,34 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+class RepositoryUnavailable(Exception):
+    """The backing store can't be reached right now (the API answers 503 so
+    agents back off and retry). Messages never contain credentials."""
+
+
+EMPLOYEE_ROLES = ("EMPLOYEE", "MANAGER", "ADMIN")
+ORPHAN_PERIOD_ERROR = "session_id is not a synced work_session of this device"
+_SESSION_CHILD_TYPES = frozenset({"activity_period", "idle_period"})
+
+
+@dataclass(frozen=True)
+class EmployeeRecord:
+    employee_id: str
+    display_name: str
+    role: str  # EMPLOYEE | MANAGER | ADMIN
+    is_active: bool
+    timezone: str
+    created_at: str
+
+
 @dataclass(frozen=True)
 class DeviceRecord:
     device_id: str
     employee_id: str
     status: str  # ACTIVE | DISABLED
     created_at: str
+    display_name: str | None = None
+    last_seen_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,20 +134,52 @@ def decide(existing: StoredRecord | None, incoming: IncomingRecord) -> UpsertOut
 
 
 class CentralRepository(Protocol):
+    # employees
+    def add_employee(
+        self, employee_id: str, display_name: str, *, role: str = "EMPLOYEE", timezone: str = "UTC"
+    ) -> EmployeeRecord: ...
+    def get_employee(self, employee_id: str) -> EmployeeRecord | None: ...
+    def list_employees(self) -> list[EmployeeRecord]: ...
+
     # devices & credentials
-    def add_device(self, device_id: str, employee_id: str) -> DeviceRecord: ...
+    def add_device(self, device_id: str, employee_id: str, *, display_name: str | None = None) -> DeviceRecord: ...
     def get_device(self, device_id: str) -> DeviceRecord | None: ...
     def list_devices(self) -> list[DeviceRecord]: ...
     def set_device_status(self, device_id: str, status: str) -> None: ...
     def add_token(self, token_id: str, device_id: str, token_hash: str) -> TokenRecord: ...
     def find_token(self, token_hash: str) -> TokenRecord | None: ...
     def revoke_tokens(self, device_id: str, *, except_token_id: str | None = None) -> int: ...
+    def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
+        """Record API connectivity (``last_seen_at``) after a successful
+        authentication. This is device connectivity, never employee activity."""
 
     # synced records
     def upsert_records(self, records: Iterable[IncomingRecord]) -> list[UpsertOutcome]: ...
     def get_record(self, record_type: str, record_id: str) -> StoredRecord | None: ...
     def list_records(self, *, device_id: str | None = None, record_type: str | None = None) -> list[StoredRecord]: ...
     def count_records(self, *, device_id: str | None = None, record_type: str | None = None) -> int: ...
+
+    def close(self) -> None: ...
+
+
+def session_id_of(incoming: IncomingRecord) -> str | None:
+    """The parent work session of a period record (None for other types)."""
+    if incoming.record_type not in _SESSION_CHILD_TYPES:
+        return None
+    return json.loads(incoming.payload_json)["data"]["session_id"]
+
+
+def check_employee_fields(display_name: str, role: str, timezone_name: str) -> None:
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    if role not in EMPLOYEE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(EMPLOYEE_ROLES)}")
+    if not display_name.strip():
+        raise ValueError("display name must not be empty")
+    try:
+        ZoneInfo(timezone_name)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"unknown timezone: {timezone_name}") from exc
 
 
 def _apply(existing: StoredRecord | None, incoming: IncomingRecord, now: str) -> tuple[UpsertOutcome, StoredRecord | None]:
@@ -144,17 +207,47 @@ class InMemoryRepository:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._employees: dict[str, EmployeeRecord] = {}
         self._devices: dict[str, DeviceRecord] = {}
         self._tokens: dict[str, TokenRecord] = {}  # by token_hash
         self._records: dict[tuple[str, str], StoredRecord] = {}
 
-    def add_device(self, device_id: str, employee_id: str) -> DeviceRecord:
+    def close(self) -> None:
+        pass
+
+    def add_employee(
+        self, employee_id: str, display_name: str, *, role: str = "EMPLOYEE", timezone: str = "UTC"
+    ) -> EmployeeRecord:
+        check_employee_fields(display_name, role, timezone)
         with self._lock:
+            if employee_id in self._employees:
+                raise ValueError(f"employee already exists: {employee_id}")
+            employee = EmployeeRecord(employee_id, display_name, role, True, timezone, utc_now())
+            self._employees[employee_id] = employee
+            return employee
+
+    def get_employee(self, employee_id: str) -> EmployeeRecord | None:
+        with self._lock:
+            return self._employees.get(employee_id)
+
+    def list_employees(self) -> list[EmployeeRecord]:
+        with self._lock:
+            return sorted(self._employees.values(), key=lambda e: e.employee_id)
+
+    def add_device(self, device_id: str, employee_id: str, *, display_name: str | None = None) -> DeviceRecord:
+        with self._lock:
+            if employee_id not in self._employees:
+                raise ValueError(f"unknown employee: {employee_id} (add the employee first)")
             if device_id in self._devices:
                 raise ValueError(f"device already registered: {device_id}")
-            device = DeviceRecord(device_id, employee_id, "ACTIVE", utc_now())
+            device = DeviceRecord(device_id, employee_id, "ACTIVE", utc_now(), display_name)
             self._devices[device_id] = device
             return device
+
+    def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
+        with self._lock:
+            if device_id in self._devices:
+                self._devices[device_id] = replace(self._devices[device_id], last_seen_at=utc_now())
 
     def get_device(self, device_id: str) -> DeviceRecord | None:
         with self._lock:
@@ -193,7 +286,14 @@ class InMemoryRepository:
             outcomes = []
             for incoming in records:
                 key = (incoming.record_type, incoming.record_id)
-                outcome, row = _apply(self._records.get(key), incoming, now)
+                existing = self._records.get(key)
+                session_id = session_id_of(incoming)
+                if session_id and (existing is None or existing.device_id == incoming.device_id):
+                    parent = self._records.get(("work_session", session_id))
+                    if parent is None or parent.device_id != incoming.device_id:
+                        outcomes.append(UpsertOutcome("rejected", None, ORPHAN_PERIOD_ERROR))
+                        continue
+                outcome, row = _apply(existing, incoming, now)
                 if row is not None:
                     self._records[key] = row
                 outcomes.append(outcome)
@@ -217,6 +317,16 @@ class InMemoryRepository:
 
 
 _SQLITE_SCHEMA = [
+    """
+    CREATE TABLE IF NOT EXISTS employees (
+        employee_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('EMPLOYEE', 'MANAGER', 'ADMIN')),
+        is_active INTEGER NOT NULL DEFAULT 1,
+        timezone TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS devices (
         device_id TEXT PRIMARY KEY,
@@ -253,6 +363,10 @@ _SQLITE_SCHEMA = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_synced_records_device ON synced_records(device_id, local_seq)",
 ]
+# Columns added after the first Phase 3 development databases were created.
+_SQLITE_ADDED_COLUMNS = {
+    "devices": [("display_name", "TEXT"), ("last_seen_at", "TEXT")],
+}
 
 
 class SqliteDevRepository:
@@ -270,6 +384,11 @@ class SqliteDevRepository:
             self._conn.execute("PRAGMA foreign_keys=ON")
             for statement in _SQLITE_SCHEMA:
                 self._conn.execute(statement)
+            for table, columns in _SQLITE_ADDED_COLUMNS.items():
+                existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                for name, decl in columns:
+                    if name not in existing:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -277,7 +396,43 @@ class SqliteDevRepository:
 
     @staticmethod
     def _device(row) -> DeviceRecord:  # noqa: ANN001
-        return DeviceRecord(row["device_id"], row["employee_id"], row["status"], row["created_at"])
+        return DeviceRecord(row["device_id"], row["employee_id"], row["status"], row["created_at"],
+                            row["display_name"], row["last_seen_at"])
+
+    @staticmethod
+    def _employee(row) -> EmployeeRecord:  # noqa: ANN001
+        return EmployeeRecord(row["employee_id"], row["display_name"], row["role"], bool(row["is_active"]),
+                              row["timezone"], row["created_at"])
+
+    def add_employee(
+        self, employee_id: str, display_name: str, *, role: str = "EMPLOYEE", timezone: str = "UTC"
+    ) -> EmployeeRecord:
+        check_employee_fields(display_name, role, timezone)
+        now = utc_now()
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO employees(employee_id, display_name, role, is_active, timezone, created_at) "
+                    "VALUES (?, ?, ?, 1, ?, ?)",
+                    (employee_id, display_name, role, timezone, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"employee already exists: {employee_id}") from exc
+        return EmployeeRecord(employee_id, display_name, role, True, timezone, now)
+
+    def get_employee(self, employee_id: str) -> EmployeeRecord | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM employees WHERE employee_id = ?", (employee_id,)).fetchone()
+        return self._employee(row) if row else None
+
+    def list_employees(self) -> list[EmployeeRecord]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM employees ORDER BY employee_id").fetchall()
+        return [self._employee(r) for r in rows]
+
+    def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE devices SET last_seen_at = ? WHERE device_id = ?", (utc_now(), device_id))
 
     @staticmethod
     def _token(row) -> TokenRecord:  # noqa: ANN001
@@ -288,17 +443,20 @@ class SqliteDevRepository:
     def _record(row) -> StoredRecord:  # noqa: ANN001
         return StoredRecord(**{k: row[k] for k in row.keys()})
 
-    def add_device(self, device_id: str, employee_id: str) -> DeviceRecord:
+    def add_device(self, device_id: str, employee_id: str, *, display_name: str | None = None) -> DeviceRecord:
+        if self.get_employee(employee_id) is None:
+            raise ValueError(f"unknown employee: {employee_id} (add the employee first)")
         now = utc_now()
         with self._lock:
             try:
                 self._conn.execute(
-                    "INSERT INTO devices(device_id, employee_id, status, created_at) VALUES (?, ?, 'ACTIVE', ?)",
-                    (device_id, employee_id, now),
+                    "INSERT INTO devices(device_id, employee_id, status, created_at, display_name) "
+                    "VALUES (?, ?, 'ACTIVE', ?, ?)",
+                    (device_id, employee_id, now, display_name),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"device already registered: {device_id}") from exc
-        return DeviceRecord(device_id, employee_id, "ACTIVE", now)
+        return DeviceRecord(device_id, employee_id, "ACTIVE", now, display_name)
 
     def get_device(self, device_id: str) -> DeviceRecord | None:
         with self._lock:
@@ -351,7 +509,17 @@ class SqliteDevRepository:
                         "SELECT * FROM synced_records WHERE record_type = ? AND record_id = ?",
                         (incoming.record_type, incoming.record_id),
                     ).fetchone()
-                    outcome, new_row = _apply(self._record(row) if row else None, incoming, now)
+                    existing = self._record(row) if row else None
+                    session_id = session_id_of(incoming)
+                    if session_id and (existing is None or existing.device_id == incoming.device_id):
+                        parent = self._conn.execute(
+                            "SELECT device_id FROM synced_records WHERE record_type = 'work_session' "
+                            "AND record_id = ?", (session_id,),
+                        ).fetchone()
+                        if parent is None or parent["device_id"] != incoming.device_id:
+                            outcomes.append(UpsertOutcome("rejected", None, ORPHAN_PERIOD_ERROR))
+                            continue
+                    outcome, new_row = _apply(existing, incoming, now)
                     if new_row is not None:
                         self._conn.execute(
                             """

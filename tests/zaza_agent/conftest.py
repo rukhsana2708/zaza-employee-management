@@ -4,6 +4,7 @@ injectable foreground-window probe."""
 
 from __future__ import annotations
 
+import os
 from datetime import timezone
 
 import pytest
@@ -122,7 +123,7 @@ def tick_for(agent: ActivityAgent, clock: FakeClock, seconds: float, step: float
 
 class SyncServer:
     """In-process sync API (FastAPI TestClient) backed by a repository, with
-    the fixture agent's device (device-1 / emp-1) registered."""
+    the fixture agent's employee (emp-1) and device (device-1) registered."""
 
     def __init__(self, repo) -> None:
         from fastapi.testclient import TestClient
@@ -133,6 +134,8 @@ class SyncServer:
         self.repo = repo
         self.app = create_app(repo)
         self.client = TestClient(self.app)
+        if repo.get_employee("emp-1") is None:
+            repo.add_employee("emp-1", "Employee One")
         self.token = register_device(repo, "device-1", "emp-1").token
 
     def headers(self, token: str | None = None, device_id: str = "device-1") -> dict:
@@ -153,6 +156,79 @@ def server() -> SyncServer:
     from deskmate.zaza_server.repository import InMemoryRepository
 
     return SyncServer(InMemoryRepository())
+
+
+# ─── Phase 4: opt-in PostgreSQL integration ───────────────────────────────
+#
+# Set ZAZA_TEST_POSTGRES_URL to a DISPOSABLE database whose name contains
+# "test", e.g. postgresql://user:pw@127.0.0.1:5432/zaza_test. The tests only
+# touch their own schemas (zaza_pytest*), which they create and drop. Never
+# point this at the production database.
+
+PG_URL_ENV = "ZAZA_TEST_POSTGRES_URL"
+PG_TEST_SCHEMA = "zaza_pytest"
+
+
+def pg_test_settings(schema: str):
+    """Settings for the opt-in test database, or skip the test."""
+    url = os.environ.get(PG_URL_ENV)
+    if not url:
+        pytest.skip(f"PostgreSQL integration tests are opt-in: set {PG_URL_ENV}")
+    pytest.importorskip("psycopg")
+    from deskmate.zaza_server.config import database_settings_from_env
+
+    settings = database_settings_from_env({"ZAZA_DATABASE_URL": url, "ZAZA_DB_SCHEMA": schema})
+    if "test" not in settings.dbname.lower():
+        pytest.fail(f"refusing to run: {PG_URL_ENV} must name a disposable database containing 'test'")
+    return settings
+
+
+def pg_admin_execute(settings, *statements: str) -> None:
+    import dataclasses
+
+    import psycopg
+
+    plain = dataclasses.replace(settings, schema=None)
+    with psycopg.connect(**plain.connect_kwargs(), autocommit=True) as conn:
+        for statement in statements:
+            conn.execute(statement)
+
+
+@pytest.fixture(scope="session")
+def pg_settings():
+    settings = pg_test_settings(PG_TEST_SCHEMA)
+    from deskmate.zaza_server.postgres import migrate
+
+    pg_admin_execute(settings, f"DROP SCHEMA IF EXISTS {PG_TEST_SCHEMA} CASCADE", f"CREATE SCHEMA {PG_TEST_SCHEMA}")
+    migrate.upgrade(settings)
+    yield settings
+    pg_admin_execute(settings, f"DROP SCHEMA IF EXISTS {PG_TEST_SCHEMA} CASCADE")
+
+
+PG_TABLES = (
+    "daily_summaries", "weekly_summaries", "monthly_summaries",
+    "audit_logs", "application_usage_daily", "idle_periods", "activity_periods", "work_sessions",
+    "work_schedules", "device_tokens", "devices", "employees",
+)
+
+
+def pg_reset(settings) -> None:
+    pg_admin_execute(
+        settings,
+        f"ALTER TABLE {PG_TEST_SCHEMA}.audit_logs DISABLE TRIGGER audit_logs_no_truncate",
+        "TRUNCATE " + ", ".join(f"{PG_TEST_SCHEMA}.{t}" for t in PG_TABLES) + " RESTART IDENTITY CASCADE",
+        f"ALTER TABLE {PG_TEST_SCHEMA}.audit_logs ENABLE TRIGGER audit_logs_no_truncate",
+    )
+
+
+@pytest.fixture
+def pg_repo(pg_settings):
+    from deskmate.zaza_server.postgres import PostgresRepository
+
+    pg_reset(pg_settings)
+    repo = PostgresRepository(pg_settings, actor_type="CLI", actor_id="pytest")
+    yield repo
+    repo.close()
 
 
 @pytest.fixture

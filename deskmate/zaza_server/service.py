@@ -96,7 +96,7 @@ class SyncService:
             ))
 
         outcomes: list[UpsertOutcome] = self.repo.upsert_records([inc for _, inc in pending])
-        for (index, incoming), outcome in zip(pending, outcomes):
+        for (index, incoming), outcome in zip(pending, outcomes, strict=True):
             results[index] = RecordResult(
                 record_type=incoming.record_type, record_id=incoming.record_id,
                 record_version=incoming.record_version, status=outcome.status,

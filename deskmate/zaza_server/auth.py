@@ -51,8 +51,11 @@ def issue_token(repo: CentralRepository, device_id: str) -> IssuedToken:
     return IssuedToken(token_id=token_id, token=token)
 
 
-def register_device(repo: CentralRepository, device_id: str, employee_id: str) -> IssuedToken:
-    repo.add_device(device_id, employee_id)
+def register_device(
+    repo: CentralRepository, device_id: str, employee_id: str, *, display_name: str | None = None
+) -> IssuedToken:
+    """The employee must already exist (``add_employee``)."""
+    repo.add_device(device_id, employee_id, display_name=display_name)
     return issue_token(repo, device_id)
 
 
@@ -63,8 +66,15 @@ def rotate_token(repo: CentralRepository, device_id: str, *, revoke_old: bool = 
     return issued
 
 
-def authenticate(repo: CentralRepository, authorization: str | None, device_header: str | None) -> DeviceRecord:
-    """Return the authenticated device or raise :class:`AuthError`.
+@dataclass(frozen=True)
+class AuthContext:
+    device: DeviceRecord
+    token_id: str
+
+
+def authenticate_request(repo: CentralRepository, authorization: str | None, device_header: str | None) -> AuthContext:
+    """Return the authenticated device (and which token was used) or raise
+    :class:`AuthError`.
 
     401: missing/malformed/unknown credentials or token/device mismatch.
     403: valid token but revoked, or device disabled."""
@@ -83,4 +93,8 @@ def authenticate(repo: CentralRepository, authorization: str | None, device_head
         raise AuthError(401, "invalid credentials")
     if device.status != "ACTIVE":
         raise AuthError(403, "device disabled")
-    return device
+    return AuthContext(device=device, token_id=record.token_id)
+
+
+def authenticate(repo: CentralRepository, authorization: str | None, device_header: str | None) -> DeviceRecord:
+    return authenticate_request(repo, authorization, device_header).device

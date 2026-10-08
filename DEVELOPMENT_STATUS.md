@@ -1,12 +1,175 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-07
+**Last updated:** 2026-10-08
 
-## Current phase: Phase 3 — central synchronization API & agent sync client (implemented, pending your review)
+## Current phase: Phase 5 — attendance & work-time calculations (implemented, pending your review)
 
-Phase 2 was approved after the review fixes. Phase 3 adds synchronization
-from the agent to a central API. The server runs against **development
-storage only**: no PostgreSQL, no VPS, no Sheets, no dashboard.
+Phase 4 was approved after the overnight-shift schedule fix. Phase 5 adds
+deterministic attendance calculations. The results are stored in PostgreSQL
+and are the authoritative source for Sheets, the dashboard and charts (Phases
+6–8). **No Sheets, dashboard, charts, AI, installer or VPS work.** All
+PostgreSQL testing used a throwaway local instance, which has since been
+deleted.
+
+### Phase 5 summary
+
+- **Code:** `deskmate/zaza_server/attendance/`. The daily calculation is a
+  pure function, so the same inputs always give the same output.
+  - `calculator.py`: the daily calculation.
+  - `schedule.py`: schedule resolution, DST-correct UTC shift times, and
+    date attribution.
+  - `timeline.py`: the non-overlapping timeline.
+  - `rollup.py`: ISO week and month roll-ups.
+  - `summary_service.py`: `calculate_daily`, `calculate_week`,
+    `calculate_month` and `recalculate`.
+  - `store.py` and `postgres_store.py`: storage.
+- **Migration `0002_attendance_summaries`:** forward-only. It adds
+  `daily_summaries`, `weekly_summaries` and `monthly_summaries`, with keys,
+  foreign keys and named CHECKs (for example, tracked = active + idle +
+  unknown + locked; no lateness on a non-late day; ISO Monday weeks). It
+  also adds team-view indexes. `0001_initial` was not touched.
+- **Fairness:**
+  - UNKNOWN is never treated as idle, lateness or early leave.
+  - Missing or unsynced data gives `DATA_INCOMPLETE`, not `ABSENT`.
+  - An agent crash means early leave isn't charged.
+  - Every instant belongs to exactly one date, so nothing is counted twice.
+- **Formulas and statuses:** ARCHITECTURE.md §4.11; the reporting
+  interpretation is in SECURITY.md §6.4.
+- **CLI:** `add-schedule`, `list-schedules`, `summarize-day`,
+  `summarize-week`, `summarize-month` and `recalculate`. They need the
+  PostgreSQL backend.
+- **Tests:**
+  - Without PostgreSQL: 417 pass in `tests/zaza_agent/` and 109 skip. The
+    skips are the opt-in PostgreSQL tests.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 526 pass and 0 skip.
+  - New: 48 engine tests (`test_attendance.py`) and 10 PostgreSQL tests
+    (`test_attendance_postgres.py`). The PostgreSQL tests include exact
+    equality between the PostgreSQL and in-memory results.
+
+### Phase 5 known limitations / risks
+
+- **No production scheduler.** Summaries are only as fresh as the last
+  `recalculate`. Phase 10 should run `recalculate --recent-days 7`
+  periodically.
+- **"Device has synced since" uses `devices.last_seen_at`.** It is a single
+  timestamp, so a backlog still uploading after a reconnect could briefly
+  look complete.
+- **Attribution margin (4 h).** Work more than 4 h after a shift and past
+  midnight counts on the next calendar day. It is still counted exactly once,
+  and it never hides lateness, because punctuality only looks at the shift
+  neighbourhood.
+- **Overlapping shifts** (allowed by the schedule constraints) are resolved
+  by the earliest-starting shift and flagged `SCHEDULE_OVERLAP`. They are not
+  blocked at entry.
+- **Schedule rules can't be edited or removed yet.** Only `add-schedule`
+  exists, so managing schedules properly is a Phase 7 dashboard feature. A
+  newer weekly rule supersedes an older one from its `effective_from` date.
+- **The policy is global.** It is not per employee, and changing it
+  requires recalculating.
+- **`application_usage_daily` is not part of the attendance figures,** by
+  design, because of its device-local dates.
+
+### Phase 4 (approved)
+
+Approved after the overnight-shift fix to `work_schedules_hours_valid`.
+
+Phase 4 added a production
+PostgreSQL repository behind the unchanged Phase 3 repository interface. The
+wire protocol and the agent are unchanged. **Nothing connected to the
+production VPS**: all development and testing used a throwaway local
+PostgreSQL 16 in a temporary folder, which has been deleted. No Sheets, no
+dashboard, no attendance calculations.
+
+### Phase 4 summary
+
+- **Library:** psycopg 3 driver + `psycopg_pool`, using plain SQL with no
+  ORM. Alembic handles migrations only. Everything is in the optional extra
+  `zaza-postgres`.
+- **Code:** `deskmate/zaza_server/postgres/`, with three parts:
+  - `repository.py`: `PostgresRepository`.
+  - `migrate.py`: upgrade, status, and offline SQL rendering.
+  - `migrations/versions/0001_initial_schema.py`: the schema.
+
+  Configuration is in `zaza_server/config.py`, and backend selection in
+  `zaza_server/backends.py`.
+- **Schema:**
+  - Tables: employees, devices, device_tokens, work_schedules (prepared
+    only), work_sessions, activity_periods, idle_periods,
+    application_usage_daily, and audit_logs (append-only).
+  - All columns are typed, and every instant is TIMESTAMPTZ. Each synced row
+    also keeps its wire record in JSONB for audit only.
+  - See ARCHITECTURE.md §4.2–4.4 and §4.9.
+- **Integrity:** primary keys, foreign keys (periods → a session of the
+  *same* device), unique keys, named CHECKs, and triggers for time zones,
+  `updated_at` and audit append-only. Python validation is not the only
+  guard.
+- **Idempotency and concurrency:** the shared `decide()` runs on a row
+  locked with `SELECT … FOR UPDATE`. A new record uses `INSERT … ON CONFLICT
+  DO NOTHING` and then re-decides if it lost a race. See ARCHITECTURE.md
+  §4.5.
+- **Transactions:** one transaction per batch with a savepoint per record,
+  so a constraint failure rejects only that record. A deadlock or
+  serialization failure rolls back the whole batch and retries it, up to 3
+  times, then answers 503. See ARCHITECTURE.md §4.6.
+- **Migrations:** run only by an operator (`migrate`) and idempotent. The
+  server refuses to start on an out-of-date schema and never migrates
+  itself.
+- **Device auth:** the registry is now in PostgreSQL. Token hashes are
+  CHECK-constrained to SHA-256 hex, so a raw token can't be stored.
+  `last_seen_at` (connectivity, not activity) and token `last_used_at` are
+  updated after successful authentication.
+- **Shared-interface changes:**
+  - Employees are now part of the interface. A device needs an existing
+    employee, so the CLI gains `add-employee` and `list-employees`.
+  - Every backend now rejects an orphan period, or one that points to another
+    device's session.
+  - The API runs repository calls in the thread pool and answers 503 when
+    storage is unavailable.
+- **Tests:**
+  - Without PostgreSQL: 369 pass in `tests/zaza_agent/` and 99 skip. The
+    skips are the opt-in PostgreSQL tests.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 468 pass and 0 skip.
+  - A real-process rehearsal (owner/app roles, live agent, outage and
+    catch-up, leak checks) also passed.
+
+### Phase 4 review fix (2026-10-08): overnight shifts
+
+`work_schedules_hours_valid` now allows shifts that cross midnight
+(20:00→04:00 = 8 h, ending the next local day).
+- Equal start and end times, and `24:00`, are rejected: neither is read as
+  a 24-hour shift.
+- A working day must expect more than 0 seconds, and no more than the span.
+- No Phase 4 database had been deployed or kept, so the initial migration
+  `0001_initial` was corrected in place rather than adding a revision.
+- The day rule for Phase 5 is in ARCHITECTURE.md §4.2.
+
+### Phase 4 known limitations / risks
+
+- **Not yet run on the real VPS.** The tests used PostgreSQL 16.2 locally,
+  and the VPS runs 16.x. Creating the database and roles there is Phase 10
+  (ARCHITECTURE.md §4.10, SECURITY.md §6.2).
+- **The `payload` JSONB duplicates the typed columns,** window titles
+  included. It is kept for audit and forward compatibility. It roughly
+  doubles storage per row, which is small for 5 employees.
+- **Composite session FK:** a period whose session never reaches the server
+  is rejected and retried each cycle, which shows as BACKLOG. The agent's
+  ordering makes this an edge case: a session that is itself rejected, or
+  data lost on the server.
+- **Durations use `double precision`.** That's exact enough for seconds, but
+  Phase 5 sums should round for display.
+- **No central retention or deletion yet** (Phase 5). The API role has no
+  DELETE privilege.
+- **Coupling to the agent's privacy placeholders:** the
+  `privacy_excluded` CHECK mirrors the agent's placeholder strings, so
+  changing them in the agent needs a migration.
+- **Smart App Control blocks SQLAlchemy's compiled extensions on this PC.**
+  `migrate.py` forces SQLAlchemy's pure-Python mode, so migrations work
+  regardless.
+
+### Phase 3 (approved)
+
+Approved after the two client fixes: an invalid `stale` reply is never marked
+synced, and any closed unconfirmed record reports BACKLOG.
 
 ### Phase 3 summary
 
@@ -216,9 +379,9 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 0 — Architecture & specification documents (approved, with README/domain corrections applied)
 - [x] Phase 1 — Privacy-safe local DeskMate-derived Windows activity agent (`deskmate/zaza/`)
 - [x] Phase 2 — Local SQLite activity storage & aggregation (approved)
-- [x] Phase 3 — Central synchronization API (implemented, pending review; development storage only)
-- [ ] Phase 4 — PostgreSQL central storage
-- [ ] Phase 5 — Attendance & work-time calculations
+- [x] Phase 3 — Central synchronization API (approved)
+- [x] Phase 4 — PostgreSQL central storage (approved; local testing only, no VPS)
+- [x] Phase 5 — Attendance & work-time calculations (implemented, pending review)
 - [ ] Phase 6 — Google Sheets live synchronization
 - [ ] Phase 7 — Manager dashboard
 - [ ] Phase 8 — Interactive charts & automatic analysis
@@ -246,9 +409,10 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 3** before Phase 4 begins. PostgreSQL
-(Phase 4), Google Sheets, the dashboard, and VPS deployment are explicitly
-**not** started.
+**Awaiting your review of Phase 5** before Phase 6 begins. Google Sheets,
+the dashboard, charts, AI, the installer and VPS deployment are explicitly
+**not** started. The production PostgreSQL database has **not** been
+created or touched.
 
 ## Explicitly cancelled from any earlier direction
 

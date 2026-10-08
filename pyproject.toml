@@ -56,6 +56,9 @@ semantic = ["fastembed>=0.3", "numpy>=1.26"]
 # the XPU torch wheel + `unsloth[intel-gpu-torch290]` per docs/16.
 training = ["torch>=2.0", "unsloth>=2024.8", "transformers>=4.40", "peft>=0.10", "accelerate>=0.27"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+# ZaZa central server on PostgreSQL (Phase 4): psycopg 3 driver + small
+# connection pool; Alembic (with SQLAlchemy) only for schema migrations.
+zaza-postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2", "alembic>=1.13", "SQLAlchemy>=2.0"]
 full = [
     "pytesseract>=0.3.10",
     "sounddevice>=0.4.6",
@@ -86,6 +89,7 @@ deskmate = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 # are NOT importable packages — their app.py / pipe.md ship as DATA files and
 # are run as scripts (python <path>) / read at runtime. SKILL.md is shared.
 "deskmate.apps" = ["*.md", "*/app.py", "*/pipe.md", "*/*.md"]
+"deskmate.zaza_server.postgres" = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.ruff]
 line-length = 100

@@ -46,12 +46,18 @@ Full design: [PROJECT_PLAN.md](PROJECT_PLAN.md) (scope & phased roadmap),
 
 **Under development.** See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md)
 for the current phase and what's implemented so far. As of this writing:
-Phases 1–2 (the privacy-safe Windows activity agent and its local SQLite
-storage, in `deskmate/zaza/`) are approved. Phase 3 (synchronization: a
-versioned sync API with a *development* server in `deskmate/zaza_server/`,
-and the agent's sync client) is implemented and awaiting review. There is
-no production server, no PostgreSQL integration, no Google Sheets sync, and
-no dashboard yet.
+- **Approved:**
+  - Phases 1–2: the privacy-safe Windows activity agent and its local SQLite
+    storage, in `deskmate/zaza/`.
+  - Phase 3: a versioned sync API and the agent's sync client.
+  - Phase 4: PostgreSQL central storage.
+- **Implemented, awaiting review:** Phase 5, deterministic attendance and
+  work-time calculations in `deskmate/zaza_server/attendance/`. It produces
+  daily, weekly and monthly summaries in PostgreSQL. Every formula is
+  documented in ARCHITECTURE.md §4.11.
+
+PostgreSQL has only been tested locally. Nothing is deployed to the VPS yet.
+There is no Google Sheets sync and no dashboard yet.
 
 ## Derived from DeskMate — attribution
 
@@ -75,7 +81,8 @@ DeskMate's own (unmodified) documentation, preserved for reference.
 ## Repository layout
 
 ```
-deskmate/zaza_server/ # Phase 3 development sync API (FastAPI; dev storage only)
+deskmate/zaza_server/ # central sync API (FastAPI) + repositories: in-memory,
+                      # SQLite (development), PostgreSQL (postgres/, Phase 4)
 deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
                      # project currently runs; see deskmate/zaza/README
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md
@@ -129,10 +136,12 @@ PowerShell window you type it in.
 ```powershell
 cd D:\Projects\zaza-employee-management
 .\.venv\Scripts\Activate.ps1
+python -m deskmate.zaza_server add-employee --employee-id alice --name "Alice Example"
 python -m deskmate.zaza_server register-device --device-id laptop-01 --employee-id alice
 ```
 
-This prints a long token starting with `zzd_`. Copy it; it is shown only
+A device always belongs to an existing employee, so add the employee first.
+`register-device` prints a long token starting with `zzd_`. Copy it; it is shown only
 once. Then start the server and leave the window open:
 
 ```powershell
@@ -185,6 +194,79 @@ python -m deskmate.zaza
 Press `Ctrl+C` in Window 2 to stop the agent; it sends the closed session
 before exiting. To reset everything, delete `%USERPROFILE%\.zaza_server_dev`
 and `%USERPROFILE%\.zaza_agent`.
+
+## Trying the PostgreSQL storage locally (optional, for developers)
+
+The steps above use the simple SQLite development store. The production
+store is PostgreSQL. To try it, you need a PostgreSQL server **you control
+on your own PC**.
+
+> **Do not** point this at the production VPS database. Creating the real
+> database there is a separate, later step (Phase 10).
+
+1. Install the PostgreSQL extras once:
+   `pip install -e .[zaza-postgres]`
+2. Create an empty database and a login role for it, e.g. `zaza_dev` owned by
+   `zaza_dev_owner`. Use pgAdmin or `psql`.
+3. In **Window 1**, tell the server to use it. The password is read from
+   the environment and is never printed:
+
+   ```powershell
+   $env:ZAZA_SERVER_BACKEND="postgres"
+   $env:ZAZA_DB_HOST="127.0.0.1"; $env:ZAZA_DB_NAME="zaza_dev"; $env:ZAZA_DB_USER="zaza_dev_owner"
+   $env:ZAZA_DB_PASSWORD="(your password)"
+   python -m deskmate.zaza_server db-status   # shows "(empty database)"
+   python -m deskmate.zaza_server migrate     # creates the tables; safe to run again
+   ```
+
+4. Continue exactly as in the section above, in the same window:
+   `add-employee`, `register-device`, `serve`. The agent steps (Window 2)
+   are unchanged; the agent does not know which store the server uses.
+5. `python -m deskmate.zaza_server records` and `list-devices` now read from
+   PostgreSQL. `list-devices` also shows when each device last connected.
+
+The server refuses to start on a database that hasn't been migrated, and it
+never changes the schema by itself. All variables are listed in
+`.env.example` and in ARCHITECTURE.md §4.1.
+
+### Attendance summaries (Phase 5, PostgreSQL only)
+
+With the PostgreSQL settings from the section above, in the same window:
+
+1. Give the employee a schedule. Weekdays use ISO numbers (1 = Monday). A
+   shift that ends earlier than it starts runs overnight, and belongs to the
+   day it starts.
+
+   ```powershell
+   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 1-5 --start 09:00 --end 17:00 --expected-hours 8 --timezone Asia/Dhaka
+   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 6,7 --day-off --timezone Asia/Dhaka
+   python -m deskmate.zaza_server list-schedules --employee-id alice
+   ```
+
+2. Let the agent sync some activity, as in the steps above.
+3. Calculate the summaries. Each line shows the status, the hours,
+   late/early/overtime, Attendance % and data quality:
+
+   ```powershell
+   python -m deskmate.zaza_server summarize-day --date 2026-10-08
+   python -m deskmate.zaza_server summarize-week --date 2026-10-08
+   python -m deskmate.zaza_server summarize-month --month 2026-10
+   python -m deskmate.zaza_server recalculate --recent-days 7
+   ```
+
+Running a command again updates the same rows and never duplicates them.
+Today's figures are marked *(provisional)* until the day is over. What every
+number means is in ARCHITECTURE.md §4.11.
+
+**Automated PostgreSQL tests (opt-in).** The normal `pytest tests/zaza_agent`
+run does not touch any PostgreSQL. To also run the PostgreSQL tests, point
+them at a **disposable** database whose name contains `test`. They create
+and drop their own `zaza_pytest*` schemas and touch nothing else:
+
+```powershell
+$env:ZAZA_TEST_POSTGRES_URL="postgresql://user:password@127.0.0.1:5432/zaza_test"
+pytest tests/zaza_agent -q
+```
 
 At startup it prints a component health table (keyboard hook, mouse hook,
 session-lock watcher, foreground-window watcher, SQLite storage — each

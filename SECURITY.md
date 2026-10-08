@@ -122,9 +122,13 @@ work time" — because activity presence is a proxy for work, not proof of it.
 - **Local buffering:** SQLite queue on the employee's machine holds only the
   same metadata listed in §2.1 — nothing broader than what eventually syncs
   centrally.
-- **Central API → PostgreSQL:** the system gets its own database/schema on the
-  VPS's existing PostgreSQL 16 instance; it does not read or write any other
-  application's tables, and no new PostgreSQL server/instance is created.
+- **Central API → PostgreSQL (Phase 4):** the system gets its own database on
+  the VPS's existing PostgreSQL 16 instance. It does not read or write any
+  other application's tables, and no new PostgreSQL server or instance is
+  created. Credentials come only from the environment or a password file
+  (§6.2). The API connects as a least-privilege role that cannot change
+  the schema or delete data. Phase 4 was built and tested locally only;
+  nothing has connected to the VPS.
 - **PostgreSQL → Google Sheets:** one-way, summarized, server-initiated sync.
   Sheets never writes back into PostgreSQL. Sheets access is limited to
   whoever the workbook is shared with (managers), same as the dashboard.
@@ -183,7 +187,59 @@ disruptive to what's already running.
   fields, an allow-list of record types, length limits on strings, and
   UTC-only timestamps.
 
-### 6.2 Manager and employee access (Phases 5–7)
+### 6.2 Central database credentials and roles (Phase 4)
+
+- **Where credentials come from:** the environment only: `ZAZA_DATABASE_URL`,
+  or `ZAZA_DB_*` parts, with `ZAZA_DB_PASSWORD_FILE` preferred (see
+  ARCHITECTURE.md §4.1).
+  - Nothing is hard-coded. `.env` files are git-ignored, and `.env.example`
+    holds placeholders only.
+  - The password is excluded from `repr()`. The only loggable form is
+    `postgresql://user:***@host:port/db`.
+  - Driver error messages are scrubbed of the password before they are shown
+    or logged. Configuration errors never echo the URL.
+  - Tests cover this: unreachable server, wrong password, CLI output, and
+    captured logs.
+- **Migrations:** Alembic gets the settings in memory. The URL is built from
+  parts, never written to `alembic.ini` or a file.
+- **No plaintext device tokens:**
+  - `device_tokens.token_hash` has a CHECK that accepts only a 64-character
+    hex SHA-256 digest, so a raw `zzd_…` token cannot be stored even by
+    mistake.
+  - Tests scan every table, including `audit_logs`, for the raw token.
+- **Two roles in production:**
+  - `zaza_owner` owns the database and runs `migrate`.
+  - `zaza_app` is used by the running API.
+
+  The grants for `zaza_app` (rehearsed locally; the app role was refused
+  DROP, DELETE, CREATE and audit UPDATE):
+
+  ```sql
+  REVOKE ALL ON DATABASE zaza FROM PUBLIC;
+  GRANT CONNECT ON DATABASE zaza TO zaza_app;
+  GRANT USAGE ON SCHEMA public TO zaza_app;
+  GRANT SELECT, INSERT, UPDATE ON employees, devices, device_tokens, work_schedules,
+        work_sessions, activity_periods, idle_periods, application_usage_daily TO zaza_app;
+  GRANT SELECT, INSERT ON audit_logs TO zaza_app;
+  GRANT SELECT ON alembic_version TO zaza_app;
+  -- Phase 5 (migration 0002): summaries are recalculated and upserted, never deleted
+  GRANT SELECT, INSERT, UPDATE ON daily_summaries, weekly_summaries, monthly_summaries TO zaza_app;
+  ```
+
+  Re-check the grants after any migration that adds a table. Retention jobs
+  (Phase 5) will need a narrowly granted DELETE.
+- **Audit log:** `audit_logs` records employee creation, device
+  registration, disable/enable, and token issue/revoke.
+  - Each entry is written in the same transaction as the change, with actor
+    type and id.
+  - It is append-only: triggers block UPDATE, DELETE and TRUNCATE, even for
+    the table owner, unless a trigger is explicitly disabled.
+  - Audit values never include token values or hashes.
+- **Connectivity versus activity:** `devices.last_seen_at` records API
+  connectivity after successful authentication, at 30-second resolution. It
+  is never used as, or mixed with, employee activity.
+
+### 6.3 Manager and employee access (Phases 5–7)
 
 - Employees do not get dashboard login — they are the subjects of reports,
   not viewers of the manager dashboard, unless a future requirement adds an
@@ -192,6 +248,30 @@ disruptive to what's already running.
   whatever admin actions exist (editing schedules, managing devices).
 - All manager actions that change state (schedules, employee/device records)
   are written to `audit_logs` — who did what, when.
+
+### 6.4 Reporting interpretation (Phase 5)
+
+Attendance summaries are built to be **fair to employees**:
+
+- **Activity is a proxy.** Active Hours mean computer input was seen, not
+  that work was or wasn't done. No figure is a productivity score, and
+  reports must not label one as such.
+- **Missing or uncertain data is never the employee's fault.**
+  - UNKNOWN time is never treated as idle, lateness or early leave.
+  - A shift with no reliable data is `DATA_INCOMPLETE`, not `ABSENT`.
+    Reliable data is missing when UNKNOWN covers half the shift or more, the
+    employee has no enabled device, or a device hasn't synced since the
+    shift ended.
+  - Days marked `DATA_INCOMPLETE` count on neither side of the attendance %.
+  - An agent crash means early leave isn't charged.
+- **Detected Break / Idle is not an official break.** It is a detected
+  away-from-keyboard run of 15 min or more, and is labelled that way.
+- **Configuration is explicit.** There are no hidden grace periods: every
+  threshold is set openly in configuration and recorded with each daily
+  summary (the `policy` column).
+- **Privacy:** summaries hold durations, timestamps and statuses only.
+  Window titles stay in `activity_periods` and are not copied into the
+  summaries.
 
 ## 7. Retention
 
@@ -203,7 +283,12 @@ On the employee machine (Phase 2, ARCHITECTURE.md §2.8): raw events are kept
 **7 days**. Summarized records are kept until confirmed synced, then for a
 **30-day** local safety window. Records that are unsynced or whose sync
 failed are never deleted because of age. Both windows are configurable.
-Central (PostgreSQL) retention remains a Phase 4/5 decision.
+
+Central (PostgreSQL): nothing is deleted automatically yet, and the API role
+has no DELETE privilege. Phase 5 summaries are derived data and can always
+be recalculated from the synced records. Central retention windows were not
+part of the Phase 5 scope. They are an open decision for before production
+(§8).
 
 ## 8. Open items for later phases (not blocking Phase 0 approval)
 
@@ -212,6 +297,9 @@ Central (PostgreSQL) retention remains a Phase 4/5 decision.
 - Server-side rate limiting and TLS termination — Phase 10 deployment
   (reverse proxy).
 - Manager account provisioning/auth mechanism — Phase 7.
-- Central (server-side) retention windows — Phase 4/5. Local agent
-  retention is defined in Phase 2.
+- Central (server-side) retention windows: still open; decide before
+  Phase 10 production. Local agent retention is defined in Phase 2.
+- Production database and roles creation on the VPS, TLS settings for the
+  database connection, and backup schedule — Phase 10 (needs separate
+  approval; see ARCHITECTURE.md §4.10).
 - Google Sheets service-account credential handling — Phase 6.
