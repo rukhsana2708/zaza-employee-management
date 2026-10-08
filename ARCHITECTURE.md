@@ -1541,14 +1541,51 @@ pages say when the summaries were last calculated; the charts are not live.
 - **No causes:** comparisons never suggest a cause. A period still in
   progress is said to be in progress.
 
-**Comparison eligibility** (for highest/lowest, and for the idle rule), per
-employee:
+**Summary coverage.** For each employee and period, the **expected dates**
+are every selected local date up to that employee's local today. Future
+dates are never missing, and a finished historical period expects every
+date. A **missing summary** is an expected date with no `daily_summaries`
+row.
+
+**Comparison data-quality rule** (applied to the selected AND the previous
+period):
+- **incomplete:** either period has a missing expected summary, or an
+  employee-day with INSUFFICIENT data quality (which includes
+  DATA_INCOMPLETE).
+  - The Active Hours change insight becomes a DATA_QUALITY notice ("…is not
+    shown because the data is not complete enough: the previous period is
+    missing N employee-days of calculated summaries").
+  - No percentage and no increase/decrease is stated.
+  - The comparison table still lists the stored values, marks every row
+    "not comparable (incomplete data)", and gives no relative change.
+- **qualified:** full coverage, but START_UNCERTAIN, END_UNCERTAIN or
+  AWAITING_DEVICE_SYNC days on either side. The change is shown with
+  "Interpret this change cautiously: …".
+- **complete:** the change is reported as before (increase, decrease,
+  unchanged, previous value zero).
+
+The JSON gives `comparison_quality` (status, reasons, and the per-period
+counts) and a `comparison_status` on every comparison row.
+
+**Comparable employee** (used for highest/lowest, the comparable average
+and the high-idle observation) — all of:
 - at least one calculated working day;
 - attendance basis > 0;
-- not every working day DATA_INCOMPLETE.
+- not every working day DATA_INCOMPLETE;
+- **no missing expected daily summary in the period.**
 
-Ineligible employees are left out of the comparison and the insight says how
-many were left out. Highest/lowest needs at least 2 eligible employees.
+Employees who are not comparable are named as "Not included in the
+comparison". Highest/lowest needs at least 2 comparable employees.
+
+**Wording keeps the two groups apart:**
+- "Total recorded Active Hours across available summaries" covers every
+  calculated summary.
+- "N employee(s) have complete enough data for employee-to-employee
+  comparison. Average Active Hours among those employees: …" covers only the
+  comparable group.
+
+Charts still show all recorded data; only the comparative conclusions are
+restricted.
 
 **Insight rules, in fixed order** (at most `ZAZA_ANALYSIS_MAX_INSIGHTS`,
 default 8; the Overview shows 5):

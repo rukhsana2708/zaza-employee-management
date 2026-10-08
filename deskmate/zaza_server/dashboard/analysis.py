@@ -105,13 +105,97 @@ class EmployeeFigures:
     incomplete_days: int = 0
     insufficient_days: int = 0
     uncertain_days: int = 0  # START/END_UNCERTAIN or AWAITING_DEVICE_SYNC
+    expected_days: int = 0   # local dates in the period up to the employee's local today
+    missing_days: int = 0    # expected dates without a calculated daily summary
 
     @property
     def eligible(self) -> bool:
-        """Comparable (highest / lowest recorded Active Hours, idle share):
-        at least one calculated working day, attendance basis > 0, and not
-        every working day DATA_INCOMPLETE."""
-        return self.working_days > 0 and self.basis > 0 and self.incomplete_days < self.working_days
+        """Comparable employee (highest / lowest recorded Active Hours, the
+        comparable average, the idle-share observation) — all four:
+
+        - at least one calculated working day;
+        - attendance basis > 0;
+        - not every working day DATA_INCOMPLETE;
+        - no missing expected daily summary in the period (full coverage).
+        """
+        return (self.working_days > 0 and self.basis > 0 and self.incomplete_days < self.working_days
+                and self.missing_days == 0)
+
+
+def expected_dates(rng: EmployeeRange, now: datetime) -> list[date]:
+    """The local dates a period should have summaries for: every selected
+    date up to the employee's local today (future dates are never missing;
+    a completed historical period expects every date)."""
+    end = min(rng.end, local_today(rng.employee.timezone, now))
+    return [rng.start + timedelta(days=i) for i in range(max(0, (end - rng.start).days + 1))]
+
+
+def coverage(sel: Selection, rows: Iterable[DayRow], now: datetime) -> dict[str, tuple[int, int]]:
+    """employee_id → (expected dates, missing summaries)."""
+    have = {(r.employee.employee_id, r.summary.local_date) for r in rows}
+    out = {}
+    for rng in sel.ranges:
+        days = expected_dates(rng, now)
+        out[rng.employee.employee_id] = (len(days), sum((rng.employee.employee_id, d) not in have for d in days))
+    return out
+
+
+@dataclass(frozen=True)
+class PeriodQuality:
+    """Data behind one side of a period comparison."""
+
+    missing: int     # employee-days without a calculated summary
+    limited: int     # employee-days with INSUFFICIENT data quality (includes DATA_INCOMPLETE)
+    uncertain: int   # employee-days with START/END_UNCERTAIN or AWAITING_DEVICE_SYNC
+    calculated: int  # employee-days with a summary
+
+
+def period_quality(figs: Iterable[EmployeeFigures], cov: dict[str, tuple[int, int]]) -> PeriodQuality:
+    figs = list(figs)
+    return PeriodQuality(sum(m for _, m in cov.values()), _sum(figs, "insufficient_days"),
+                         _sum(figs, "uncertain_days"), _sum(figs, "days"))
+
+
+@dataclass(frozen=True)
+class ComparisonQuality:
+    """The comparison rule (both periods):
+
+    - ``incomplete``: either period has a missing expected summary, or an
+      employee-day with INSUFFICIENT data quality (e.g. DATA_INCOMPLETE).
+      No percentage change and no increase/decrease statement is made.
+    - ``qualified``: complete coverage, but START/END_UNCERTAIN or
+      AWAITING_DEVICE_SYNC days on either side: the change is shown with a
+      caution.
+    - ``complete``: neither of the above.
+    """
+
+    status: str
+    reasons: tuple[str, ...]
+    current: PeriodQuality
+    previous: PeriodQuality
+
+    def as_json(self) -> dict:
+        return {"status": self.status, "reasons": list(self.reasons),
+                "current": asdict(self.current), "previous": asdict(self.previous)}
+
+
+def _days(n: int, what: str) -> str:
+    return f"{n} employee-day{'s' if n != 1 else ''} {what}"
+
+
+def comparison_quality(current: PeriodQuality, previous: PeriodQuality) -> ComparisonQuality:
+    reasons = []
+    for name, q in (("the selected period", current), ("the previous period", previous)):
+        if q.missing:
+            reasons.append(f"{name} is missing {_days(q.missing, 'of calculated summaries')}")
+        if q.limited:
+            reasons.append(f"{name} has {_days(q.limited, 'with incomplete monitoring data')}")
+    if reasons:
+        return ComparisonQuality("incomplete", tuple(reasons), current, previous)
+    for name, q in (("the selected period", current), ("the previous period", previous)):
+        if q.uncertain:
+            reasons.append(f"{name} has {_days(q.uncertain, 'with an uncertain start or end, or a device not yet synced')}")
+    return ComparisonQuality("qualified" if reasons else "complete", tuple(reasons), current, previous)
 
 
 def figures(rows: Iterable[DayRow], labels: dict[str, str]) -> dict[str, EmployeeFigures]:
@@ -232,6 +316,7 @@ class Comparison:
     unit: str  # "h" or "%"
     current: float | None
     previous: float | None
+    status: str = "complete"  # complete | qualified | incomplete (ComparisonQuality)
 
     @property
     def change(self) -> float | None:
@@ -241,14 +326,16 @@ class Comparison:
 
     @property
     def relative(self) -> float | None:
-        """Relative change; None when the previous value is 0 (no ∞%)."""
-        if self.change is None or not self.previous:
+        """Relative change; None when the previous value is 0 (no ∞%) or
+        when the periods are not comparable (incomplete data)."""
+        if self.change is None or not self.previous or self.status == "incomplete":
             return None
         return self.change / self.previous
 
     def as_json(self) -> dict:
         return {"metric": self.metric, "label": self.label, "unit": self.unit, "current": self.current,
-                "previous": self.previous, "change": self.change, "relative_change": self.relative}
+                "previous": self.previous, "change": self.change, "relative_change": self.relative,
+                "comparison_status": self.status}
 
 
 # ─── the engine ───────────────────────────────────────────────────────────
@@ -280,6 +367,11 @@ class Analysis:
         self.week_rows = self._within(all_rows, self.weekly_sel)
         self.figs = figures(self.rows, self.labels)
         self.prev_figs = figures(self.prev_rows, self.labels)
+        self.coverage = coverage(sel, self.rows, self.now)
+        self.prev_coverage = coverage(self.previous, self.prev_rows, self.now)
+        for figs, cov in ((self.figs, self.coverage), (self.prev_figs, self.prev_coverage)):
+            for eid, f in figs.items():
+                f.expected_days, f.missing_days = cov.get(eid, (0, 0))
         self.apps = service.application_rows(sel, by_employee=False)
         self.last_calculated = service.repo.summaries_updated_at()
 
@@ -394,23 +486,28 @@ class Analysis:
         return [builders[n]() for n in chosen]
 
     # ── comparison ────────────────────────────────────────────────────────
+    def comparison_quality(self) -> ComparisonQuality:
+        return comparison_quality(period_quality(self.figs.values(), self.coverage),
+                                  period_quality(self.prev_figs.values(), self.prev_coverage))
+
     def comparisons(self) -> list[Comparison]:
         cur, prev = list(self.figs.values()), list(self.prev_figs.values())
+        status = self.comparison_quality().status
 
         def att(figs: list[EmployeeFigures]) -> float | None:
             basis = _sum(figs, "basis")
             return _sum(figs, "credit") / basis * 100 if basis else None
 
         return [
-            Comparison("active_seconds", "Active Hours", "h", hours(_sum(cur, "active")), hours(_sum(prev, "active"))),
-            Comparison("idle_seconds", "Idle Hours", "h", hours(_sum(cur, "idle")), hours(_sum(prev, "idle"))),
+            Comparison("active_seconds", "Active Hours", "h", hours(_sum(cur, "active")), hours(_sum(prev, "active")), status),
+            Comparison("idle_seconds", "Idle Hours", "h", hours(_sum(cur, "idle")), hours(_sum(prev, "idle")), status),
             Comparison("scheduled_seconds", "Scheduled Hours", "h", hours(_sum(cur, "scheduled")),
-                       hours(_sum(prev, "scheduled"))),
+                       hours(_sum(prev, "scheduled")), status),
             Comparison("overtime_seconds", "Overtime Active Hours", "h", hours(_sum(cur, "overtime")),
-                       hours(_sum(prev, "overtime"))),
+                       hours(_sum(prev, "overtime")), status),
             Comparison("attendance_percentage", "Attendance %", "%",
                        None if att(cur) is None else round(att(cur), 2),
-                       None if att(prev) is None else round(att(prev), 2)),
+                       None if att(prev) is None else round(att(prev), 2), status),
         ]
 
     def previous_label(self) -> str:
@@ -420,18 +517,13 @@ class Analysis:
         return any(r.end >= local_today(r.employee.timezone, self.now) for r in self.sel.ranges)
 
     # ── insights ──────────────────────────────────────────────────────────
-    def _missing_days(self) -> tuple[int, list[str]]:
-        """Employee-days up to each employee's local today with no stored summary."""
-        have = {(r.employee.employee_id, r.summary.local_date) for r in self.rows}
-        missing, without = 0, []
-        for rng in self.sel.ranges:
-            end = min(rng.end, local_today(rng.employee.timezone, self.now))
-            days = [rng.start + timedelta(days=i) for i in range(max(0, (end - rng.start).days + 1))]
-            gaps = sum((rng.employee.employee_id, d) not in have for d in days)
-            missing += gaps
-            if days and gaps == len(days):
-                without.append(self.labels[rng.employee.employee_id])
-        return missing, without
+    def _not_comparable(self) -> list[str]:
+        """Labels of selected employees left out of employee-to-employee
+        comparisons (any of: missing summaries, no comparable working day)."""
+        eligible = {eid for eid, f in self.figs.items() if f.eligible}
+        return [self.labels[r.employee.employee_id] for r in sorted(
+            self.sel.ranges, key=lambda r: (self.labels[r.employee.employee_id].casefold(), r.employee.employee_id))
+            if r.employee.employee_id not in eligible]
 
     def insights(self, limit: int | None = None) -> list[Insight]:
         out: list[Insight] = []
@@ -449,14 +541,19 @@ class Analysis:
             out.append(Insight("DATA_QUALITY", Severity.DATA_QUALITY, "Some start or end times uncertain",
                                f"Monitoring was uncertain at the start or end of {uncertain} employee-day(s) "
                                "(or a device had not synced). Uncertain time is not counted as late or early."))
-        missing, without = self._missing_days()
-        if without:
-            out.append(Insight("MISSING_SUMMARIES", Severity.DATA_QUALITY, "Summaries not calculated yet",
-                               "Some employees do not yet have calculated summaries for this period: "
-                               + ", ".join(without) + "."))
-        elif missing:
-            out.append(Insight("MISSING_SUMMARIES", Severity.DATA_QUALITY, "Summaries not calculated yet",
-                               f"{missing} employee-day(s) in this period do not have a calculated summary yet."))
+        missing = sum(m for _, m in self.coverage.values())
+        without = [self.labels[eid] for eid, (expected, m) in self.coverage.items() if expected and m == expected]
+        partial = [self.labels[eid] for eid, (expected, m) in self.coverage.items() if 0 < m < expected]
+        if missing:
+            text = ("Some employees do not yet have calculated summaries for this period: " + ", ".join(sorted(
+                without, key=str.casefold)) + "." if without else "")
+            if partial:
+                text = (text + " " if text else "") + (
+                    f"{missing} employee-day(s) in this period do not have a calculated summary yet.")
+            if not self.single:
+                text += (" Employees with missing summaries are excluded from employee-to-employee comparisons: "
+                         + ", ".join(sorted(without + partial, key=str.casefold)) + ".")
+            out.append(Insight("MISSING_SUMMARIES", Severity.DATA_QUALITY, "Summaries not calculated yet", text))
         if not figs:
             return self._limit(out, limit)
 
@@ -477,31 +574,39 @@ class Analysis:
             out.append(Insight("ACTIVE_SUMMARY", Severity.INFO, "Recorded Active Hours",
                                f"{f.label} recorded {hm(f.active)} of Active Hours over {f.days} calculated "
                                f"day(s). {ACTIVE_DISCLAIMER}", f.employee.employee_id, "active_seconds", f.active))
-        elif eligible:
-            avg = _sum(eligible, "active") / len(eligible)
-            out.append(Insight("ACTIVE_SUMMARY", Severity.INFO, "Team Active Hours",
-                               f"{len(eligible)} employee(s) have comparable calculated attendance data for this "
-                               f"period. Total Active Hours: {hm(total_active)}. Average Active Hours per employee: "
-                               f"{hm(avg)}.", metric="active_seconds", current_value=total_active))
+        else:
+            # The recorded total covers every available summary; the average and
+            # highest/lowest cover ONLY the comparable employees, named as such.
+            excluded = self._not_comparable()
+            left_out = (f" Not included in the comparison (missing summaries, a shift not finished, or incomplete "
+                        f"monitoring): {', '.join(excluded)}." if excluded else "")
+            total = (f"Total recorded Active Hours across available summaries: {hm(total_active)} "
+                     f"({len(figs)} employee(s) with calculated summaries).")
+            if eligible:
+                avg = _sum(eligible, "active") / len(eligible)
+                out.append(Insight("ACTIVE_SUMMARY", Severity.INFO, "Team Active Hours",
+                                   f"{total} {len(eligible)} employee(s) have complete enough data for "
+                                   f"employee-to-employee comparison. Average Active Hours among those employees: "
+                                   f"{hm(avg)}.{left_out}", metric="active_seconds", current_value=total_active))
+            else:
+                out.append(Insight("ACTIVE_SUMMARY", Severity.DATA_QUALITY, "Not enough comparable data",
+                                   f"{total} No employee has complete enough data for employee-to-employee "
+                                   f"comparison in this period.{left_out}", metric="active_seconds",
+                                   current_value=total_active))
             if len(eligible) >= 2:
                 ranked = sorted(eligible, key=lambda f: (-f.active, f.label.casefold(), f.employee.employee_id))
                 hi, lo = ranked[0], ranked[-1]
-                excluded = len(figs) - len(eligible)
-                extra = (f" {excluded} employee(s) without comparable data yet (for example a shift not finished, "
-                         "or incomplete monitoring) are not included in this comparison." if excluded else "")
+                extra = (f" {len(excluded)} employee(s) without complete enough data are not included in this "
+                         "comparison." if excluded else "")
                 out.append(Insight("ACTIVE_RANGE", Severity.INFO, "Highest and lowest recorded Active Hours",
-                                   f"Highest recorded Active Hours: {hi.label} — {hm(hi.active)}. Lowest recorded "
-                                   f"Active Hours among employees with reportable data: {lo.label} — {hm(lo.active)}."
-                                   f"{extra} {ACTIVE_DISCLAIMER}", metric="active_seconds"))
-        else:
-            out.append(Insight("ACTIVE_SUMMARY", Severity.DATA_QUALITY, "Not enough comparable data",
-                               "No employee has enough calculated attendance data in this period to compare "
-                               f"Active Hours. Total recorded Active Hours: {hm(total_active)}."))
+                                   f"Among employees with complete enough data: highest recorded Active Hours: "
+                                   f"{hi.label} — {hm(hi.active)}; lowest recorded Active Hours: {lo.label} — "
+                                   f"{hm(lo.active)}.{extra} {ACTIVE_DISCLAIMER}", metric="active_seconds"))
         if total_scheduled > 0:
             share = total_active / total_scheduled
             tracked = _sum(figs, "tracked")
             caution = ""
-            if insufficient or (tracked and _sum(figs, "unknown") / tracked > UNKNOWN_CAUTION):
+            if insufficient or missing or (tracked and _sum(figs, "unknown") / tracked > UNKNOWN_CAUTION):
                 caution = (" Monitoring data was incomplete or uncertain on some days, so this percentage should be "
                            "interpreted cautiously.")
             out.append(Insight("ACTIVE_OF_SCHEDULED", Severity.INFO, "Active time as % of scheduled time",
@@ -511,17 +616,25 @@ class Analysis:
 
         # 4. comparison with the previous equivalent period
         cmp = self.comparisons()[0]
+        quality = self.comparison_quality()
         prev_label = _ranges_label(self.previous)
         ongoing = " The current period is still in progress." if self.in_progress() else ""
+        caution = ("" if quality.status != "qualified" else
+                   " Interpret this change cautiously: " + "; ".join(quality.reasons) + ".")
         if not self.prev_rows:
             if self.rows:
                 out.append(Insight("ACTIVE_CHANGE", Severity.INFO, "Compared with the previous period",
                                    f"No calculated summaries exist for the previous period ({prev_label}), so no "
                                    "comparison is made."))
+        elif quality.status == "incomplete":
+            out.append(Insight("ACTIVE_CHANGE", Severity.DATA_QUALITY, "Comparison with the previous period not shown",
+                               f"Active Hours comparison with the previous period ({prev_label}) is not shown because "
+                               f"the data is not complete enough: {'; '.join(quality.reasons)}.",
+                               metric="active_seconds"))
         elif cmp.previous == 0 and cmp.current:
             out.append(Insight("ACTIVE_CHANGE", Severity.INFO, "Compared with the previous period",
                                f"Previous period ({prev_label}) had no recorded Active Hours; current period "
-                               f"recorded {hm(cmp.current * 3600)}.{ongoing}", metric="active_seconds",
+                               f"recorded {hm(cmp.current * 3600)}.{ongoing}{caution}", metric="active_seconds",
                                current_value=cmp.current * 3600, previous_value=0))
         elif cmp.previous and cmp.change is not None:
             change_s = cmp.change * 3600
@@ -531,7 +644,8 @@ class Analysis:
                 direction = "increased" if change_s > 0 else "decreased"
                 text = (f"Recorded Active Hours {direction} by {pct(abs(cmp.relative))} ({hm(abs(change_s))}) "
                         f"compared with the previous equivalent period ({prev_label}).")
-            out.append(Insight("ACTIVE_CHANGE", Severity.INFO, "Compared with the previous period", text + ongoing,
+            out.append(Insight("ACTIVE_CHANGE", Severity.INFO, "Compared with the previous period",
+                               text + ongoing + caution,
                                metric="active_seconds", current_value=cmp.current * 3600,
                                previous_value=cmp.previous * 3600))
 
@@ -594,6 +708,7 @@ class Analysis:
                                                                       "daily_trend", "weekly_trend",
                                                                       "applications", "attendance"])},
             "comparison": [c.as_json() for c in self.comparisons()],
+            "comparison_quality": self.comparison_quality().as_json(),
             "insights": [i.as_json() for i in self.insights(limit)],
             "analysis": "deterministic rule-based analysis (not artificial intelligence)",
         }

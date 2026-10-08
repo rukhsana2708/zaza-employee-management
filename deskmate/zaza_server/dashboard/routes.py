@@ -271,6 +271,7 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
         view = {"period": service.describe(analysis.sel), "insights": analysis.insights(),
                 "charts": [render_chart(c) for c in analysis.charts()], "comparisons": analysis.comparisons(),
                 "previous_label": analysis.previous_label(), "in_progress": analysis.in_progress(),
+                "quality": analysis.comparison_quality(),
                 "last_calculated": analysis.last_calculated}
         return render("analytics.html", ctx, page="analytics", f=filter_values(request), view=view)
 

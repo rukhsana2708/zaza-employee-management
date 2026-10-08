@@ -15,6 +15,12 @@
 <h2 class="section">Compared with the previous period</h2>
 <p class="note">Previous period: {{ view.previous_label }}{% if view.in_progress %}. The current period is still in
   progress, so it may not yet be comparable{% endif %}. Differences are shown without suggesting a cause.</p>
+{% if view.quality.status == "incomplete" %}
+<p class="alert warn" role="status"><strong>Not fully comparable:</strong> {{ view.quality.reasons|join("; ") }}.
+  The stored values are listed below, but percentage changes are not shown.</p>
+{% elif view.quality.status == "qualified" %}
+<p class="alert warn" role="status"><strong>Interpret with caution:</strong> {{ view.quality.reasons|join("; ") }}.</p>
+{% endif %}
 <div class="table-wrap">
 <table>
   <thead><tr><th scope="col">Measure</th><th scope="col">Selected period</th><th scope="col">Previous period</th>
@@ -30,7 +36,7 @@
     <td>{{ c.current|pct }}</td><td>{{ c.previous|pct }}</td>
     <td>{% if c.change is not none %}{{ "%+.1f"|format(c.change) }} percentage points{% else %}–{% endif %}</td>
     {% endif %}
-    <td>{% if c.unit == "%" %}–{% elif c.relative is not none %}{{ "%+.1f"|format(c.relative * 100) }}%{% elif c.previous == 0 and c.current %}previous period had none{% else %}–{% endif %}</td>
+    <td>{% if c.status == "incomplete" %}not comparable (incomplete data){% elif c.unit == "%" %}–{% elif c.relative is not none %}{{ "%+.1f"|format(c.relative * 100) }}%{% elif c.previous == 0 and c.current %}previous period had none{% else %}–{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

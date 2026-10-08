@@ -136,3 +136,4 @@ details.add { margin-top: .75rem; }
 .insight .sev { font-size: .75rem; color: var(--muted); margin-left: .5rem; text-transform: uppercase; }
 .i-notice { border-left-color: #8a5a00; }
 .i-data_quality { border-left-color: #e2b04a; border-left-style: dashed; }
+.alert.warn { background: #fff1d6; color: #6b4600; }

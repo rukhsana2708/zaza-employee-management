@@ -1,6 +1,6 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-09 (Phase 8)
+**Last updated:** 2026-10-09 (Phase 8 review fix)
 
 ## Current phase: Phase 8 — Charts & automatic analysis (implemented, pending your review)
 
@@ -39,11 +39,30 @@ AI.** No new telemetry. Everything runs on localhost only.
     overtime, top application.
   - Neutral wording, with disclaimers; no productivity score.
 - **Tests:**
-  - Default run: 677 pass and 129 skip. The skips are the opt-in PostgreSQL
+  - Default run: 689 pass and 129 skip. The skips are the opt-in PostgreSQL
     tests and the opt-in live-Google test.
-  - With `ZAZA_TEST_POSTGRES_URL` set: 805 pass and 1 skip (the live
+  - With `ZAZA_TEST_POSTGRES_URL` set: 817 pass and 1 skip (the live
     Google test).
-  - New: 50 tests in `test_analytics.py` and 1 PostgreSQL analytics test.
+  - New: 62 tests in `test_analytics.py` and 1 PostgreSQL analytics test.
+
+### Phase 8 review fix (pending your approval)
+
+- **Summary coverage.** For each employee and period, the expected dates are
+  the selected local dates up to their local today; future dates are never
+  missing.
+- **Comparable employee** now also requires no missing expected summary.
+  This applies to highest/lowest, the comparable average and the high-idle
+  observation. Charts still show all recorded data.
+- **Team wording separates the two groups:** "Total recorded Active Hours
+  across available summaries" versus "N employee(s) have complete enough
+  data for employee-to-employee comparison. Average … among those
+  employees". Excluded employees are named.
+- **Period comparisons check both periods.** Missing summaries or
+  INSUFFICIENT/DATA_INCOMPLETE days on either side make the comparison
+  **incomplete**: no percentage or increase/decrease, a DATA_QUALITY notice,
+  and table rows marked "not comparable".
+  START/END_UNCERTAIN or AWAITING_DEVICE_SYNC makes it **qualified**: the
+  change is shown with a caution.
 
 ### Phase 8 known limitations / risks
 

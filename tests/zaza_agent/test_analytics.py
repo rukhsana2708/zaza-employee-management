@@ -308,18 +308,22 @@ def test_no_comparison_without_previous_summaries():
 def test_team_summary_highest_and_lowest_with_neutral_wording():
     a = analysis(standard())
     summary = message(a, "ACTIVE_SUMMARY")
-    assert "3 employee(s) have comparable calculated attendance data" in summary
-    assert "Total Active Hours: 29h 59m" in summary and "Average Active Hours per employee: 10h 00m" in summary
+    assert summary == ("Total recorded Active Hours across available summaries: 29h 59m (3 employee(s) with "
+                       "calculated summaries). 3 employee(s) have complete enough data for employee-to-employee "
+                       "comparison. Average Active Hours among those employees: 10h 00m.")
     rng = message(a, "ACTIVE_RANGE")
-    assert "Highest recorded Active Hours: Alice — 18h 30m" in rng
-    assert "Lowest recorded Active Hours among employees with reportable data: Bob — 2h 14m" in rng
+    assert "highest recorded Active Hours: Alice — 18h 30m" in rng
+    assert "lowest recorded Active Hours: Bob — 2h 14m" in rng
+    assert rng.startswith("Among employees with complete enough data:")
     assert "not a productivity score" in rng
 
 
 def test_insufficient_data_employee_is_excluded_from_comparison():
     a = analysis(standard(), "today")  # Carol's night shift hasn't started: no comparable data yet
     rng = message(a, "ACTIVE_RANGE")
-    assert "Carol" not in rng and "1 employee(s) without comparable data yet" in rng
+    assert "Carol" not in rng and "1 employee(s) without complete enough data are not included" in rng
+    assert message(a, "ACTIVE_SUMMARY").endswith(
+        "Not included in the comparison (missing summaries, a shift not finished, or incomplete monitoring): Carol.")
     d = Dash()
     d.employee("alice", "Alice")
     d.employee("bob", "Bob")
@@ -327,7 +331,7 @@ def test_insufficient_data_employee_is_excluded_from_comparison():
     d.period("bob", "UNKNOWN", at(MON, "09:00"), at(MON, "17:00"))  # every working day DATA_INCOMPLETE
     a = analysis(d.build(), "custom", None, MON, MON)
     assert "ACTIVE_RANGE" not in kinds(a)  # only one comparable employee: no highest/lowest
-    assert "1 employee(s) have comparable" in message(a, "ACTIVE_SUMMARY")
+    assert "1 employee(s) have complete enough data" in message(a, "ACTIVE_SUMMARY")
 
 
 def test_active_share_of_scheduled_is_separate_from_attendance():
@@ -374,7 +378,9 @@ def test_missing_summaries_are_reported_not_counted_as_absence():
     d = standard()
     del d.repo.summaries[("alice", TUE)]
     a = analysis(d)
-    assert "1 employee-day(s) in this period do not have a calculated summary yet" in message(a, "MISSING_SUMMARIES")
+    assert message(a, "MISSING_SUMMARIES") == (
+        "1 employee-day(s) in this period do not have a calculated summary yet. Employees with missing summaries "
+        "are excluded from employee-to-employee comparisons: Alice.")
     d2 = Dash()
     d2.employee("alice", "Alice")
     d2.employee("newbie", "New Person")
@@ -383,7 +389,8 @@ def test_missing_summaries_are_reported_not_counted_as_absence():
     for key in [k for k in d2.repo.summaries if k[0] == "newbie"]:
         del d2.repo.summaries[key]
     text = message(analysis(d2, "custom", None, MON, MON), "MISSING_SUMMARIES")
-    assert text == "Some employees do not yet have calculated summaries for this period: New Person."
+    assert text == ("Some employees do not yet have calculated summaries for this period: New Person. Employees "
+                    "with missing summaries are excluded from employee-to-employee comparisons: New Person.")
     assert "ABSENCE" not in kinds(analysis(d2, "custom", None, MON, MON))
 
 
@@ -548,3 +555,152 @@ def test_date_override_with_short_shift_counts_in_scheduled_hours():
     a = analysis(d.build(), "custom", "alice", MON, TUE)
     weekly = chart(a, "weekly_trend")
     assert weekly.values[-1][0] == 10.0  # 8 h Monday + 2 h override Tuesday (stored scheduled_seconds)
+
+
+# ─── review fix: summary coverage gates comparisons ────────────────────────
+
+AFTER_WEEK = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)  # Monday 12 Oct 18:00 Dhaka: Oct 5-11 is history
+FRI = MON + timedelta(days=4)
+WEEKDAYS = [MON + timedelta(days=i) for i in range(5)]
+
+
+def _coverage_office() -> Dash:
+    """Alice and Carol fully calculated Mon-Fri; Bob only Monday (Tue-Fri summaries missing)."""
+    d = Dash(now=AFTER_WEEK)
+    d.employee("alice", "Alice")
+    d.employee("bob", "Bob")
+    d.employee("carol", "Carol")
+    for day in WEEKDAYS:
+        d.period("alice", "ACTIVE", at(day, "09:00"), at(day, "17:00"))   # 8 h a day
+        d.period("carol", "ACTIVE", at(day, "09:00"), at(day, "15:00"))   # 6 h a day
+    d.period("bob", "IDLE", at(MON, "09:00"), at(MON, "15:00"))           # idle-heavy single day
+    d.period("bob", "ACTIVE", at(MON, "15:00"), at(MON, "17:00"))
+    d.build()
+    for day in WEEKDAYS[1:]:
+        del d.repo.summaries[("bob", day)]
+    return d
+
+
+def test_missing_summaries_exclude_an_employee_from_highest_and_lowest():
+    a = analysis(_coverage_office(), "custom", None, MON, FRI)
+    figs = a.figs
+    assert (figs["bob"].expected_days, figs["bob"].missing_days, figs["bob"].eligible) == (5, 4, False)
+    assert figs["alice"].eligible and figs["carol"].eligible
+    rng = message(a, "ACTIVE_RANGE")
+    assert "highest recorded Active Hours: Alice — 40h 00m" in rng and "lowest recorded Active Hours: Carol — 30h 00m" in rng
+    assert "Bob" not in rng and "1 employee(s) without complete enough data are not included" in rng
+
+
+def test_team_total_and_comparable_average_are_distinguished():
+    summary = message(analysis(_coverage_office(), "custom", None, MON, FRI), "ACTIVE_SUMMARY")
+    assert summary == (
+        "Total recorded Active Hours across available summaries: 72h 00m (3 employee(s) with calculated summaries). "
+        "2 employee(s) have complete enough data for employee-to-employee comparison. Average Active Hours among "
+        "those employees: 35h 00m. Not included in the comparison (missing summaries, a shift not finished, or "
+        "incomplete monitoring): Bob.")
+
+
+def test_missing_summaries_exclude_an_employee_from_the_idle_observation():
+    a = analysis(_coverage_office(), "custom", None, MON, FRI, high_idle_percent=40)
+    assert a.figs["bob"].idle / a.figs["bob"].tracked == 0.75  # above the threshold, but not comparable
+    assert "HIGH_IDLE" not in kinds(a)
+
+
+def test_charts_still_show_recorded_data_of_incomplete_employees():
+    a = analysis(_coverage_office(), "custom", None, MON, FRI)
+    by_employee = dict(zip(chart(a, "active_by_employee").categories,
+                           chart(a, "active_by_employee").values, strict=True))
+    assert by_employee == {"Alice": [40.0], "Carol": [30.0], "Bob": [2.0]}
+    status = dict(zip(chart(a, "status_hours").categories, chart(a, "status_hours").values, strict=True))
+    assert status["Bob"] == [2.0, 6.0, 0.0, 0.0]
+
+
+def test_missing_data_insight_explains_the_exclusion():
+    text = message(analysis(_coverage_office(), "custom", None, MON, FRI), "MISSING_SUMMARIES")
+    assert text == ("4 employee-day(s) in this period do not have a calculated summary yet. Employees with missing "
+                    "summaries are excluded from employee-to-employee comparisons: Bob.")
+
+
+def test_future_dates_are_never_counted_as_missing():
+    d = standard()  # NOW = Thursday: Friday-Sunday of this week are in the future
+    a = analysis(d)
+    assert {eid: cov for eid, cov in a.coverage.items()} == {"alice": (4, 0), "bob": (4, 0), "carol": (4, 0)}
+    assert "MISSING_SUMMARIES" not in kinds(a)
+
+
+def _weeks(previous: list[tuple[date, str, str, str]], current: list[tuple[date, str, str, str]]) -> Dash:
+    """One employee; activity in the previous week (Sep 28-Oct 4) and the selected week (Oct 5-11)."""
+    d = Dash(now=AFTER_WEEK)
+    d.employee("alice", "Alice")
+    for day, status, start, end in previous + current:
+        d.period("alice", status, at(day, start), at(day, end))
+    return d.build()
+
+
+PREV_WEEK = [MON - timedelta(days=7) + timedelta(days=i) for i in range(5)]
+FULL_PREV = [(day, "ACTIVE", "09:00", "17:00") for day in PREV_WEEK]
+FULL_CUR = [(day, "ACTIVE", "09:00", "16:00") for day in WEEKDAYS]
+
+
+def test_complete_periods_still_report_the_change():
+    a = analysis(_weeks(FULL_PREV, FULL_CUR), "last_week")
+    assert a.comparison_quality().status == "complete"
+    assert message(a, "ACTIVE_CHANGE") == ("Recorded Active Hours decreased by 12.5% (5h 00m) compared with the "
+                                           "previous equivalent period (28 Sep 2026 – 04 Oct 2026).")
+
+
+def test_complete_periods_with_no_change():
+    a = analysis(_weeks(FULL_PREV, [(day, "ACTIVE", "09:00", "17:00") for day in WEEKDAYS]), "last_week")
+    assert message(a, "ACTIVE_CHANGE").startswith("Recorded Active Hours were unchanged")
+
+
+def test_partial_previous_period_gives_no_confident_percentage():
+    d = _weeks(FULL_PREV, FULL_CUR)
+    for day in [MON - timedelta(days=6) + timedelta(days=i) for i in range(6)]:  # keep only Monday 28 Sep
+        del d.repo.summaries[("alice", day)]
+    a = analysis(d, "last_week")
+    quality = a.comparison_quality()
+    assert quality.status == "incomplete" and quality.previous.missing == 6
+    insight = next(i for i in a.insights(limit=20) if i.kind == "ACTIVE_CHANGE")
+    assert insight.severity.value == "DATA_QUALITY"
+    assert insight.message == ("Active Hours comparison with the previous period (28 Sep 2026 – 04 Oct 2026) is not "
+                               "shown because the data is not complete enough: the previous period is missing 6 "
+                               "employee-days of calculated summaries.")
+    assert "%" not in insight.message and "increased" not in insight.message and "decreased" not in insight.message
+    assert all(c.relative is None and c.status == "incomplete" for c in a.comparisons())
+    body = a.as_json()
+    assert body["comparison_quality"]["status"] == "incomplete"
+    assert all(c["relative_change"] is None and c["comparison_status"] == "incomplete" for c in body["comparison"])
+    d.manager()
+    client, _ = login(d)
+    html = client.get("/manager/analytics", params={"period": "last_week"}).text
+    assert "Not fully comparable:" in html and "not comparable (incomplete data)" in html
+    assert "the previous period is missing 6 employee-days of calculated summaries" in html
+
+
+def test_previous_period_data_incomplete_prevents_the_percentage():
+    previous = [*FULL_PREV[:1], (PREV_WEEK[1], "UNKNOWN", "09:00", "17:00"), *FULL_PREV[2:]]
+    a = analysis(_weeks(previous, FULL_CUR), "last_week")
+    q = a.comparison_quality()
+    assert q.status == "incomplete" and q.previous.limited == 1 and q.current.limited == 0
+    assert message(a, "ACTIVE_CHANGE").endswith(
+        "the previous period has 1 employee-day with incomplete monitoring data.")
+
+
+def test_current_period_data_incomplete_prevents_the_percentage():
+    current = [*FULL_CUR[:2], (WEEKDAYS[2], "UNKNOWN", "09:00", "17:00"), *FULL_CUR[3:]]
+    a = analysis(_weeks(FULL_PREV, current), "last_week")
+    assert a.comparison_quality().status == "incomplete"
+    text = message(a, "ACTIVE_CHANGE")
+    assert "the selected period has 1 employee-day with incomplete monitoring data" in text and "%" not in text
+
+
+def test_uncertain_end_qualifies_the_change_with_a_caution():
+    previous = [*FULL_PREV[:1], (PREV_WEEK[1], "ACTIVE", "09:00", "15:00"), (PREV_WEEK[1], "UNKNOWN", "15:00", "17:00"),
+                *FULL_PREV[2:]]
+    a = analysis(_weeks(previous, FULL_CUR), "last_week")
+    q = a.comparison_quality()
+    assert q.status == "qualified" and q.previous.uncertain == 1 and q.previous.limited == 0
+    text = message(a, "ACTIVE_CHANGE")
+    assert text.startswith("Recorded Active Hours decreased by") and "Interpret this change cautiously" in text
+    assert next(c for c in a.comparisons() if c.metric == "active_seconds").relative is not None
