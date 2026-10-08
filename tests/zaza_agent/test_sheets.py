@@ -899,3 +899,83 @@ def test_a1_helpers():
     assert a1("Bob's tab", 2, 5, 16, 100) == "'Bob''s tab'!C5:Q100"
     assert parse_a1("'Bob''s tab'!C5:Q100") == ("Bob's tab", 2, 4, 16, 99)
     assert parse_a1("'Dashboard'!A6:E") == ("Dashboard", 0, 5, 4, None)
+
+
+# ─── review fix 2: activity periods overlapping the window start ───────────
+
+
+def test_activity_window_uses_interval_overlap_per_employee():
+    o = Office()
+    o.employee("alice", "Alice", DHAKA)  # NOW = Thu 12:00 Dhaka; 1 day -> cutoff Thu 00:00 Dhaka (Wed 18:00 UTC)
+    o.employee("dan", "Dan", NY)         # NOW = Thu 02:00 New York; cutoff Thu 00:00 New York (Thu 04:00 UTC)
+    before = o.period("alice", "IDLE", at(WED, "23:00"), at(WED, "23:30"))           # entirely before: out
+    crossing = o.period("alice", "ACTIVE", at(WED, "23:55"), at(THU, "00:20"))       # crosses the cutoff: in
+    at_cutoff = o.period("alice", "LOCKED", at(THU, "00:00"), at(THU, "00:10"))      # starts at the cutoff: in
+    zero = o.period("alice", "UNKNOWN", at(THU, "00:00"), at(THU, "00:00"))          # zero length at the cutoff: in
+    inside = o.period("alice", "ACTIVE", at(THU, "09:00"), at(THU, "10:00"))         # inside: in
+    dan_before = o.period("dan", "ACTIVE", at(WED, "22:00", NY), at(WED, "23:00", NY))  # after Alice's cutoff,
+    dan_crossing = o.period("dan", "IDLE", at(WED, "23:50", NY), at(THU, "00:10", NY))  # but before Dan's own
+    client = FakeSheetsClient()
+    SheetsExporter(client, settings(activity_days=1), source=o.source(), clock=lambda: NOW).sync()
+    log = by_header(client, "Activity Log")
+    shown = {(r["Employee ID"], r["Timestamp"]) for r in log}
+
+    def key(p):  # noqa: ANN001, ANN202
+        tz = DHAKA if p.employee_id == "alice" else NY
+        return (p.employee_id, serial(p.started_at.astimezone(ZoneInfo(tz)).replace(tzinfo=None)))
+
+    assert shown == {key(p) for p in (crossing, at_cutoff, zero, inside, dan_crossing)}
+    assert key(before) not in shown and key(dan_before) not in shown
+    assert len(log) == 5  # each period once, never split or duplicated
+    row = next(r for r in log if r["Employee ID"] == "alice" and r["Status"] == "Active"
+               and r["Timestamp"] == key(crossing)[1])
+    assert row["Active Duration"] == pytest.approx(25 * 60 / 86400)  # the whole stored period
+
+
+def test_activity_sql_uses_interval_overlap():
+    assert "ended_at > %s OR started_at >= %s" in ACTIVITY_SQL
+
+
+# ─── review fix 3: truthful Dashboard period labels ────────────────────────
+
+
+def _period_row(now: datetime, *zones: str) -> list:
+    o = Office(now)
+    for i, tz in enumerate(zones):
+        o.employee(f"e{i}", f"Employee {i}", tz)
+    client = FakeSheetsClient()
+    SheetsExporter(client, settings(), source=o.source(), clock=lambda: now).sync()
+    return dash(client)["Period"]
+
+
+def test_period_labels_when_employees_share_one_timezone():
+    assert _period_row(NOW, DHAKA, DHAKA)[:3] == ["2026-10-08", "2026-10-05 – 2026-10-11", "October 2026"]
+
+
+def test_period_labels_when_local_dates_differ():
+    # 18:30 UTC: Dhaka is already on Thursday 8 October, New York still on Wednesday 7 October
+    today, week, month = _period_row(datetime(2026, 10, 7, 18, 30, tzinfo=UTC), DHAKA, NY)[:3]
+    assert today == "Per employee local date (2026-10-07, 2026-10-08)"
+    assert week == "2026-10-05 – 2026-10-11" and month == "October 2026"  # still shared
+
+
+def test_period_labels_when_local_weeks_differ():
+    # Dhaka: Monday 12 October 00:30; New York: Sunday 11 October 14:30
+    today, week, month = _period_row(datetime(2026, 10, 11, 18, 30, tzinfo=UTC), DHAKA, NY)[:3]
+    assert today.startswith("Per employee local date")
+    assert week == "Per employee local week (2026-10-05 – 2026-10-11; 2026-10-12 – 2026-10-18)"
+    assert month == "October 2026"
+
+
+def test_period_labels_when_local_months_differ():
+    # Dhaka: Sunday 1 November 00:30; New York: Saturday 31 October 14:30 (same ISO week)
+    today, week, month = _period_row(datetime(2026, 10, 31, 18, 30, tzinfo=UTC), DHAKA, NY)[:3]
+    assert today == "Per employee local date (2026-10-31, 2026-11-01)"
+    assert week == "2026-10-26 – 2026-11-01"
+    assert month == "Per employee local month (October 2026, November 2026)"
+
+
+def test_dashboard_still_explains_employee_local_periods():
+    exporter, client = run()
+    exporter.sync()
+    assert "each employee's own local date" in dash(client)["How to read this"][0]

@@ -7,7 +7,8 @@ leaves every table exactly as it was.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from dataclasses import replace
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -118,14 +119,75 @@ def test_report_snapshot_is_a_read_only_transaction(office):
             conn.execute("UPDATE employees SET display_name = 'changed'")
 
 
+REFRESH = {"activity_days": 30, "summary_months": 12}
+
+
 def test_only_one_refresh_at_a_time(office):
     first, second = PostgresReportSource(office), PostgresReportSource(office)
-    with first.lock():
+    with first.refresh(NOW, **REFRESH) as data:
+        assert data.employees  # loaded while holding the lock
         with pytest.raises(SheetsSyncBusy):
-            with second.lock():
+            with second.refresh(NOW, **REFRESH):
                 pass
-    with second.lock():  # released afterwards
+    with second.refresh(NOW, **REFRESH):  # released afterwards
         pass
+
+
+def test_refresh_lock_is_held_through_the_google_writes(office):
+    """A second refresh is refused while the first is still writing to Google
+    (i.e. after its database read has finished)."""
+    class Probe(FakeSheetsClient):
+        refused = False
+
+        def write_values(self, a1_range, values):  # noqa: ANN001
+            if not self.refused:
+                with pytest.raises(SheetsSyncBusy):
+                    with PostgresReportSource(office).refresh(NOW, **REFRESH):
+                        pass
+                self.refused = True
+            super().write_values(a1_range, values)
+
+    client = Probe()
+    exporter(office, client).sync()
+    assert client.refused
+
+
+def test_sheets_sync_works_with_a_one_connection_pool(office, pg_settings):
+    from deskmate.zaza_server.postgres import PostgresRepository
+
+    single = PostgresRepository(replace(pg_settings, pool_min=1, pool_max=1, pool_timeout=2.0),
+                                actor_type="CLI", actor_id="pytest")
+    try:
+        before = fingerprint(office)
+        client = FakeSheetsClient()
+        result = exporter(single, client).sync()
+        assert result.rows["Activity Log"] == 5 and len(client.values("Daily Summary")) > 1
+        exporter(single, client).sync()  # the lock was released: a second run works too
+        client.fail_on("write_values", 2)
+        with pytest.raises(SheetsUnavailable):
+            exporter(single, client).sync()
+        client.fail.clear()
+        exporter(single, client).sync()  # the lock is released after a failure as well
+        assert fingerprint(office) == before
+    finally:
+        single.close()
+
+
+def test_activity_period_crossing_the_window_start_is_included_once(office):
+    sync = Synced(office)
+    sun = MON - timedelta(days=1)
+    sid = sync.session(at(sun, "21:00"), at(MON, "00:20"))
+    sync.period(sid, "IDLE", at(sun, "21:00"), at(sun, "23:55"))       # entirely before the window
+    sync.period(sid, "ACTIVE", at(sun, "23:55"), at(MON, "00:20"))     # crosses Monday 00:00
+    client = FakeSheetsClient()
+    # NOW is Thursday: 4 days = Monday .. Thursday, cutoff Monday 00:00 Dhaka
+    SheetsExporter(client, replace(SETTINGS, activity_days=4), source=PostgresReportSource(office),
+                   clock=lambda: NOW).sync()
+    log = rows(client, "Activity Log")
+    assert len(log) == 6  # the 5 Monday periods + the crossing one, once
+    oldest = log[-1]
+    assert oldest["Timestamp"] == pytest.approx(
+        (datetime(2026, 10, 4, 23, 55) - datetime(1899, 12, 30)).total_seconds() / 86400)  # true start kept
 
 
 def test_cli_sheets_sync(office, pg_settings, monkeypatch, capsys):

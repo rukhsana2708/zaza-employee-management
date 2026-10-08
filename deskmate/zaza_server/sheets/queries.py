@@ -20,7 +20,7 @@ summary hashes, token data or sync bookkeeping.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -33,7 +33,10 @@ EMPLOYEES_SQL = "SELECT employee_id, display_name, timezone, is_active FROM empl
 ACTIVITY_SQL = (
     "SELECT period_id::text AS period_id, employee_id, started_at, ended_at, duration_seconds, is_open, status, "
     "status_detail, app_name, window_title, domain, privacy_excluded, end_reason "
-    "FROM activity_periods WHERE started_at >= %s ORDER BY started_at DESC, employee_id, period_id"
+    # interval overlap: a period that started before the cutoff but runs into
+    # the window is shown (once, with its true start)
+    "FROM activity_periods WHERE ended_at > %s OR started_at >= %s "
+    "ORDER BY started_at DESC, employee_id, period_id"
 )
 DAILY_SQL = "SELECT * FROM daily_summaries WHERE local_date >= %s::date ORDER BY local_date, employee_id"
 WEEKLY_SQL = "SELECT * FROM weekly_summaries WHERE week_end >= %s::date ORDER BY week_start, employee_id"
@@ -43,34 +46,55 @@ SYNC_LOCK_KEY = 0x5A5A5348  # "ZZSH": one Sheets refresh at a time
 
 
 class PostgresReportSource:
+    """Reads the report through ONE pooled connection, so a refresh works
+    even with ``ZAZA_DB_POOL_MAX=1``:
+
+    1. take the session advisory lock (one Sheets refresh at a time);
+    2. on the same connection, read everything in one REPEATABLE READ,
+       READ ONLY transaction, which then ends;
+    3. keep the lock (but no transaction) while the caller writes to Google;
+    4. release the lock.
+    """
+
     def __init__(self, repo) -> None:  # noqa: ANN001 — PostgresRepository
         self.repo = repo
 
     @contextmanager
-    def lock(self) -> Iterator[None]:
-        """A session advisory lock so two refreshes never interleave their
-        writes. It changes no data."""
+    def refresh(self, now: datetime, *, activity_days: int, summary_months: int) -> Iterator[ReportData]:
+        """Lock, load, and keep the lock until the ``with`` block ends."""
         with self.repo.connection() as conn:
             if not conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (SYNC_LOCK_KEY,)).fetchone()["ok"]:
                 raise SheetsSyncBusy("another Google Sheets refresh is already running")
             try:
-                yield
+                yield self._load(conn, now, activity_days, summary_months)
             finally:
-                conn.execute("SELECT pg_advisory_unlock(%s)", (SYNC_LOCK_KEY,))
+                try:
+                    conn.execute("SELECT pg_advisory_unlock(%s)", (SYNC_LOCK_KEY,))
+                except Exception:  # noqa: BLE001 — close it: the server then drops the session's lock
+                    conn.close()
+
+    def load(self, now: datetime, *, activity_days: int, summary_months: int) -> ReportData:
+        with self.refresh(now, activity_days=activity_days, summary_months=summary_months) as data:
+            return data
 
     @contextmanager
-    def snapshot(self) -> Iterator:
-        """A consistent, read-only view of the database (any write in it fails)."""
-        with self.repo.connection() as conn, conn.transaction():
+    def snapshot(self, conn=None) -> Iterator:  # noqa: ANN001
+        """A consistent, read-only view of the database (any write in it
+        fails). Uses ``conn`` if given, else a pooled connection."""
+        if conn is None:
+            with self.repo.connection() as own, self.snapshot(own) as snap:
+                yield snap
+            return
+        with conn.transaction():
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             yield conn
 
-    def load(self, now: datetime, *, activity_days: int, summary_months: int) -> ReportData:
-        with self.snapshot() as conn:
+    def _load(self, conn, now: datetime, activity_days: int, summary_months: int) -> ReportData:  # noqa: ANN001
+        with self.snapshot(conn):
             employees = tuple(EmployeeRow(**r) for r in conn.execute(EMPLOYEES_SQL).fetchall())
             window = report_window(employees, now, activity_days, summary_months)
             first = min(window.activity_since.values(), default=now)
-            activity = tuple(ActivityRow(**r) for r in conn.execute(ACTIVITY_SQL, (first,)).fetchall())
+            activity = tuple(ActivityRow(**r) for r in conn.execute(ACTIVITY_SQL, (first, first)).fetchall())
             since = window.summary_since or date(1, 1, 1)
             daily = tuple(PostgresAttendanceStore._daily(r) for r in conn.execute(DAILY_SQL, (since,)).fetchall())
             weekly = tuple(PostgresAttendanceStore._period(r, "WEEK")
@@ -95,8 +119,9 @@ class InMemoryReportSource:
         self.summaries_updated_at = summaries_updated_at
         self.loads = 0
 
-    def lock(self):  # noqa: ANN201
-        return nullcontext()
+    @contextmanager
+    def refresh(self, now: datetime, *, activity_days: int, summary_months: int) -> Iterator[ReportData]:
+        yield self.load(now, activity_days=activity_days, summary_months=summary_months)
 
     def load(self, now: datetime, *, activity_days: int, summary_months: int) -> ReportData:
         self.loads += 1

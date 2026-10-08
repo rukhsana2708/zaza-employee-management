@@ -143,9 +143,10 @@ class SheetsExporter:
             raise RuntimeError("sync needs a report source")
         now = self.clock()
         s = self.settings
-        with self.source.lock():
-            # 1. database first: prepare every value before touching Google
-            data = self.source.load(now, activity_days=s.activity_days, summary_months=s.summary_months)
+        # The source holds its refresh lock for the whole block; on PostgreSQL
+        # the read-only transaction has already ended when the data arrives.
+        with self.source.refresh(now, activity_days=s.activity_days, summary_months=s.summary_months) as data:
+            # 1. database first: every value is prepared before touching Google
             tz = report_timezone(data.employees, s.report_timezone)
             tabs = [activity_tab(data), daily_tab(data), weekly_tab(data), monthly_tab(data)]
             dash, formats, bold = dashboard_tab(data, now, report_tz=tz, activity_days=s.activity_days,

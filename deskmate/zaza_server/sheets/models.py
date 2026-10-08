@@ -185,11 +185,18 @@ def report_window(employees: tuple[EmployeeRow, ...] | list[EmployeeRow], now: d
     return ReportWindow(since, _months_back(month_bounds(earliest)[0], summary_months - 1))
 
 
+def overlaps(period: ActivityRow, cutoff: datetime) -> bool:
+    """Interval overlap with [cutoff, ∞): a period running into the window is
+    kept whole (never split or duplicated); one starting exactly at the
+    cutoff, even with zero length, is kept too."""
+    return period.ended_at > cutoff or period.started_at >= cutoff
+
+
 def apply_window(data: ReportData) -> ReportData:
     """Keep only what the window shows (sources may over-fetch)."""
     w = data.window
     known = {e.employee_id for e in data.employees}
-    activity = tuple(a for a in data.activity if a.employee_id in known and a.started_at >= w.activity_since[a.employee_id])
+    activity = tuple(a for a in data.activity if a.employee_id in known and overlaps(a, w.activity_since[a.employee_id]))
     if w.summary_since is None:
         daily, weekly, monthly = data.daily, data.weekly, data.monthly
     else:

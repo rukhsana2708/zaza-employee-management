@@ -34,20 +34,35 @@ instance, which has since been deleted.
   - PostgreSQL is read in one read-only snapshot before Google is touched.
   - Tabs are overwritten first, and stale rows are cleared only afterwards.
   - The Dashboard's "Last successful refresh" is written last.
-  - An advisory lock prevents concurrent refreshes.
+  - An advisory lock prevents concurrent refreshes. The lock and the
+    read-only snapshot share one connection, so `ZAZA_DB_POOL_MAX=1` works.
   - Values are written as RAW, so no formula injection.
 - **Secrets:** the key file is validated without echoing it. Errors are
   scrubbed (PEM keys, key IDs, OAuth tokens), and the spreadsheet ID is
   masked.
 - **Tests:**
-  - Default run: 524 pass and 118 skip. The skips are 117 opt-in PostgreSQL
+  - Default run: 531 pass and 121 skip. The skips are 120 opt-in PostgreSQL
     tests and 1 opt-in live-Google test.
-  - With `ZAZA_TEST_POSTGRES_URL` set: 641 pass and 1 skip (the live test).
-  - New: 71 Sheets tests (`test_sheets.py`), 5 PostgreSQL tests
+  - With `ZAZA_TEST_POSTGRES_URL` set: 651 pass and 1 skip (the live test).
+  - New: 78 Sheets tests (`test_sheets.py`), 8 PostgreSQL tests
     (`test_sheets_postgres.py`), and 1 opt-in live test
     (`test_sheets_google_live.py`).
   - The Google adapter is tested offline with the library's
     `HttpMockSequence`.
+
+### Phase 6 review fixes (pending your approval)
+
+1. **One connection per refresh.** `PostgresReportSource.refresh()` takes the
+   advisory lock, reads the read-only snapshot on the same connection, and
+   keeps the lock through the Google writes. Sheets sync works with
+   `ZAZA_DB_POOL_MAX=1`, and a concurrent refresh is still refused.
+2. **Activity window overlap.** A period is shown if it overlaps the window
+   (`ended_at > cutoff OR started_at >= cutoff`), both in SQL and in memory,
+   with each employee's own cutoff. A period crossing the boundary is shown
+   once, whole.
+3. **Truthful Dashboard period labels.** When active employees are on
+   different local dates / weeks / months, the label reads "Per employee
+   local date / week / month (…)" instead of naming one.
 
 ### Phase 6 known limitations / risks
 

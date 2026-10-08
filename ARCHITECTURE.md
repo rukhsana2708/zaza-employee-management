@@ -1127,6 +1127,13 @@ absence and the other attendance figures are never recalculated.
   month containing their local today.
 - **For a week or month:** Late, Absent and Data-incomplete count employees
   with at least one such day.
+- **Period labels are truthful.** If every active employee is in the same
+  local date / week / month, the label names it ("2026-10-08",
+  "2026-10-05 – 2026-10-11", "October 2026"). If not, it says so: for
+  example, when Dhaka is already on October 8 and New York is still on
+  October 7, Today is labelled "Per employee local date (2026-10-07,
+  2026-10-08)". The same applies to "Per employee local week" and "Per
+  employee local month".
 
 ### 5.3 Display formats
 
@@ -1159,9 +1166,13 @@ absence and the other attendance figures are never recalculated.
 The company is small (~5 employees), so every refresh rewrites the managed
 tabs completely. There is no incremental sync to get wrong.
 
-1. **Read PostgreSQL first.** One `REPEATABLE READ, READ ONLY` snapshot,
-   and every value is prepared in memory. A database problem stops the
-   refresh here, before Google is touched.
+1. **Read PostgreSQL first, on one connection.** Take the session advisory
+   lock, then read everything in one `REPEATABLE READ, READ ONLY`
+   transaction **on that same connection**. The transaction ends before any
+   Google call; the lock is kept until the refresh finishes. A refresh
+   therefore needs only one pooled connection and works with
+   `ZAZA_DB_POOL_MAX=1`. Every value is prepared in memory, and a database
+   problem stops the refresh before Google is touched.
 2. **Prepare the spreadsheet.** Create missing tabs, grow grids if needed,
    and apply formatting. Nothing is cleared.
 3. **Mark the refresh as running.** Dashboard "Last refresh status" becomes
@@ -1179,8 +1190,12 @@ Guarantees:
   gives identical tabs.
 - **No leftovers:** deleted or out-of-window rows disappear at the next
   refresh.
-- **One refresh at a time:** a PostgreSQL advisory lock prevents two
-  refreshes from interleaving. Taking the lock changes no data.
+- **One refresh at a time:** a PostgreSQL session advisory lock, held from
+  the database read until the last Google write, prevents two refreshes
+  from interleaving. A second refresh is refused (exit code 3). The lock is
+  released even after a failure; if unlocking itself fails, the connection
+  is closed so the server drops the lock. Taking the lock changes no
+  data.
 
 **Failure:** if Google is unreachable, slow, out of quota or refuses access:
 - the command stops with a short, scrubbed error and exit code 3;
@@ -1201,7 +1216,11 @@ These settings only limit what the Sheet shows. Nothing is deleted from
 PostgreSQL.
 - **Activity Log:** `ZAZA_SHEETS_ACTIVITY_DAYS` (default 30). Each
   employee's last N local dates, today included, the same rule as
-  `recalculate --recent-days`.
+  `recalculate --recent-days`. Periods are selected by **interval overlap**
+  with the window (`ended_at > cutoff OR started_at >= cutoff`, using each
+  employee's own cutoff). A period that starts just before the first shown
+  date and runs into it is shown once, whole, with its true start time; it
+  is never split or duplicated.
 - **Summary tabs:** `ZAZA_SHEETS_SUMMARY_MONTHS` (default 12). The current
   month and the N−1 before it; weeks that overlap that range are included;
   0 shows all history.

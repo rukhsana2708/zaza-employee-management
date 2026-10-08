@@ -331,6 +331,24 @@ def _team_period(employees: list[EmployeeRow], periods: dict, now: datetime, bou
     return team
 
 
+def _week_label(start: date) -> str:
+    return f"{start.isoformat()} – {week_bounds(start)[1].isoformat()}"
+
+
+def period_labels(active: Sequence[EmployeeRow], now: datetime, fallback: date) -> tuple[str, str, str]:
+    """Labels for Today / This Week / This Month. Totals combine each
+    employee's OWN local period; when those differ (e.g. Dhaka is already on
+    October 8 while New York is still on October 7) the label says so instead
+    of naming one date."""
+    todays = sorted({local_today(e.timezone, now) for e in active}) or [fallback]
+    weeks = sorted({week_bounds(d)[0] for d in todays})
+    months = sorted({month_bounds(d)[0] for d in todays})
+    today = todays[0].isoformat() if len(todays) == 1 else         f"Per employee local date ({', '.join(d.isoformat() for d in todays)})"
+    week = _week_label(weeks[0]) if len(weeks) == 1 else         f"Per employee local week ({'; '.join(_week_label(w) for w in weeks)})"
+    month = f"{months[0]:%B %Y}" if len(months) == 1 else         f"Per employee local month ({', '.join(f'{m:%B %Y}' for m in months)})"
+    return today, week, month
+
+
 def dashboard_tab(data: ReportData, now: datetime, *, report_tz: str, activity_days: int,
                   summary_months: int) -> tuple[TabValues, list[tuple[int, int, int, Kind]], list[int]]:
     """Values, per-cell number formats ``(row0, col0, col_end, kind)`` and
@@ -344,7 +362,6 @@ def dashboard_tab(data: ReportData, now: datetime, *, report_tz: str, activity_d
     month = _team_period(active, monthly, now, month_bounds)
     teams = (today, week, month)
     report_date = local_today(report_tz, now)
-    ws, we = week_bounds(report_date)
     rows: list[list] = []
     formats: list[tuple[int, int, int, Kind]] = []
     bold: list[int] = []
@@ -372,7 +389,7 @@ def dashboard_tab(data: ReportData, now: datetime, *, report_tz: str, activity_d
         f"the current month and the {summary_months - 1} before it" if summary_months > 1 else "the current month")
     add()
     add("", "Today", "This Week", "This Month", strong=True)
-    add("Period", report_date.isoformat(), f"{ws.isoformat()} – {we.isoformat()}", f"{report_date:%B %Y}")
+    add("Period", *period_labels(active, now, report_date))
     for label, key in (("Scheduled Hours", "scheduled"), ("Tracked Hours", "tracked"), ("Active Hours", "active"),
                        ("Idle Hours", "idle"), ("Unknown Hours", "unknown"), ("Locked Hours", "locked"),
                        ("Overtime", "overtime")):
