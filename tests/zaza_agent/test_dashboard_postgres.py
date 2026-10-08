@@ -297,3 +297,24 @@ def test_real_serve_command_mounts_dashboard_and_sync_api(office, pg_settings, m
     assert main(["serve", "--host", "0.0.0.0", "--port", "8765"]) == 0
     assert seen["login_page"] == 404 and seen["health"] == 200
     assert "Manager dashboard not mounted" in capsys.readouterr().out
+
+
+def test_analytics_on_postgres(office):
+    """Phase 8: charts and insights from the real tables (stored summaries)."""
+    client, dash = client_for(office)
+    ManagerAuth(dash, clock=lambda: NOW).create_user("manager", "Project Manager", PASSWORD)
+    login(client)
+    week = {"period": "this_week"}
+    page = client.get("/manager/analytics", params=week)
+    assert page.status_code == 200 and page.text.count("<svg viewBox") == 6
+    body = client.get("/manager/api/analytics", params=week).json()
+    stored = rows(office, "SELECT sum(active_seconds) AS a FROM daily_summaries "
+                          "WHERE local_date BETWEEN '2026-10-05' AND '2026-10-11'")[0]["a"]
+    assert body["version"] == 1
+    assert body["charts"]["active_by_employee"]["values"] == [[round(stored / 3600, 2)]] == [[7.5]]
+    assert body["charts"]["applications"]["categories"] == ["Code.exe"]
+    kinds = [i["kind"] for i in body["insights"]]
+    assert "LATE" in kinds and "TOP_APPLICATION" in kinds
+    assert client.get("/manager/api/analytics").status_code == 200
+    client.cookies.clear()
+    assert client.get("/manager/api/analytics").status_code == 401

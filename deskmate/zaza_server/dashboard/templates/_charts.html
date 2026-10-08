@@ -1,0 +1,70 @@
+{# Server-rendered SVG charts. Every text value is auto-escaped SVG text content. #}
+{% macro chart(c, compact=False) %}
+<figure class="chart{% if compact %} compact{% endif %}" aria-labelledby="{{ c.id }}-title">
+  <figcaption id="{{ c.id }}-title"><strong>{{ c.title }}</strong>{% if c.unit == "h" %} <span class="muted">(hours)</span>{% endif %}</figcaption>
+  {% if c.empty %}
+  <p class="empty">{{ c.empty_message }}</p>
+  {% else %}
+  {% if c.all_zero %}<p class="muted">All values are zero for this period.</p>{% endif %}
+  <svg viewBox="0 0 {{ c.width }} {{ c.height }}" width="100%" role="img" aria-labelledby="{{ c.id }}-svgtitle {{ c.id }}-desc" focusable="false">
+    <title id="{{ c.id }}-svgtitle">{{ c.title }}</title>
+    <desc id="{{ c.id }}-desc">{{ c.description }} The numbers are listed in the table below the chart.</desc>
+    <defs>
+      {% for key in c.patterns %}
+      <pattern id="{{ c.id }}-p-{{ key }}" class="pat pat-{{ key }}" width="6" height="6" patternUnits="userSpaceOnUse">
+        {% if key in ("idle", "early") %}<path d="M0,6 L6,0" class="pat-line"/>
+        {% elif key in ("unknown", "incomplete") %}<circle cx="3" cy="3" r="1.2" class="pat-dot"/>
+        {% else %}<path d="M0,0 L6,6 M6,0 L0,6" class="pat-line"/>{% endif %}
+      </pattern>
+      {% endfor %}
+    </defs>
+    {% for s in c.shapes %}
+    {% if s.t == "rect" %}
+    <rect x="{{ '%.1f'|format(s.x) }}" y="{{ '%.1f'|format(s.y) }}" width="{{ '%.1f'|format(s.w) }}" height="{{ '%.1f'|format(s.h) }}" class="{{ s.cls }}"><title>{{ s.title }}</title></rect>
+    {% if s.pattern %}<rect x="{{ '%.1f'|format(s.x) }}" y="{{ '%.1f'|format(s.y) }}" width="{{ '%.1f'|format(s.w) }}" height="{{ '%.1f'|format(s.h) }}" fill="url(#{{ c.id }}-p-{{ s.pattern }})" class="c-overlay" aria-hidden="true"/>{% endif %}
+    {% elif s.t == "line" %}
+    <line x1="{{ '%.1f'|format(s.x1) }}" y1="{{ '%.1f'|format(s.y1) }}" x2="{{ '%.1f'|format(s.x2) }}" y2="{{ '%.1f'|format(s.y2) }}" class="{{ s.cls }}"/>
+    {% else %}
+    <text x="{{ '%.1f'|format(s.x) }}" y="{{ '%.1f'|format(s.y) }}" class="{{ s.cls }}" text-anchor="{{ s.anchor }}">{% if s.title is defined and s.title != s.text %}<title>{{ s.title }}</title>{% endif %}{{ s.text }}</text>
+    {% endif %}
+    {% endfor %}
+  </svg>
+  {% if c.legend|length > 1 %}
+  <ul class="legend">
+    {% for key, label in c.legend %}
+    <li><svg class="swatch" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><rect width="14" height="14" class="c-{{ key }}"/>{% if key in c.patterns %}<rect width="14" height="14" fill="url(#{{ c.id }}-p-{{ key }})" class="c-overlay"/>{% endif %}</svg>{{ label }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+  {% if c.note %}<p class="note">{{ c.note }}</p>{% endif %}
+  {% if not c.empty %}
+  <details class="chart-data">
+    <summary>Show the numbers</summary>
+    <div class="table-wrap"><table>
+      <thead><tr>{% for h in c.table_headers %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in c.table_rows %}<tr><th scope="row">{{ row[0] }}</th>{% for v in row[1:] %}<td>{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
+  {% endif %}
+</figure>
+{% endmacro %}
+
+{% macro insights_panel(items, title="Period Insights") %}
+<section class="insights" aria-labelledby="insights-title">
+  <h2 id="insights-title" class="section">{{ title }}</h2>
+  <p class="note">Automatic, rule-based observations from the stored attendance summaries — not artificial
+    intelligence and not a productivity score. Computer activity is a proxy for work, not proof of productivity.</p>
+  {% if items %}
+  <ul class="insight-list">
+    {% for i in items %}
+    <li class="insight i-{{ i.severity.value|lower }}"><strong>{{ i.title }}</strong>
+      <span class="sev">{{ {"INFO": "Info", "NOTICE": "Notice", "DATA_QUALITY": "Data quality"}[i.severity.value] }}</span>
+      <p>{{ i.message }}</p></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No calculated data for this period.</p>
+  {% endif %}
+</section>
+{% endmacro %}

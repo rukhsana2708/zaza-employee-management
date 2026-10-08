@@ -338,6 +338,14 @@ disruptive to what's already running.
   - A strict CSP with `script-src 'self'`, no inline scripts or styles, and
     `frame-ancestors 'none'`.
   - Everything is served locally: no CDN, fonts, analytics or tracking.
+- **Charts and analysis (Phase 8):**
+  - Charts are server-rendered SVG with auto-escaped text: no chart
+    library, no CDN, no new script, CSP unchanged. Malicious employee and
+    application names are tested to render as text.
+  - `/manager/analytics` and `/manager/api/analytics` need the manager
+    session; the JSON holds display values only.
+  - The analysis is deterministic Python rules: no AI, no external calls,
+    no new telemetry, and no productivity score or employee ranking number.
 - **XSS:** window titles, application names, domains and employee names are
   untrusted. Templates auto-escape everything, and the script uses only
   `textContent`. Tests render `<script>` / `<img onerror>` /

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_charts.html" as ch %}
 {% block title %}{{ view.employee.display_name }}{% endblock %}
 {% block content %}
 {% set e = view.employee %}{% set t = view.totals %}{% set tz = e.timezone %}
@@ -32,6 +33,12 @@
   <div class="card"><span class="label">Absent Days</span><span class="value">{{ t.absent_days }}</span></div>
   <div class="card"><span class="label">Data-Incomplete Days</span><span class="value">{{ t.incomplete_days }}</span></div>
 </div>
+
+<h2 class="section">Charts <small class="muted">(supplement the tables below)</small></h2>
+<div class="chart-grid">
+  {% for c in charts %}{{ ch.chart(c) }}{% endfor %}
+</div>
+<p><a href="/manager/analytics?{{ {'employee': e.employee_id, 'period': f.period, 'from': f['from'], 'to': f.to}|urlencode }}">View full analysis for {{ e.display_name }}</a></p>
 
 <h2 class="section">Daily attendance</h2>
 <p class="note">Each row is one local date. An overnight shift belongs to the date it starts on. Times are in {{ tz }}.</p>

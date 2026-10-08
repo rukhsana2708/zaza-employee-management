@@ -1467,26 +1467,132 @@ today). New date rules (override or day off) must be today or later. A date
 rule overrides the weekly rule (§4.11.2). Correcting history stays an
 administrator task: the CLI, followed by `recalculate`.
 
-### 6.7 Interactive charts (Phase 8)
+### 6.7 Charts (Phase 8)
 
-1. Active Hours by Employee
-2. Active vs Idle Hours by Employee
-3. Daily Active Hours Trend
-4. Weekly Work Trend
-5. Application Usage
-6. Attendance / Late Start analysis
+**Phase 8 automatic analysis is deterministic rule-based analysis, not
+artificial intelligence.** It makes no LLM or API calls, uses no
+machine-learning model, and produces no productivity score.
 
-All charts respond to the active employee + date filters, and all are built
-from `daily_summaries`/`weekly_summaries`/`monthly_summaries` and
-`application_usage` — not from raw events.
+- **How charts are drawn:** the server renders them as **SVG**
+  (`dashboard/charts.py` + `templates/_charts.html`). There is no chart
+  library, no JavaScript and no CDN, so the Phase 7 CSP is unchanged
+  (`script-src 'self'`, no inline scripts or styles).
+- **Safe text:** each chart is plain shapes with numeric coordinates; every
+  label (employee and application names) is auto-escaped SVG text content.
+- **Not by colour alone:** colours come from CSS classes; Idle, Unknown,
+  Locked, Early Leave, Absent and Data-Incomplete also carry a pattern, and
+  every bar's value is printed.
+- **Accessible:** every chart has a title, units, `role="img"` with
+  `<title>`/`<desc>`, a legend, hover titles on bars, and a "Show the
+  numbers" table with the same values. Charts supplement the tables and
+  never replace them.
 
-### 6.8 Deterministic analysis (Phase 8, no AI required for V1)
+| Chart | Source | Notes |
+|---|---|---|
+| Active Hours by Employee | `daily_summaries` (Σ `active_seconds` per employee) | Highest first. Duplicate names get their ID. Hidden for a single employee, since one bar says nothing. |
+| Active, Idle, Unknown and Locked Hours | `daily_summaries` | Stacked bar per employee, or the period total for one employee. Unknown and Locked are never folded into Idle. |
+| Daily Active Hours | `daily_summaries` by `local_date` | Team total per local date, or one employee. Dates after the employees' local today are not drawn, and dates without a summary are left empty. Ranges over 62 days are shown per ISO week, with totals unchanged. With mixed time zones it notes that each date is the employee's own reporting date. |
+| Weekly Work Trend | `daily_summaries` bucketed into ISO weeks | Scheduled, Active, Idle and Unknown Hours. Covers at least the last 8 weeks up to the end of the selected period. Weeks are each employee's local Monday–Sunday; team weeks add up those local weeks (never a UTC week). |
+| Application Usage | `application_usage_daily` | Top `ZAZA_DASHBOARD_TOP_APPLICATIONS` (10) by Active Hours, aggregated across employees. Supplementary data, not a productivity score, with no "productive/unproductive" categories. |
+| Attendance | `daily_summaries.attendance_status` | Late, Early Leave, Absent and Data-Incomplete days per employee (or period totals for one). DATA_INCOMPLETE is shown separately and never as absence. |
 
-Highest/lowest active-hours employee, team average active hours, late
-starts, early finishes, unusually high idle time, overtime, day-over-day and
-week-over-week deltas, team active % vs. scheduled hours. AI-generated
-written summaries are an optional later layer (Phase 12) on top of this same
-deterministic data — never a V1 requirement.
+**Where the charts appear:**
+- **`/manager/analytics`** (new navigation item): all six charts, the
+  automatic analysis, and a comparison table. Filters are the Phase 7 query
+  parameters (`period`, `employee`, `from`, `to`), so links are
+  bookmarkable.
+- **Overview:** three compact charts (Active Hours by Employee, Status
+  Hours, Daily Active Hours), up to 5 Period Insights, and "View full
+  analysis/analytics" links that keep the filters.
+- **Employee page:** Daily Active Hours, Status Hours, Application Usage and
+  Attendance charts above the existing tables.
+- **JSON:** `GET /manager/api/analytics` returns `{"version": 1, "period",
+  "previous_period", "summaries_last_calculated", "charts", "comparison",
+  "insights", "analysis"}`. It needs the same manager session (401
+  without). It contains display values only (hours, day counts, labels) —
+  no internal column names, hashes, tokens or database objects.
+
+All chart data for a page comes from **one** `daily_summaries` query
+covering the period, the previous period and the weekly-trend weeks, plus
+one aggregated application-usage query. Historical attendance is never
+rebuilt from `activity_periods`. Current status stays separate (§6.3). The
+pages say when the summaries were last calculated; the charts are not live.
+
+### 6.8 Automatic analysis (Phase 8, rule-based, `dashboard/analysis.py`)
+
+**Periods:** the Phase 7 `Selection`, i.e. each employee's own local range.
+
+**Previous comparable period** (per employee, local dates):
+
+| Selected | Compared with |
+|---|---|
+| Today, Yesterday, Custom | the same number of days immediately before (e.g. Oct 8–14 → Oct 1–7) |
+| This Week, Last Week | the ISO week before |
+| This Month, Last Month | the whole calendar month before (month lengths differ) |
+
+- **What is compared:** Active, Idle, Scheduled and Overtime Active Hours,
+  and Attendance % (in percentage points).
+- **How changes are shown:** as the absolute difference plus the relative
+  change, when the previous value is above 0.
+  - Previous value 0: "Previous period had no recorded Active Hours; current
+    period recorded …", never ∞%.
+  - Both 0: nothing is said.
+  - No previous summaries at all: "no comparison is made".
+- **No causes:** comparisons never suggest a cause. A period still in
+  progress is said to be in progress.
+
+**Comparison eligibility** (for highest/lowest, and for the idle rule), per
+employee:
+- at least one calculated working day;
+- attendance basis > 0;
+- not every working day DATA_INCOMPLETE.
+
+Ineligible employees are left out of the comparison and the insight says how
+many were left out. Highest/lowest needs at least 2 eligible employees.
+
+**Insight rules, in fixed order** (at most `ZAZA_ANALYSIS_MAX_INSIGHTS`,
+default 8; the Overview shows 5):
+1. **Data quality:**
+   - INSUFFICIENT days: "Some insights are limited because monitoring data
+     is incomplete for N employee-day(s)".
+   - Otherwise, START/END_UNCERTAIN or AWAITING_DEVICE_SYNC days.
+   - Missing summaries, up to each employee's local today: "Some employees
+     do not yet have calculated summaries…".
+2. **Absence:** stored ABSENT days only. DATA_INCOMPLETE, UNKNOWN or a
+   missing summary is never absence.
+3. **Active Hours:**
+   - The team total and the average per eligible employee.
+   - "Highest recorded Active Hours: … / Lowest recorded Active Hours among
+     employees with reportable data: …", each followed by "Active Hours
+     measure recorded computer activity and are not a productivity score."
+   - "Active time as % of scheduled time" = Σ active ÷ Σ scheduled, when
+     scheduled > 0. It is explicitly separate from Attendance % (credit ÷
+     basis), and qualified when INSUFFICIENT days exist or UNKNOWN exceeds
+     10% of tracked time.
+4. **Comparison with the previous period:** Active Hours.
+5. **Late starts and early leave:** stored LATE/LATE_AND_EARLY and
+   EARLY_LEAVE/LATE_AND_EARLY statuses. Phase 5 already charges no early
+   leave for uncertain ends.
+6. **High idle share:** idle ÷ tracked ≥ `ZAZA_ANALYSIS_HIGH_IDLE_PERCENT`
+   (40%), for eligible employees with tracked > 0. The insight adds: "This
+   may include legitimate non-computer work or breaks, and idle time alone
+   is not a basis for conclusions about an employee."
+7. **Overtime:** stored overtime Active Hours, plus "…not automatically a
+   payroll entitlement."
+8. **Applications:** "X had the most recorded Active Hours among
+   applications…", plus the application-usage disclaimer.
+
+**How insights are represented:** each is an `Insight(kind, severity, title,
+message, employee_id, metric, current_value, previous_value)`, with severity
+INFO, NOTICE or DATA_QUALITY.
+
+**Wording rules (tested):**
+- Allowed: neutral activity wording only ("recorded Active Hours", "had
+  late-start days").
+- Never used: "productivity/performance/efficiency/employee score", "top/worst
+  performer", "most/least productive", "best/worst employee", or "Actual Work
+  Hours". The only exception is the disclaimer "not a productivity score".
+- No metrics are combined into a ranking number.
 
 ## 7. Naming convention (applies to UI, Sheets, and docs)
 

@@ -1,8 +1,71 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-09 (Phase 7 review fixes)
+**Last updated:** 2026-10-09 (Phase 8)
 
-## Current phase: Phase 7 — Manager web dashboard (implemented, pending your review)
+## Current phase: Phase 8 — Charts & automatic analysis (implemented, pending your review)
+
+Phase 7 was approved with its review fixes. Phase 8 adds six charts and
+automatic, **deterministic rule-based analysis (not artificial
+intelligence)** to the dashboard. **No installer, VPS deployment, pilot or
+AI.** No new telemetry. Everything runs on localhost only.
+
+### Phase 8 summary
+
+- **Code:**
+  - `dashboard/analysis.py`: chart data, previous-period comparison,
+    eligibility, insight rules.
+  - `dashboard/charts.py`: SVG geometry.
+  - `templates/_charts.html`, `templates/analytics.html`, and chart CSS.
+- **Charts:** server-rendered SVG, with no JavaScript library and no CDN,
+  so the CSP is unchanged.
+  - The six charts: Active Hours by Employee; Active/Idle/Unknown/Locked;
+    Daily Active Hours; Weekly Work Trend; Application Usage (top 10);
+    Attendance (late, early, absent, data-incomplete days).
+  - Every chart has a title, units, a description, a legend, patterns as
+    well as colours, and a data table.
+- **Pages:**
+  - New `/manager/analytics` page: all charts, up to 8 insights and a
+    previous-period comparison table.
+  - Overview: 3 compact charts and up to 5 insights.
+  - Employee page: 4 charts above the existing tables.
+  - `GET /manager/api/analytics` (version 1).
+- **Data sources:** stored `daily_summaries` (one query per page),
+  `application_usage_daily` (one aggregated query) and the Phase 7
+  employee-local selection. Nothing is recalculated from activity periods.
+- **Analysis:**
+  - Fixed rule order: data quality, absence, Active Hours (team total,
+    average, highest/lowest among eligible employees, active % of
+    scheduled), comparison, late/early, high idle (≥ 40% of tracked),
+    overtime, top application.
+  - Neutral wording, with disclaimers; no productivity score.
+- **Tests:**
+  - Default run: 677 pass and 129 skip. The skips are the opt-in PostgreSQL
+    tests and the opt-in live-Google test.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 805 pass and 1 skip (the live
+    Google test).
+  - New: 50 tests in `test_analytics.py` and 1 PostgreSQL analytics test.
+
+### Phase 8 known limitations / risks
+
+- **No manual browser review yet.** SVG layout, long labels (cut at 28
+  characters, full name on hover and in the table) and the 420 px chart grid
+  have only been checked through TestClient output.
+- **Comparing a period still in progress** (This Week, This Month) with a
+  full previous period naturally shows a decrease. The insight and the page
+  say "still in progress", but managers may still misread it.
+- **Team weekly buckets add up each employee's local week.** With mixed time
+  zones, the week boundaries differ by employee; this is labelled.
+- **The "active % of scheduled" caution threshold** (UNKNOWN above 10% of
+  tracked time) is a fixed constant, not a setting.
+- **Highest/lowest** names individuals. It is neutral and disclaimed, but it
+  is still a comparison of individuals; managers should read it with the
+  data-quality notes.
+
+### Phase 7 (approved)
+
+Approved with its review fixes (ID-based KPI counts, `is_active` Active
+Employees, localhost-only dashboard, real `serve` wiring tests).
+
 
 Phase 6 was approved with its review fixes. Phase 7 adds a server-rendered
 manager dashboard under `/manager` in the existing FastAPI server. It reads
@@ -68,7 +131,7 @@ tests used a throwaway local instance, which has since been deleted.
   - New: 96 dashboard tests (`test_dashboard.py`, no database) and 7
     PostgreSQL tests (`test_dashboard_postgres.py`).
 
-### Phase 7 review fixes (pending your approval)
+### Phase 7 review fixes (approved)
 
 1. **Employee-level flags are counted by employee ID.** Late, absent and
    data-incomplete employees are deduplicated by ID, not display name.
@@ -607,8 +670,8 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 4 — PostgreSQL central storage (approved; local testing only, no VPS)
 - [x] Phase 5 — Attendance & work-time calculations (approved)
 - [x] Phase 6 — Google Sheets reporting (approved)
-- [x] Phase 7 — Manager web dashboard (implemented, pending review; localhost only)
-- [ ] Phase 8 — Interactive charts & automatic analysis
+- [x] Phase 7 — Manager web dashboard (approved; localhost only)
+- [x] Phase 8 — Charts & automatic rule-based analysis (implemented, pending review)
 - [ ] Phase 9 — Windows employee installer
 - [ ] Phase 10 — Production VPS deployment
 - [ ] Phase 11 — Pilot testing
@@ -633,10 +696,10 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 7** before Phase 8 begins. Charts, automatic
-analysis, AI, the installer and VPS deployment are explicitly **not**
-started. The production PostgreSQL database has **not** been created or
-touched, and the dashboard has not been deployed anywhere.
+**Awaiting your review of Phase 8** before Phase 9 begins. The Windows
+installer, VPS deployment, the pilot and AI analysis are explicitly **not**
+started. The production database has **not** been created or touched, and
+nothing is deployed.
 
 ## Explicitly cancelled from any earlier direction
 

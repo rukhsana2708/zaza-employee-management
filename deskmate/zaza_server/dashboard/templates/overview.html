@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_charts.html" as ch %}
 {% block title %}Overview{% endblock %}
 {% block content %}
 {% set t = view.totals %}
@@ -40,6 +41,15 @@
   (last calculated {{ view.summaries_updated_at|ago(now) }}).
   Attendance % = active time in scheduled shifts ÷ observable scheduled time, across the whole period.
   For a period longer than one day, an employee counts as late / absent / data-incomplete if at least one day was.</p>
+
+{{ ch.insights_panel(insights) }}
+<p><a href="/manager/analytics{{ analytics_query }}">View full analysis</a></p>
+
+<h2 class="section">Charts <small class="muted">(selected period, from the stored summaries)</small></h2>
+<div class="chart-grid">
+  {% for c in charts %}{{ ch.chart(c, compact=True) }}{% endfor %}
+</div>
+<p><a href="/manager/analytics{{ analytics_query }}">View full analytics</a></p>
 
 <h2 class="section">Employees today <small class="muted">(each employee's own local date)</small></h2>
 <div class="table-wrap">

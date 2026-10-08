@@ -8,6 +8,12 @@
                                             server this recently, 30..86400 (default 300)
 ``ZAZA_DASHBOARD_ACTIVITY_ROWS``            max activity periods on an employee page,
                                             10..2000 (default 200)
+
+Phase 8 charts and rule-based analysis (deterministic; no AI):
+
+``ZAZA_DASHBOARD_TOP_APPLICATIONS``         applications in the usage chart, 3..50 (default 10)
+``ZAZA_ANALYSIS_HIGH_IDLE_PERCENT``         idle share of tracked time noted as high, 1..100 (default 40)
+``ZAZA_ANALYSIS_MAX_INSIGHTS``              insights shown on the Analytics page, 1..20 (default 8)
 """
 
 from __future__ import annotations
@@ -27,6 +33,9 @@ class DashboardSettings:
     cookie_secure: bool = False
     online_threshold_seconds: int = 300
     activity_rows: int = 200
+    top_applications: int = 10
+    high_idle_percent: int = 40
+    max_insights: int = 8
 
     def __post_init__(self) -> None:
         if not 1 <= self.session_hours <= 168:
@@ -35,6 +44,12 @@ class DashboardSettings:
             raise ConfigError("ZAZA_DASHBOARD_ONLINE_THRESHOLD_SECONDS must be 30..86400")
         if not 10 <= self.activity_rows <= 2000:
             raise ConfigError("ZAZA_DASHBOARD_ACTIVITY_ROWS must be 10..2000")
+        if not 3 <= self.top_applications <= 50:
+            raise ConfigError("ZAZA_DASHBOARD_TOP_APPLICATIONS must be 3..50")
+        if not 1 <= self.high_idle_percent <= 100:
+            raise ConfigError("ZAZA_ANALYSIS_HIGH_IDLE_PERCENT must be 1..100")
+        if not 1 <= self.max_insights <= 20:
+            raise ConfigError("ZAZA_ANALYSIS_MAX_INSIGHTS must be 1..20")
 
 
 def _int(env: dict, name: str, default: int) -> int:
@@ -65,4 +80,7 @@ def dashboard_settings_from_env(env: dict | None = None) -> DashboardSettings:
         cookie_secure=_bool(env, "ZAZA_DASHBOARD_COOKIE_SECURE", False),
         online_threshold_seconds=_int(env, "ZAZA_DASHBOARD_ONLINE_THRESHOLD_SECONDS", 300),
         activity_rows=_int(env, "ZAZA_DASHBOARD_ACTIVITY_ROWS", 200),
+        top_applications=_int(env, "ZAZA_DASHBOARD_TOP_APPLICATIONS", 10),
+        high_idle_percent=_int(env, "ZAZA_ANALYSIS_HIGH_IDLE_PERCENT", 40),
+        max_insights=_int(env, "ZAZA_ANALYSIS_MAX_INSIGHTS", 8),
     )

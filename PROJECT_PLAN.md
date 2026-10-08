@@ -46,7 +46,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 5 | Attendance & work-time calculations | Deterministic daily/weekly/monthly summaries in PostgreSQL (authoritative for Sheets/dashboard), with DST-correct schedule resolution including overnight shifts, fair data-quality handling, and recalculation commands |
 | 6 | Google Sheets reporting | One-way, read-only export from PostgreSQL into the 5 required tabs (Activity Log from activity periods, Daily/Weekly/Monthly summaries, Dashboard), via a service account; full deterministic refresh with safe failure behaviour |
 | 7 | Manager web dashboard | Server-rendered dashboard on PostgreSQL: Argon2id manager accounts, server-side sessions, CSRF; Overview, Employees, Attendance, Applications, Schedules (audited, from today onwards); employee-local period filters; no charts |
-| 8 | Interactive charts & automatic analysis | Charting + deterministic insights (no AI yet) |
+| 8 | Charts & automatic analysis | Six server-rendered SVG charts (no JS library/CDN) and an Analytics page; deterministic rule-based insights with previous-period comparison and data-quality gating; no AI, no productivity score |
 | 9 | Windows employee installer | Single-file install + autostart for the 5 machines |
 | 10 | Production VPS deployment | Deploy to the existing VPS, isolated from other services |
 | 11 | Pilot testing | Run with real employees, fix gaps |
@@ -92,6 +92,6 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 7 (manager web dashboard — see
-DEVELOPMENT_STATUS.md). Phase 8 (charts & automatic analysis) does not
-begin until Phase 7 is separately approved.
+Awaiting review/approval of Phase 8 (charts & automatic rule-based
+analysis — see DEVELOPMENT_STATUS.md). Phase 9 (Windows employee installer)
+does not begin until Phase 8 is separately approved.

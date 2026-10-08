@@ -26,7 +26,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from ..attendance.labels import FLAG_NOTES, QUALITY_LABELS, STATUS_LABELS, STATUS_NOTES
+from .analysis import Analysis
 from .auth import LOGIN_FAILED, ManagerAuth, SessionContext
+from .charts import render as render_chart
 from .config import DashboardSettings
 from .models import STATUS_LABELS as CURRENT_LABELS
 from .models import CurrentStatus, Selection
@@ -169,6 +171,11 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
             raise ValueError("dates must look like 2026-10-08") from None
         return service.selection(kind, emp, frm, to)
 
+    def _query(request: Request) -> str:
+        """The current filters as a query string (for 'View full analytics')."""
+        keep = {k: v for k, v in filter_values(request).items() if v}
+        return "?" + urlencode(keep) if keep else ""
+
     def filter_values(request: Request) -> dict:
         q = request.query_params
         return {"period": q.get("period") or "today", "employee": q.get("employee") or "",
@@ -249,8 +256,23 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
     @router.get("")
     @guarded
     def overview(request: Request, ctx: SessionContext):  # noqa: ANN202
-        return render("overview.html", ctx, page="overview", f=filter_values(request),
-                      view=service.overview(selection(request)))
+        sel = selection(request)
+        analysis = Analysis(service, sel)
+        charts = [render_chart(c, "ov-") for c in analysis.charts(
+            ["status_hours", "daily_trend"] if sel.employee_id else ["active_by_employee", "status_hours",
+                                                                     "daily_trend"])]
+        return render("overview.html", ctx, page="overview", f=filter_values(request), view=service.overview(sel),
+                      charts=charts, insights=analysis.insights(limit=5), analytics_query=_query(request))
+
+    @router.get("/analytics")
+    @guarded
+    def analytics(request: Request, ctx: SessionContext):  # noqa: ANN202
+        analysis = Analysis(service, selection(request))
+        view = {"period": service.describe(analysis.sel), "insights": analysis.insights(),
+                "charts": [render_chart(c) for c in analysis.charts()], "comparisons": analysis.comparisons(),
+                "previous_label": analysis.previous_label(), "in_progress": analysis.in_progress(),
+                "last_calculated": analysis.last_calculated}
+        return render("analytics.html", ctx, page="analytics", f=filter_values(request), view=view)
 
     @router.get("/employees")
     @guarded
@@ -263,8 +285,12 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
     def employee(request: Request, employee_id: str):  # noqa: ANN202
         @guarded
         def page(request: Request, ctx: SessionContext):  # noqa: ANN202
-            view = service.employee_detail(employee_id, selection(request, employee_id))
-            return render("employee.html", ctx, page="employees", f=filter_values(request), view=view)
+            sel = selection(request, employee_id)
+            view = service.employee_detail(employee_id, sel)
+            charts = [render_chart(c, "emp-") for c in Analysis(service, sel).charts(
+                ["daily_trend", "status_hours", "applications", "attendance"])]
+            return render("employee.html", ctx, page="employees", f=filter_values(request), view=view,
+                          charts=charts)
         return page(request)
 
     @router.get("/attendance")
@@ -412,6 +438,13 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
              "status": r.summary.attendance_status.value, "scheduled_seconds": r.summary.scheduled_seconds,
              "active_seconds": r.summary.active_seconds, "attendance_percentage": r.summary.attendance_percentage,
              "data_quality": r.summary.data_quality.value} for r in view["rows"]]}
+
+    @router.get("/api/analytics")
+    @api
+    def api_analytics(request: Request) -> dict:
+        """Versioned, display-only analytics: chart series in hours/days,
+        comparisons and structured rule-based insights."""
+        return Analysis(service, selection(request)).as_json()
 
     @router.get("/api/applications")
     @api

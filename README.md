@@ -57,9 +57,14 @@ for the current phase and what's implemented so far. As of this writing:
     weekly and monthly summaries in PostgreSQL; ARCHITECTURE.md §4.11).
   - Phase 6: one-way Google Sheets reporting from PostgreSQL
     (`deskmate/zaza_server/sheets/`, ARCHITECTURE.md §5).
-- **Implemented, awaiting review:** Phase 7, the manager web dashboard
-  (`deskmate/zaza_server/dashboard/`, ARCHITECTURE.md §6). It is
-  server-rendered, reads PostgreSQL directly, and has no charts yet.
+  - Phase 7: the manager web dashboard (`deskmate/zaza_server/dashboard/`,
+    ARCHITECTURE.md §6). It is server-rendered, reads PostgreSQL directly,
+    and is localhost-only.
+- **Implemented, awaiting review:** Phase 8, charts and automatic analysis
+  on the dashboard: six server-rendered SVG charts and an Analytics page
+  (ARCHITECTURE.md §6.7–6.8). The analysis is **deterministic rule-based
+  analysis, not artificial intelligence**, and there is no productivity
+  score.
 
 Everything runs locally only. PostgreSQL has been tested locally, and Sheets
 only against an in-memory fake (a live test is available, opt-in). Nothing
@@ -283,7 +288,9 @@ number means is in ARCHITECTURE.md §4.11.
    python -m deskmate.zaza_server serve
    ```
 
-3. Open http://127.0.0.1:8765/manager and sign in. The dashboard is
+3. Open http://127.0.0.1:8765/manager and sign in. The **Analytics** page
+   (`/manager/analytics?period=this_week`) has the charts and the automatic,
+   rule-based period insights. The dashboard is
    localhost-only in Phase 7: with `serve --host 0.0.0.0` (or any non-loopback
    address) it is not mounted, and only the sync API is served.
 

@@ -17,6 +17,7 @@
     <ul>
       {% for key, label, href in [("overview", "Overview", "/manager"), ("employees", "Employees", "/manager/employees"),
                                   ("attendance", "Attendance", "/manager/attendance"),
+                                  ("analytics", "Analytics", "/manager/analytics"),
                                   ("applications", "Applications", "/manager/applications"),
                                   ("schedules", "Schedules", "/manager/schedules")] %}
       <li><a href="{{ href }}"{% if page == key %} aria-current="page"{% endif %}>{{ label }}</a></li>
