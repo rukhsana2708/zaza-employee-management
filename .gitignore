@@ -45,6 +45,13 @@ logs/
 config.toml
 credentials.json
 secrets.json
+# Google service-account keys (ZaZa Sheets reporting) — never commit
+*service-account*.json
+*service_account*.json
+*-sa-key*.json
+google-credentials*.json
+zaza-sheets*.json
+secrets/
 
 # IDE / OS files
 .idea/

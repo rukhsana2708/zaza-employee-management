@@ -129,9 +129,19 @@ work time" — because activity presence is a proxy for work, not proof of it.
   (§6.2). The API connects as a least-privilege role that cannot change
   the schema or delete data. Phase 4 was built and tested locally only;
   nothing has connected to the VPS.
-- **PostgreSQL → Google Sheets:** one-way, summarized, server-initiated sync.
-  Sheets never writes back into PostgreSQL. Sheets access is limited to
-  whoever the workbook is shared with (managers), same as the dashboard.
+- **PostgreSQL → Google Sheets (Phase 6):** one-way, server-initiated, and
+  read-only on the database side.
+  - The export reads one `READ ONLY` transaction and never writes to
+    PostgreSQL. Nothing is read back from the spreadsheet, so manual edits
+    there can never reach the database.
+  - It exports activity periods and the Phase 5 summaries only: no raw
+    events, record payloads, content or summary hashes, tokens, device
+    credentials, or internal IDs.
+  - Privacy-excluded periods stay redacted exactly as stored.
+  - Values are written as RAW, so text from window titles can't become a
+    spreadsheet formula.
+  - Access to the spreadsheet is limited to the people it is shared with
+    (managers) plus the service account (§6.5).
 - **PostgreSQL → Dashboard:** manager-authenticated reads only; the dashboard
   has no write path into raw activity data (schedule edits and similar are
   the only writes, and those go through `audit_logs`).
@@ -239,6 +249,50 @@ disruptive to what's already running.
   connectivity after successful authentication, at 30-second resolution. It
   is never used as, or mixed with, employee activity.
 
+### 6.5 Google Sheets service account (Phase 6)
+
+- **How access works:** the server authenticates as a Google **service
+  account** using its JSON key file.
+  - The scope is `https://www.googleapis.com/auth/spreadsheets` only, with
+    no Drive access.
+  - The service account can open only spreadsheets that the manager has
+    explicitly shared with its email (as Editor).
+  - ZaZa never creates, lists or shares spreadsheets.
+- **The key file must:**
+  - live **outside the repository**, e.g.
+    `C:\ProgramData\ZaZa\google-service-account.json`, readable only by
+    the account that runs the server;
+  - be named only by `ZAZA_GOOGLE_SERVICE_ACCOUNT_FILE`.
+  - `.gitignore` excludes `*service-account*.json`,
+    `*service_account*.json`, `google-credentials*.json`,
+    `zaza-sheets*.json`, `*-sa-key*.json` and `secrets/`.
+- **The key is never exposed:**
+  - It is read only to build credentials in memory.
+  - It is never logged, copied into PostgreSQL, written to another file,
+    or included in an exception message. The parsed key is excluded from
+    `repr()`.
+  - Key-file errors name the file and the problem, never its contents.
+  - Google errors are reduced to a short message. A scrubber removes PEM
+    keys, the key ID, OAuth access tokens and `Bearer` values, and masks
+    the spreadsheet ID (`1AbC…xyz9`).
+  - The original exception is not chained, so tracebacks can't carry it.
+  - Tests check all of this with captured logs and CLI output.
+- **Spreadsheet ID:** treated as semi-sensitive. Commands print it masked.
+- **Rotation:** create a new key in Google Cloud, replace the file, delete
+  the old key in Google Cloud. If the file leaks, delete that key in Google
+  Cloud immediately; the spreadsheet can also be un-shared from the service
+  account.
+- **Database role:** `sheets-sync` reads only. In production it should
+  connect as a separate SELECT-only role. Rehearse this before Phase 10:
+
+  ```sql
+  CREATE ROLE zaza_report LOGIN;  -- password set out of band
+  GRANT CONNECT ON DATABASE zaza TO zaza_report;
+  GRANT USAGE ON SCHEMA public TO zaza_report;
+  GRANT SELECT ON employees, activity_periods, daily_summaries, weekly_summaries,
+        monthly_summaries, alembic_version TO zaza_report;
+  ```
+
 ### 6.3 Manager and employee access (Phases 5–7)
 
 - Employees do not get dashboard login — they are the subjects of reports,
@@ -286,6 +340,12 @@ On the employee machine (Phase 2, ARCHITECTURE.md §2.8): raw events are kept
 **30-day** local safety window. Records that are unsynced or whose sync
 failed are never deleted because of age. Both windows are configurable.
 
+Google Sheets: the Activity Log shows the last `ZAZA_SHEETS_ACTIVITY_DAYS`
+(30) local dates and the summary tabs the last `ZAZA_SHEETS_SUMMARY_MONTHS`
+(12) months. Older rows disappear from the Sheet at the next refresh. This
+is display only and deletes nothing from PostgreSQL. Google's own version
+history of the spreadsheet is outside ZaZa's control.
+
 Central (PostgreSQL): nothing is deleted automatically yet, and the API role
 has no DELETE privilege. Phase 5 summaries are derived data and can always
 be recalculated from the synced records. Central retention windows were not
@@ -304,4 +364,6 @@ part of the Phase 5 scope. They are an open decision for before production
 - Production database and roles creation on the VPS, TLS settings for the
   database connection, and backup schedule — Phase 10 (needs separate
   approval; see ARCHITECTURE.md §4.10).
-- Google Sheets service-account credential handling — Phase 6.
+- Google Sheets service-account credential handling — designed and
+  implemented in Phase 6 (§6.5). Production key storage on the VPS and the
+  `zaza_report` role — Phase 10.

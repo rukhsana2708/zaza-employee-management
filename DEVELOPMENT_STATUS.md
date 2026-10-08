@@ -2,7 +2,78 @@
 
 **Last updated:** 2026-10-08
 
-## Current phase: Phase 5 — attendance & work-time calculations (implemented, pending your review)
+## Current phase: Phase 6 — Google Sheets reporting (implemented, pending your review)
+
+Phase 5 was approved with its review fixes. Phase 6 adds a one-way,
+read-only export from PostgreSQL to an existing Google spreadsheet. **No
+dashboard, charts, installer, VPS deployment or AI.** Nothing connected to
+a real Google account or to the VPS. PostgreSQL tests used a throwaway local
+instance, which has since been deleted.
+
+### Phase 6 summary
+
+- **Code:** `deskmate/zaza_server/sheets/`:
+  - `config.py`, `models.py`, `queries.py`, `formatter.py`
+  - `client.py`: the `SheetsClient` interface; `GoogleSheetsClient` using
+    the official Google libraries (optional extra `zaza-sheets`);
+    `FakeSheetsClient` for tests.
+  - `exporter.py`
+- **CLI:** `sheets-init`, `sheets-sync` and `sheets-status`.
+- **Tabs:** Activity Log, Daily Summary, Weekly Summary, Monthly Summary,
+  Dashboard (no charts).
+  - The Activity Log has one row per stored activity period. It has no raw
+    events and invents no LOGIN/LOGOUT events.
+  - Each duration goes only in its status's column.
+  - Privacy-excluded periods stay redacted exactly as stored.
+- **Authority:** every figure is a stored Phase 5 value. Dashboard totals
+  are sums of stored seconds; team Attendance % is Σ credit ÷ Σ basis.
+- **Time zones:** employee rows use the employee's time zone. Team-level
+  times use `ZAZA_SHEETS_TIMEZONE`, or the employees' common zone, or UTC,
+  and are always labelled.
+- **Safety:**
+  - PostgreSQL is read in one read-only snapshot before Google is touched.
+  - Tabs are overwritten first, and stale rows are cleared only afterwards.
+  - The Dashboard's "Last successful refresh" is written last.
+  - An advisory lock prevents concurrent refreshes.
+  - Values are written as RAW, so no formula injection.
+- **Secrets:** the key file is validated without echoing it. Errors are
+  scrubbed (PEM keys, key IDs, OAuth tokens), and the spreadsheet ID is
+  masked.
+- **Tests:**
+  - Default run: 524 pass and 118 skip. The skips are 117 opt-in PostgreSQL
+    tests and 1 opt-in live-Google test.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 641 pass and 1 skip (the live test).
+  - New: 71 Sheets tests (`test_sheets.py`), 5 PostgreSQL tests
+    (`test_sheets_postgres.py`), and 1 opt-in live test
+    (`test_sheets_google_live.py`).
+  - The Google adapter is tested offline with the library's
+    `HttpMockSequence`.
+
+### Phase 6 known limitations / risks
+
+- **No scheduler yet.** Phase 10 runs `recalculate --recent-days 7` and then
+  `sheets-sync`. The Sheet is only as fresh as the last run of both.
+- **Not atomic across tabs.** A refresh that fails part-way can leave a tab
+  with a mix of new and old rows. The Dashboard then still shows the old
+  "Last successful refresh" and "IN PROGRESS", and the next successful run
+  repairs it.
+- **Activity Log size.** With many short periods, 30 days for 5 employees
+  can reach tens of thousands of rows (Google's limit is 10 million cells).
+  Lower `ZAZA_SHEETS_ACTIVITY_DAYS` if the Sheet becomes slow. The grid
+  grows but is never shrunk (cleared rows stay as empty grid).
+- **Managed tabs are fully rewritten.** Manual edits or extra columns in
+  the five tabs are lost at the next refresh. Other tabs are untouched.
+- **Not yet tested against real Google.** Only the fake and the official
+  library's offline mocks have been used. The opt-in live test needs a
+  disposable spreadsheet.
+- **Spreadsheet version history** (Google's) keeps older contents. That is
+  outside ZaZa's control.
+
+### Phase 5 (approved)
+
+Approved with its review fixes (schedule timezone = employee timezone,
+per-employee `--recent-days`, early-leave uncertainty, full policy
+configuration).
 
 Phase 4 was approved after the overnight-shift schedule fix. Phase 5 adds
 deterministic attendance calculations. The results are stored in PostgreSQL
@@ -47,7 +118,7 @@ deleted.
     (`test_attendance_postgres.py`). The PostgreSQL tests include exact
     equality between the PostgreSQL and in-memory results.
 
-### Phase 5 review fixes (pending your approval)
+### Phase 5 review fixes (approved)
 
 1. **Schedule timezone = employee timezone.** `add_schedule` /
    `add-schedule` default to the employee's timezone and reject any other;
@@ -405,8 +476,8 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 2 — Local SQLite activity storage & aggregation (approved)
 - [x] Phase 3 — Central synchronization API (approved)
 - [x] Phase 4 — PostgreSQL central storage (approved; local testing only, no VPS)
-- [x] Phase 5 — Attendance & work-time calculations (implemented, pending review)
-- [ ] Phase 6 — Google Sheets live synchronization
+- [x] Phase 5 — Attendance & work-time calculations (approved)
+- [x] Phase 6 — Google Sheets reporting (implemented, pending review)
 - [ ] Phase 7 — Manager dashboard
 - [ ] Phase 8 — Interactive charts & automatic analysis
 - [ ] Phase 9 — Windows employee installer
@@ -433,10 +504,11 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 5** before Phase 6 begins. Google Sheets,
-the dashboard, charts, AI, the installer and VPS deployment are explicitly
+**Awaiting your review of Phase 6** before Phase 7 begins. The manager
+dashboard, charts, AI, the installer and VPS deployment are explicitly
 **not** started. The production PostgreSQL database has **not** been
-created or touched.
+created or touched, and no real Google account or spreadsheet has been
+used.
 
 ## Explicitly cancelled from any earlier direction
 

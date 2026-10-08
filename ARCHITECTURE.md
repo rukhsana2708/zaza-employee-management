@@ -24,7 +24,7 @@
                                   ┌─────────────────────────┐                             ┌─────────────────────────┐
                                   │ Google Sheets sync job   │                             │ Manager Web Dashboard   │
                                   │ (summaries → 5 sheets)   │                             │ KPIs, filters, charts   │
-                                  │ live reporting layer     │                             │ reads from PostgreSQL   │
+                                  │ read-only, one-way view  │                             │ reads from PostgreSQL   │
                                   └─────────────────────────┘                             └─────────────────────────┘
 ```
 
@@ -1022,32 +1022,209 @@ stop the command with an error naming the variable. The policy is global,
 and every summary row records the policy it was calculated with; after
 changing a setting, recalculate the affected dates.
 
-## 5. Component 4 — Google Sheets live reporting layer
+## 5. Component 4 — Google Sheets reporting layer (Phase 6)
 
-- **Not** the database. A one-way, server-driven export of summarized data
-  from PostgreSQL into a shared Google Sheets workbook, modeled on the
-  existing "Working Time Tracker" workbook but extended to all 5 employees.
-- Writes are **periodic/batched summaries**, never a row-per-tick firehose.
-  Example: instead of three rows for 10:00:10 / 10:00:20 / 10:00:30 "VS Code,"
-  write one row for 10:00–10:05, "Visual Studio Code, Active 4m48s / Idle 12s."
+**PostgreSQL is authoritative; the spreadsheet is a read-only view of it.**
+The export is one-way (PostgreSQL → Sheets) and server-initiated. Nothing
+is ever read back from the spreadsheet: manual edits are overwritten at the
+next refresh and never reach the database. Sheets never recalculates
+attendance: every figure is a stored Phase 5 summary value (§4.11).
 
-### 5.1 Required sheets
+**Code:** `deskmate/zaza_server/sheets/`:
+- `config.py`: environment settings, key-file validation, secret scrubbing.
+- `models.py`: the five managed tabs and their columns; the display window.
+- `queries.py`: one read-only PostgreSQL snapshot.
+- `formatter.py`: rows → Sheet values and formatting (pure, deterministic).
+- `client.py`: the `SheetsClient` interface; `GoogleSheetsClient` (the
+  official `google-api-python-client` + `google-auth`, optional extra
+  `zaza-sheets`); `FakeSheetsClient` (in memory, used by the tests).
+- `exporter.py`: `sheets-init`, `sheets-sync`, `sheets-status`.
 
-1. **Activity Log** — columns: Employee, Employee ID, Timestamp, Date, Time,
-   Event, Application, Window or Activity, Status, Active Duration, Idle
-   Duration, Notes. Events: `LOGIN`, `LOGOUT`, `ACTIVITY`, `APP_CHANGE`,
-   `IDLE`, `CONTINUE`, `LOCK`, `UNLOCK`, `OFFLINE`, `ONLINE`.
-2. **Daily Summary** — Employee, Date, Scheduled Hours, First Login, Last
-   Logout, Tracked Hours, Active Hours, Idle Hours, Break Hours, Late Minutes,
-   Early Leave Minutes, Overtime, Attendance Status.
-3. **Weekly Summary** — Employee, Week Start, Week End, Working Days,
-   Scheduled Hours, Tracked Hours, Active Hours, Idle Hours, Overtime, Average
-   Active Hours Per Day, Attendance Percentage, Status.
-4. **Monthly Summary** — Employee, Month, Days Scheduled, Days Worked,
-   Scheduled Hours, Tracked Hours, Active Hours, Idle Hours, Overtime, Average
-   Active Hours Per Day, Attendance Percentage.
-5. **Dashboard** — summary tab mirroring the web dashboard's top-level KPIs,
-   for quick viewing directly in Sheets.
+The sync API server never imports this package (a test enforces it), so
+Google being down cannot affect activity sync or attendance calculations.
+
+### 5.1 Authentication
+
+- **A Google service account** (a robot Google identity) authenticates with
+  its JSON key file, named by `ZAZA_GOOGLE_SERVICE_ACCOUNT_FILE`. The scope is
+  `https://www.googleapis.com/auth/spreadsheets` only; no Drive scope.
+- **The spreadsheet is not created automatically.** The manager creates it,
+  then shares it with the service account's email (shown by `sheets-status`,
+  e.g. `zaza-sheets@<project>.iam.gserviceaccount.com`) as **Editor**. The
+  service account can then reach only spreadsheets shared with it.
+  `ZAZA_GOOGLE_SHEET_ID` is the part of the spreadsheet URL between `/d/` and
+  `/edit`.
+- Key handling is in SECURITY.md §6.5.
+
+### 5.2 The five managed tabs
+
+`sheets-init` and `sheets-sync` create any missing tab and reuse existing
+ones. Other tabs in the spreadsheet are never touched. Within the five
+managed tabs, the whole managed area is rewritten, so managers should keep
+their own notes on their own tabs. Every data tab has a bold, shaded,
+frozen header row, set column widths and explicit number formats.
+
+**Activity Log**: one row per synced `activity_periods` row. The central
+database has no raw activity events, so none are exported and no
+LOGIN/LOGOUT events are invented. Newest first; ties by employee, then by
+period.
+
+| Column | Value |
+|---|---|
+| Employee, Employee ID | display name and ID |
+| Timestamp, Date, Time | period start, in the employee's time zone |
+| Period End | period end, in the employee's time zone |
+| Time Zone | the employee's reporting time zone |
+| Event / Period Type | Active / Idle / Unknown / Locked period |
+| Application, Window / Activity, Domain | exactly as stored. Privacy-excluded periods stay redacted (`Excluded Application`, `Excluded / Private`, `Excluded / Private Site`). |
+| Status | Active / Idle / Unknown / Locked |
+| Active / Idle / Unknown / Locked Duration | the period's duration, in **its status's column only**; the other three are empty. Shown as `h:mm:ss`. |
+| Notes | still open at the last sync; why UNKNOWN (monitoring unavailable, telemetry gap); agent stopped unexpectedly; privacy-excluded |
+
+**Daily Summary**: one row per `daily_summaries` row. Newest date first,
+then employee name.
+- **Columns:** Employee, Employee ID, Date, Scheduled Start, Scheduled End,
+  Scheduled Hours, Tracked Hours, Active Hours, Idle Hours, Unknown Hours,
+  Locked Hours, Detected Break / Idle, First Activity, Last Activity, Late
+  Minutes, Early Leave Minutes, Overtime, Attendance Status, Attendance %,
+  Data Quality, Time Zone, Notes / Quality Flags.
+- **Times** are in the employee's time zone. An overnight shift shows its
+  real next-day end, e.g. `2026-10-05 20:00` → `2026-10-06 04:00`.
+- **Statuses** are shown as plain words. `DATA_INCOMPLETE` appears as "Data
+  incomplete", with the note "Not enough reliable data to judge attendance —
+  not counted as absent".
+- **Quality flags** are explained in words.
+- **Wording:** the labels are "Active Hours" (never "Actual Work Hours") and
+  "Detected Break / Idle" (never "Break Taken").
+
+**Weekly Summary** (`weekly_summaries`) and **Monthly Summary**
+(`monthly_summaries`): newest period first, then employee name.
+- **Columns:** Employee, Employee ID, Week Start/End or Month, Working Days
+  (Days Scheduled), Days Worked, Scheduled / Tracked / Active / Idle /
+  Unknown / Locked Hours, Overtime, Average Active Hours / Worked Day,
+  Attendance %, Absent / Late / Early Leave / Incomplete Days, Data Quality,
+  Notes (provisional, pending days, worked days off).
+
+**Dashboard**: no charts (charts are Phase 8). It shows:
+- **Refresh status:** Last successful refresh, Last refresh status.
+- **Context:** Report time zone, Reporting date, Active employees, when the
+  summaries were last calculated, and the display windows.
+- **Today / This Week / This Month:**
+  - Scheduled, Tracked, Active, Idle, Unknown and Locked Hours, and Overtime;
+  - Attendance %;
+  - counts of late, absent and data-incomplete employees, and of employees
+    without a calculated summary;
+  - the names behind each count.
+- **A "Today by employee" table:** status, Active Hours, Attendance % and
+  Data Quality.
+
+Dashboard values are aggregated in Python from the stored summaries of
+**active** employees. Hours are plain sums of stored seconds. Team
+Attendance % is Σ credit ÷ Σ basis, the §4.11.7 definition. Lateness,
+absence and the other attendance figures are never recalculated.
+- **Today:** each employee's daily row for **their own** local today.
+- **This Week / This Month:** their weekly / monthly row for the week /
+  month containing their local today.
+- **For a week or month:** Late, Absent and Data-incomplete count employees
+  with at least one such day.
+
+### 5.3 Display formats
+
+- **Write mode:** values are written with `valueInputOption=RAW`, so text is
+  never evaluated as a formula. A window title like `=IMPORTXML(...)` stays
+  text.
+- **Dates and times** are written as spreadsheet serial numbers that are
+  **already converted** to the right time zone, with explicit formats:
+  `yyyy-mm-dd`, `yyyy-mm-dd hh:mm`, `hh:mm:ss`, `yyyy-mm`. The spreadsheet's
+  own locale and time-zone settings therefore change nothing.
+- **Durations** are fractions of a day shown as `[h]:mm`. Activity periods
+  use `[h]:mm:ss`. They stay numeric, so they can be summed.
+- **Late / Early Leave Minutes:** decimal minutes, e.g. `30.0`.
+- **Attendance %:** a fraction shown as `0.00%`. It is empty when there is
+  no basis (day off, data incomplete, pending).
+
+### 5.4 Time zones
+
+- **Database timestamps** are UTC.
+- **Employee rows:** every timestamp is converted to that employee's
+  reporting time zone, `employees.timezone`, which is also the schedule's
+  zone (§4.11.2). The zone is shown in the row.
+- **Team-level Dashboard times** (refresh time, reporting date) use
+  `ZAZA_SHEETS_TIMEZONE` if set. Otherwise they use the active employees'
+  common zone, or UTC if those differ. The zone is printed next to every
+  such time.
+
+### 5.5 Refresh: full, deterministic, safe
+
+The company is small (~5 employees), so every refresh rewrites the managed
+tabs completely. There is no incremental sync to get wrong.
+
+1. **Read PostgreSQL first.** One `REPEATABLE READ, READ ONLY` snapshot,
+   and every value is prepared in memory. A database problem stops the
+   refresh here, before Google is touched.
+2. **Prepare the spreadsheet.** Create missing tabs, grow grids if needed,
+   and apply formatting. Nothing is cleared.
+3. **Mark the refresh as running.** Dashboard "Last refresh status" becomes
+   "IN PROGRESS since …". "Last successful refresh" is not changed.
+4. **Rewrite each data tab.** The new rows are written over the managed
+   range from row 1, in chunks of 5,000 rows. **Only then** are stale rows
+   below and stale columns to the right cleared. A tab is never cleared
+   before its replacement is written, so it is never left empty.
+5. **Write the Dashboard last.** It includes "Last successful refresh" and
+   status "OK", so that cell advances only when every tab was written.
+
+Guarantees:
+- **One row each:** one database row gives exactly one Sheet row.
+- **Repeatable:** the sort order is deterministic, so repeating a refresh
+  gives identical tabs.
+- **No leftovers:** deleted or out-of-window rows disappear at the next
+  refresh.
+- **One refresh at a time:** a PostgreSQL advisory lock prevents two
+  refreshes from interleaving. Taking the lock changes no data.
+
+**Failure:** if Google is unreachable, slow, out of quota or refuses access:
+- the command stops with a short, scrubbed error and exit code 3;
+- PostgreSQL is untouched (the export only reads), and so are activity sync
+  and attendance calculations;
+- a tab may then hold a mix of new and old rows, but the Dashboard still
+  shows the old "Last successful refresh" and "IN PROGRESS";
+- the next run redoes the whole refresh from the database, so retrying is
+  always safe.
+
+The Google client retries rate-limit and server errors (429/5xx) three
+times with exponential backoff. Each request times out after
+`ZAZA_GOOGLE_API_TIMEOUT_SECONDS` (30 s by default).
+
+### 5.6 Display windows (display only)
+
+These settings only limit what the Sheet shows. Nothing is deleted from
+PostgreSQL.
+- **Activity Log:** `ZAZA_SHEETS_ACTIVITY_DAYS` (default 30). Each
+  employee's last N local dates, today included, the same rule as
+  `recalculate --recent-days`.
+- **Summary tabs:** `ZAZA_SHEETS_SUMMARY_MONTHS` (default 12). The current
+  month and the N−1 before it; weeks that overlap that range are included;
+  0 shows all history.
+
+### 5.7 Commands
+
+All take their settings from the environment (`.env.example`):
+- **`sheets-init`:** checks access, creates missing tabs, and installs
+  headers and formatting. It needs no database. It never overwrites an
+  existing "Last successful refresh".
+- **`sheets-sync`:** a full refresh from PostgreSQL. Needs
+  `ZAZA_SERVER_BACKEND=postgres`.
+- **`sheets-status`:** checks the configuration and access, and prints the
+  masked spreadsheet ID, the service-account email, which tabs are present
+  or missing, and the last refresh and its status.
+
+**Exit codes:** 0 OK, 2 configuration, 3 Google unavailable or a refresh
+already running.
+
+**Scheduling:** there is no scheduler yet. Phase 10 runs `recalculate
+--recent-days 7` and then `sheets-sync` periodically. `sheets-sync` exports
+whatever summaries are stored, and the Dashboard shows when they were last
+calculated.
 
 ## 6. Component 5 — Manager Web Dashboard
 

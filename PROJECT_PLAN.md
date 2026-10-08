@@ -10,7 +10,7 @@ An **activity-based remote employee work monitoring and reporting system** for a
 5-person company (4 employees + 1 Project Manager). It tracks *activity metadata*
 (application, window title, keyboard/mouse presence, idle/lock state, session
 times) on company Windows machines, aggregates it centrally, and reports it to
-managers through Google Sheets (live) and a web dashboard (interactive).
+managers through Google Sheets (read-only, refreshed) and a web dashboard (interactive).
 
 It is **transparent workplace monitoring**, not stealth surveillance, and it does
 **not** capture content — no screenshots, no typed text, no clipboard, no audio,
@@ -44,7 +44,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 3 | Central synchronization API | Versioned batch API + per-device token auth + agent sync worker with offline retry/backoff, idempotent versioned upserts, per-record acknowledgement; development storage behind a repository interface |
 | 4 | PostgreSQL central storage | Typed, constrained PostgreSQL schema (Alembic migrations) behind the Phase 3 repository interface; concurrency-safe idempotent upserts; device registry and append-only audit log; small connection pool. Built and tested locally; VPS database created only in Phase 10 |
 | 5 | Attendance & work-time calculations | Deterministic daily/weekly/monthly summaries in PostgreSQL (authoritative for Sheets/dashboard), with DST-correct schedule resolution including overnight shifts, fair data-quality handling, and recalculation commands |
-| 6 | Google Sheets live synchronization | Push summarized data into the 5 required sheets |
+| 6 | Google Sheets reporting | One-way, read-only export from PostgreSQL into the 5 required tabs (Activity Log from activity periods, Daily/Weekly/Monthly summaries, Dashboard), via a service account; full deterministic refresh with safe failure behaviour |
 | 7 | Manager web dashboard | KPIs, filters, employee detail views |
 | 8 | Interactive charts & automatic analysis | Charting + deterministic insights (no AI yet) |
 | 9 | Windows employee installer | Single-file install + autostart for the 5 machines |
@@ -92,6 +92,6 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 5 (attendance & work-time calculations —
-see DEVELOPMENT_STATUS.md). Phase 6 (Google Sheets) does not begin until
-Phase 5 is separately approved.
+Awaiting review/approval of Phase 6 (Google Sheets reporting — see
+DEVELOPMENT_STATUS.md). Phase 7 (manager dashboard) does not begin until
+Phase 6 is separately approved.

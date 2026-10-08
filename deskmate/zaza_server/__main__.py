@@ -23,6 +23,12 @@ Attendance (PostgreSQL only, Phase 5):
 - ``recalculate``       a date range, or ``--recent-days N`` (the last N local
   dates per employee, today included; whole weeks/months)
 
+Google Sheets reporting (Phase 6; one-way, read-only from PostgreSQL):
+
+- ``sheets-init``       check access, create missing tabs, headers, formatting
+- ``sheets-sync``       refresh the five tabs from PostgreSQL (needs postgres)
+- ``sheets-status``     check configuration/access, show the last refresh
+
 Backend: ``--backend sqlite|postgres`` or ``ZAZA_SERVER_BACKEND`` (default
 ``sqlite``). The SQLite development database defaults to
 ``~/.zaza_server_dev/central_dev.db`` (override with ``--db`` or
@@ -205,6 +211,49 @@ def _attendance(args: argparse.Namespace) -> int:
         repo.close()
 
 
+_SHEETS_COMMANDS = ("sheets-init", "sheets-sync", "sheets-status")
+
+
+def _sheets(args: argparse.Namespace, backend: str) -> int:
+    from .sheets.client import GoogleSheetsClient  # noqa: PLC0415
+    from .sheets.config import sheets_settings_from_env  # noqa: PLC0415
+    from .sheets.exporter import SheetsExporter  # noqa: PLC0415
+
+    settings = sheets_settings_from_env()
+    if args.command == "sheets-sync" and backend != "postgres":
+        raise ConfigError("sheets-sync reads PostgreSQL: set ZAZA_SERVER_BACKEND=postgres")
+    client = GoogleSheetsClient.from_settings(settings)
+    if args.command == "sheets-init":
+        result = SheetsExporter(client, settings).init()
+        print(f"Spreadsheet {settings.masked_id} ({result.title}): "
+              f"created {', '.join(result.created) or 'no tabs'}; reused {', '.join(result.existing) or 'none'}.")
+        print("Headers and formatting installed. Run sheets-sync to fill the tabs.")
+        return 0
+    if args.command == "sheets-status":
+        st = SheetsExporter(client, settings).status()
+        print(f"Spreadsheet:        {settings.masked_id} ({st.title})")
+        print(f"Service account:    {client.service_account_email} (share the spreadsheet with it as Editor)")
+        print(f"Tabs present:       {', '.join(st.present) or 'none'}")
+        if st.missing:
+            print(f"Tabs missing:       {', '.join(st.missing)} (run sheets-init)")
+        print(f"Last successful refresh: {st.last_successful_refresh or 'never'}")
+        print(f"Last refresh status:     {st.last_status or 'unknown'}")
+        return 0
+    from .postgres import PostgresRepository  # noqa: PLC0415
+    from .sheets.queries import PostgresReportSource  # noqa: PLC0415
+
+    repo = PostgresRepository(database_settings_from_env(), actor_type="CLI", actor_id="sheets-sync")
+    try:
+        result = SheetsExporter(client, settings, source=PostgresReportSource(repo)).sync()
+    finally:
+        repo.close()
+    print(f"Google Sheets refreshed at {result.refreshed_at:%Y-%m-%d %H:%M:%S} UTC "
+          f"(Dashboard time zone {result.report_timezone}):")
+    for tab, n in result.rows.items():
+        print(f"  {tab:<16} {n} row(s)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m deskmate.zaza_server")
     parser.add_argument("--db", type=Path, default=None, help="SQLite development database path")
@@ -276,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
     recalc.add_argument("--recent-days", type=int,
                         help="instead of --from/--to: the last N local dates, today included, per employee")
 
+    sub.add_parser("sheets-init", help="(Google Sheets) check access, create tabs, headers and formatting")
+    sub.add_parser("sheets-sync", help="(Google Sheets) refresh the report tabs from PostgreSQL")
+    sub.add_parser("sheets-status", help="(Google Sheets) check configuration/access and the last refresh")
+
     args = parser.parse_args(argv)
     try:
         backend = args.backend or backend_from_env()
@@ -285,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             if backend != "postgres":
                 raise ConfigError("attendance summaries need the PostgreSQL backend (ZAZA_SERVER_BACKEND=postgres)")
             return _attendance(args)
+        if args.command in _SHEETS_COMMANDS:
+            return _sheets(args, backend)
         return _run(args, backend)
     except (ConfigError, RepositoryUnavailable) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -292,6 +347,15 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:
+        from .sheets.client import SheetsSyncBusy, SheetsUnavailable  # noqa: PLC0415
+
+        if not isinstance(exc, (SheetsUnavailable, SheetsSyncBusy)):
+            raise
+        # Google (or a concurrent refresh) — PostgreSQL is untouched; safe to retry.
+        print(f"Error: Google Sheets refresh failed: {exc}. Nothing in the database was changed; "
+              "run the command again to retry.", file=sys.stderr)
+        return 3
 
 
 def _run(args: argparse.Namespace, backend: str) -> int:

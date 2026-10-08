@@ -5,7 +5,7 @@ monitoring and reporting system**, currently under active development. It
 tracks activity *metadata* (application in use, window title, keyboard/mouse
 presence, idle state, lock/unlock) on company Windows machines, aggregates it
 centrally, and reports it to managers through PostgreSQL-backed summaries, a
-live Google Sheets workbook, and a web dashboard.
+regularly refreshed, read-only Google Sheets workbook, and a web dashboard.
 
 This is **transparent workplace monitoring** — employees know what is
 tracked, and the system is built around a strict rule: **it tracks activity,
@@ -30,9 +30,11 @@ for the full data policy.
   computer lock/unlock, and work session timing.
 - ✅ **PostgreSQL is the central source of truth.** All employee, device,
   schedule, session, and summary data lives there.
-- ✅ **Google Sheets is a live reporting layer**, not a database — summarized
-  activity and attendance data is synced to it automatically for quick
-  manager visibility, modeled on the existing "Working Time Tracker" workbook.
+- ✅ **Google Sheets is a read-only reporting layer**, not a database.
+  Activity periods and the attendance summaries are exported one-way from
+  PostgreSQL into five tabs for quick manager visibility, modeled on the
+  existing "Working Time Tracker" workbook. Edits in the Sheet are never
+  saved back.
 - ✅ A **manager web dashboard** (in development) will provide KPIs, daily
   timelines, employee/date filters, interactive charts, and deterministic
   attendance/activity analysis — labeled **Active Hours**, never "actual work
@@ -51,13 +53,14 @@ for the current phase and what's implemented so far. As of this writing:
     storage, in `deskmate/zaza/`.
   - Phase 3: a versioned sync API and the agent's sync client.
   - Phase 4: PostgreSQL central storage.
-- **Implemented, awaiting review:** Phase 5, deterministic attendance and
-  work-time calculations in `deskmate/zaza_server/attendance/`. It produces
-  daily, weekly and monthly summaries in PostgreSQL. Every formula is
-  documented in ARCHITECTURE.md §4.11.
+  - Phase 5: deterministic attendance and work-time calculations (daily,
+    weekly and monthly summaries in PostgreSQL; ARCHITECTURE.md §4.11).
+- **Implemented, awaiting review:** Phase 6, one-way Google Sheets reporting
+  from PostgreSQL in `deskmate/zaza_server/sheets/` (ARCHITECTURE.md §5).
 
-PostgreSQL has only been tested locally. Nothing is deployed to the VPS yet.
-There is no Google Sheets sync and no dashboard yet.
+PostgreSQL has only been tested locally, and Sheets only against an
+in-memory fake (a live test is available, opt-in). Nothing is deployed to
+the VPS yet. There is no manager dashboard yet.
 
 ## Derived from DeskMate — attribution
 
@@ -262,6 +265,53 @@ employee's own timezone. Running a command again updates the same rows and
 never duplicates them.
 Today's figures are marked *(provisional)* until the day is over. What every
 number means is in ARCHITECTURE.md §4.11.
+
+### Google Sheets reporting (Phase 6, optional)
+
+The spreadsheet is a **read-only view** of PostgreSQL. Edits made in it are
+overwritten at the next refresh and never reach the database.
+
+1. **Install the Google libraries** (server only): `pip install -e .[zaza-sheets]`.
+2. **Create a service account** in the Google Cloud console:
+   1. Create (or pick) a project and **enable the Google Sheets API**.
+   2. Create a service account.
+   3. Under *Keys*, add a **JSON key** and download it.
+   4. Store the key outside the repository, e.g.
+      `C:\ProgramData\ZaZa\google-service-account.json`, so only the
+      server's account can read it. Never commit it, email it or paste it
+      anywhere.
+3. **Prepare the spreadsheet:**
+   1. Create a new Google spreadsheet.
+   2. Click **Share** and add the service account's email
+      (`…@….iam.gserviceaccount.com`) as **Editor**.
+   3. Copy the spreadsheet ID: the part of its URL between `/d/` and
+      `/edit`.
+4. **Configure and run**, in the same window as the PostgreSQL settings
+   above:
+
+   ```powershell
+   $env:ZAZA_GOOGLE_SHEET_ID="<spreadsheet ID>"
+   $env:ZAZA_GOOGLE_SERVICE_ACCOUNT_FILE="C:\ProgramData\ZaZa\google-service-account.json"
+   python -m deskmate.zaza_server sheets-status   # checks access, prints the service-account email
+   python -m deskmate.zaza_server sheets-init     # creates the 5 tabs, headers and formatting
+   python -m deskmate.zaza_server recalculate --recent-days 7
+   python -m deskmate.zaza_server sheets-sync     # refreshes all tabs from PostgreSQL
+   ```
+
+**The tabs:** Activity Log, Daily Summary, Weekly Summary, Monthly Summary
+and Dashboard. Other tabs in the spreadsheet are left alone; keep your own
+notes there.
+
+**What is shown:**
+- **Activity Log:** each employee's last 30 local dates
+  (`ZAZA_SHEETS_ACTIVITY_DAYS`).
+- **Summary tabs:** the last 12 months (`ZAZA_SHEETS_SUMMARY_MONTHS`; 0 =
+  all).
+- **Times:** shown in each employee's own time zone.
+
+**If Google is unavailable,** `sheets-sync` stops with a clear error (exit
+code 3). The database is not changed, and the Dashboard keeps the previous
+"Last successful refresh". Run it again to retry.
 
 **Automated PostgreSQL tests (opt-in).** The normal `pytest tests/zaza_agent`
 run does not touch any PostgreSQL. To also run the PostgreSQL tests, point

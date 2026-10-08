@@ -153,9 +153,12 @@ class PostgresAttendanceStore:
         table, start_col, end_col = _PERIOD_TABLES[kind]
         rows = self._rows(sql.SQL("SELECT * FROM {} WHERE employee_id = %s AND {} = %s").format(
             sql.Identifier(table), sql.Identifier(start_col)), (employee_id, start))
-        if not rows:
-            return None
-        row = rows[0]
+        return self._period(rows[0], kind) if rows else None
+
+    @staticmethod
+    def _period(row: dict, kind: str) -> PeriodSummary:
+        """A weekly_summaries / monthly_summaries row as a PeriodSummary."""
+        _, start_col, end_col = _PERIOD_TABLES[kind]
         data = {k: row[k] for k in _PERIOD_FIELDS}
         data.update(
             period_kind=kind, period_start=row[start_col], period_end=row[end_col],

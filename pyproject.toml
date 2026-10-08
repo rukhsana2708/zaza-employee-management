@@ -59,6 +59,9 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 # ZaZa central server on PostgreSQL (Phase 4): psycopg 3 driver + small
 # connection pool; Alembic (with SQLAlchemy) only for schema migrations.
 zaza-postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2", "alembic>=1.13", "SQLAlchemy>=2.0"]
+# ZaZa Google Sheets reporting (Phase 6): the official Google API client and
+# auth libraries. Server-side only; never needed by the employee agent.
+zaza-sheets = ["google-api-python-client>=2.100", "google-auth>=2.23", "google-auth-httplib2>=0.2"]
 full = [
     "pytesseract>=0.3.10",
     "sounddevice>=0.4.6",
