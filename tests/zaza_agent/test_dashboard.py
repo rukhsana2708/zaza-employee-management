@@ -121,7 +121,9 @@ class Dash:
                                         False, app, title, domain, privacy))
 
     def build(self) -> Dash:
-        SummaryService(self.attendance, clock=self.clock).recalculate(date(2026, 9, 1), self.clock.now.date())
+        # every employee, including former ones: their history was calculated while they worked here
+        SummaryService(self.attendance, clock=self.clock).recalculate(
+            date(2026, 9, 1), self.clock.now.date(), list(self.repo.employee_rows))
         for _, s in self.attendance.daily.values():
             self.repo.add_summary(s)
         self.repo.updated_at = self.clock.now - timedelta(minutes=3)
@@ -843,3 +845,180 @@ def test_attendance_status_values_are_the_stored_ones():
     rows = svc.attendance(svc.selection("custom", "alice", MON, WED))["rows"]
     assert [r.summary.attendance_status for r in sorted(rows, key=lambda r: r.summary.local_date)] == [
         AttendanceStatus.PRESENT, AttendanceStatus.LATE, AttendanceStatus.ABSENT]
+
+
+# ─── review fix 1: employees are counted by ID, not display name ───────────
+
+TWINS = {"emp-01": "John Smith", "emp-02": "John Smith"}
+
+
+def _twins(first: tuple[str, str, str], second: tuple[str, str, str]) -> Dash:
+    """Two employees with exactly the same display name; Monday activity."""
+    d = Dash()
+    for eid, name in TWINS.items():
+        d.employee(eid, name)
+    for eid, (status, start, end) in zip(TWINS, (first, second), strict=True):
+        d.period(eid, status, at(MON, start), at(MON, end))
+    return d.build()
+
+
+def _kpis(d: Dash) -> tuple[dict, dict]:
+    d.manager()
+    client, _ = login(d)
+    params = {"period": "custom", "from": "2026-10-05", "to": "2026-10-05"}
+    html = client.get("/manager", params=params).text
+    found = {k: int(v) for k, v in re.findall(r'data-kpi="([a-z-]+)">(\d+)<', html)}
+    return found, client.get("/manager/api/overview", params=params).json()
+
+
+@pytest.mark.parametrize(("first", "second", "kpi", "api_key"), [
+    (("ACTIVE", "09:30", "17:00"), ("ACTIVE", "09:45", "17:00"), "late", "late_employee"),
+    (("IDLE", "09:00", "17:00"), ("IDLE", "09:00", "17:00"), "absent", "absent_employee"),
+    (("UNKNOWN", "09:00", "17:00"), ("UNKNOWN", "09:00", "17:00"), "incomplete", "data_incomplete_employee"),
+])
+def test_same_display_name_both_flagged_counts_two(first, second, kpi, api_key):
+    d = _twins(first, second)
+    svc = d.service()
+    totals = svc.overview(svc.selection("custom", None, MON, MON))["totals"]
+    ids = {"late": totals.late_employee_ids, "absent": totals.absent_employee_ids,
+           "incomplete": totals.incomplete_employee_ids}[kpi]
+    labels = {"late": totals.late_employees, "absent": totals.absent_employees,
+              "incomplete": totals.incomplete_employees}[kpi]
+    assert ids == ["emp-01", "emp-02"]
+    assert labels == ["John Smith (emp-01)", "John Smith (emp-02)"]  # disambiguated, not merged
+    html_kpis, api = _kpis(d)
+    assert html_kpis[kpi] == 2
+    assert api["totals"][f"{api_key}_count"] == 2
+    assert api["totals"][f"{api_key}_ids"] == ["emp-01", "emp-02"]
+    assert api["totals"][f"{api_key}s"] == ["John Smith (emp-01)", "John Smith (emp-02)"]
+
+
+def test_same_display_name_only_one_late():
+    d = _twins(("ACTIVE", "09:30", "17:00"), ("ACTIVE", "09:00", "17:00"))
+    html_kpis, api = _kpis(d)
+    assert html_kpis["late"] == 1
+    assert api["totals"]["late_employee_count"] == 1
+    assert api["totals"]["late_employee_ids"] == ["emp-01"]
+    assert api["totals"]["late_employees"] == ["John Smith (emp-01)"]  # still says which John Smith
+
+
+def test_unique_names_are_not_decorated():
+    d = standard()
+    svc = d.service()
+    assert svc.overview(svc.selection("custom", None, MON, THU))["totals"].late_employees == ["Alice", "Bob"]
+
+
+# ─── review fix 2: "Active Employees" counts active accounts only ──────────
+
+
+def _with_former_employee() -> Dash:
+    d = Dash()
+    d.employee("alice", "Alice")
+    d.employee("fred", "Fred (left)", active=False)
+    d.period("alice", "ACTIVE", at(MON, "09:00"), at(MON, "17:00"))
+    d.period("fred", "ACTIVE", at(MON, "09:00"), at(MON, "17:00"))
+    return d.build()
+
+
+def _active_kpi(d: Dash, **params) -> tuple[int, int]:
+    client, _ = login(d)
+    html = client.get("/manager", params=params).text
+    html_value = int(re.search(r'data-kpi="active-employees">(\d+)<', html).group(1))
+    return html_value, client.get("/manager/api/overview", params=params).json()["active_employees"]
+
+
+def test_active_employees_all_active():
+    d = standard()
+    d.manager()
+    assert _active_kpi(d) == (3, 3)
+
+
+def test_active_employees_one_selected_active():
+    d = standard()
+    d.manager()
+    assert _active_kpi(d, employee="alice") == (1, 1)
+
+
+def test_active_employees_selected_inactive_is_zero_but_history_stays():
+    d = _with_former_employee()
+    d.manager()
+    week = {"employee": "fred", "period": "custom", "from": "2026-10-05", "to": "2026-10-05"}
+    assert _active_kpi(d, **week) == (0, 0)
+    client, _ = login(d)
+    attendance = client.get("/manager/attendance", params=week)
+    assert attendance.status_code == 200 and "Fred (left)" in attendance.text and "Present" in attendance.text
+    totals = client.get("/manager/api/overview", params=week).json()["totals"]
+    assert totals["active_seconds"] == 8 * H  # former employee's history is still reported
+
+
+def test_active_employees_with_mixed_active_and_inactive_data():
+    d = _with_former_employee()
+    d.manager()
+    monday = {"period": "custom", "from": "2026-10-05", "to": "2026-10-05"}
+    assert _active_kpi(d, **monday) == (1, 1)  # "All Employees" = active employees only
+    client, _ = login(d)
+    totals = client.get("/manager/api/overview", params=monday).json()["totals"]
+    assert totals["active_seconds"] == 8 * H  # Fred's Monday is not in the all-employees totals
+    assert "Fred (left)" in client.get("/manager/employees").text  # still listed (as inactive)
+
+
+# ─── review fixes 3 + 4: real `serve` wiring, dashboard localhost-only ─────
+
+
+def _serve(monkeypatch, host: str, backend: str = "postgres"):  # noqa: ANN001, ANN202
+    """Run ``python -m deskmate.zaza_server serve`` without listening: the
+    repository is in-memory and uvicorn.run only captures the app."""
+    from deskmate.zaza_server import __main__ as cli
+    from deskmate.zaza_server import backends
+    from deskmate.zaza_server.repository import InMemoryRepository
+
+    captured = {}
+    monkeypatch.setattr(backends, "open_repository", lambda *a, **k: InMemoryRepository())
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: captured.update(app=app, **kw))
+    monkeypatch.delenv("ZAZA_DATABASE_URL", raising=False)
+    assert cli.main(["--backend", backend, "serve", "--host", host, "--port", "8765"]) == 0
+    return captured
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_serve_mounts_the_dashboard_on_loopback(monkeypatch, capsys, host):
+    captured = _serve(monkeypatch, host)
+    assert captured["host"] == host
+    client = TestClient(captured["app"], follow_redirects=False)
+    login_page = client.get("/manager/login")
+    assert login_page.status_code == 200 and 'name="login_token"' in login_page.text
+    assert login_page.headers["content-security-policy"].startswith("default-src 'none'")
+    assert client.get("/manager").status_code == 303                      # dashboard routes present
+    assert client.get("/api/v1/sync/health").status_code == 200           # sync API in the same app
+    assert client.post("/api/v1/sync/batch", json={}).status_code == 401  # sync auth unchanged
+    out = capsys.readouterr().out
+    assert "Manager dashboard on http://" in out and "not mounted" not in out
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "10.0.0.5", "203.0.113.7", "::", "zaza.example.com"])
+def test_serve_refuses_the_dashboard_on_non_loopback_hosts(monkeypatch, capsys, host):
+    captured = _serve(monkeypatch, host)
+    client = TestClient(captured["app"], follow_redirects=False)
+    assert client.get("/manager/login").status_code == 404
+    assert client.get("/manager").status_code == 404
+    assert client.get("/manager/static/dashboard.css").status_code == 404
+    assert client.get("/api/v1/sync/health").status_code == 200  # the sync API keeps its own host rules
+    out = capsys.readouterr().out
+    assert ("Manager dashboard not mounted: Phase 7 dashboard is localhost-only. "
+            "HTTPS reverse-proxy deployment is Phase 10.") in out
+    assert "listening beyond localhost over plain HTTP" in out  # existing sync API warning unchanged
+
+
+def test_serve_on_sqlite_has_no_dashboard(monkeypatch, capsys):
+    captured = _serve(monkeypatch, "127.0.0.1", backend="sqlite")
+    assert TestClient(captured["app"]).get("/manager/login").status_code == 404
+    assert "not available on the SQLite development backend" in capsys.readouterr().out
+
+
+def test_is_loopback():
+    from deskmate.zaza_server.__main__ import is_loopback
+
+    for host in ("127.0.0.1", "localhost", "LOCALHOST", "::1", "[::1]", "127.0.0.2"):
+        assert is_loopback(host), host
+    for host in ("0.0.0.0", "::", "192.168.1.20", "10.0.0.5", "172.16.0.1", "203.0.113.7", "example.com", ""):
+        assert not is_loopback(host), host

@@ -10,7 +10,7 @@
 
 <h2 class="section">Right now <small class="muted" data-refreshed>(updates every minute)</small></h2>
 <div class="cards" data-status-cards>
-  <div class="card"><span class="label">Active Employees</span><span class="value">{{ view.active_employees }}</span></div>
+  <div class="card"><span class="label">Active Employees</span><span class="value" data-kpi="active-employees">{{ view.active_employees }}</span></div>
   <div class="card"><span class="label">Currently Active</span><span class="value" data-count="ACTIVE">{{ c.ACTIVE }}</span></div>
   <div class="card"><span class="label">Currently Idle</span><span class="value" data-count="IDLE">{{ c.IDLE }}</span></div>
   <div class="card"><span class="label">Locked</span><span class="value" data-count="LOCKED">{{ c.LOCKED }}</span></div>
@@ -29,11 +29,11 @@
   <div class="card"><span class="label">Locked Hours</span><span class="value">{{ t.locked|hours }}</span></div>
   <div class="card"><span class="label">Overtime</span><span class="value">{{ t.overtime|hours }}</span></div>
   <div class="card"><span class="label">Attendance %</span><span class="value">{{ t.attendance_fraction|pct(fraction=True) }}</span></div>
-  <div class="card"><span class="label">Late Employees</span><span class="value">{{ t.late_employees|length }}</span>
+  <div class="card"><span class="label">Late Employees</span><span class="value" data-kpi="late">{{ t.late_employee_ids|length }}</span>
     {% if t.late_employees %}<span class="names">{{ t.late_employees|join(", ") }}</span>{% endif %}</div>
-  <div class="card"><span class="label">Absent Employees</span><span class="value">{{ t.absent_employees|length }}</span>
+  <div class="card"><span class="label">Absent Employees</span><span class="value" data-kpi="absent">{{ t.absent_employee_ids|length }}</span>
     {% if t.absent_employees %}<span class="names">{{ t.absent_employees|join(", ") }}</span>{% endif %}</div>
-  <div class="card"><span class="label">Data-Incomplete Employees</span><span class="value">{{ t.incomplete_employees|length }}</span>
+  <div class="card"><span class="label">Data-Incomplete Employees</span><span class="value" data-kpi="incomplete">{{ t.incomplete_employee_ids|length }}</span>
     {% if t.incomplete_employees %}<span class="names">{{ t.incomplete_employees|join(", ") }}</span>{% endif %}</div>
 </div>
 <p class="note">Figures come from the stored attendance summaries

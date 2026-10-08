@@ -374,7 +374,12 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
                 "overtime_seconds": t.overtime, "attendance_credit_seconds": t.credit,
                 "attendance_basis_seconds": t.basis,
                 "attendance_percentage": None if t.attendance_fraction is None else round(t.attendance_fraction * 100, 2),
-                "late_employees": t.late_employees, "absent_employees": t.absent_employees,
+                "late_employee_count": len(t.late_employee_ids), "late_employee_ids": t.late_employee_ids,
+                "late_employees": t.late_employees,
+                "absent_employee_count": len(t.absent_employee_ids), "absent_employee_ids": t.absent_employee_ids,
+                "absent_employees": t.absent_employees,
+                "data_incomplete_employee_count": len(t.incomplete_employee_ids),
+                "data_incomplete_employee_ids": t.incomplete_employee_ids,
                 "data_incomplete_employees": t.incomplete_employees}
 
     @router.get("/api/current-status")

@@ -261,3 +261,39 @@ def test_manager_cli(office, pg_settings, monkeypatch, capsys):
     assert login(client, "boss").status_code == 401
     assert login(client, "boss", "a-new-long-passphrase").status_code == 303
     assert s.password not in capsys.readouterr().out
+
+
+def test_real_serve_command_mounts_dashboard_and_sync_api(office, pg_settings, monkeypatch, capsys):
+    """``python -m deskmate.zaza_server serve`` on PostgreSQL + loopback: the
+    one app has the manager dashboard AND the sync API. uvicorn.run is
+    replaced, so nothing listens; requests run while the repository is open."""
+    from deskmate.zaza_server.__main__ import main
+
+    s = pg_settings
+    for k, v in {"ZAZA_SERVER_BACKEND": "postgres", "ZAZA_DB_HOST": s.host, "ZAZA_DB_PORT": str(s.port),
+                 "ZAZA_DB_NAME": s.dbname, "ZAZA_DB_USER": s.user, "ZAZA_DB_PASSWORD": s.password,
+                 "ZAZA_DB_SCHEMA": s.schema}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ZAZA_DATABASE_URL", raising=False)
+    ManagerAuth(PostgresDashboardRepository(office)).create_user("manager", "Project Manager", PASSWORD)
+    seen = {}
+
+    def fake_run(app, **kwargs):  # noqa: ANN001, ANN003
+        client = TestClient(app, follow_redirects=False)
+        seen["login_page"] = client.get("/manager/login").status_code
+        if seen["login_page"] == 200:
+            seen["login"] = login(client).status_code
+            seen["overview"] = client.get("/manager").status_code
+        seen["health"] = client.get("/api/v1/sync/health").status_code
+        seen["batch_unauthenticated"] = client.post("/api/v1/sync/batch", json={}).status_code
+        seen["host"] = kwargs["host"]
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    assert main(["serve", "--host", "127.0.0.1", "--port", "8765"]) == 0
+    assert seen == {"login_page": 200, "login": 303, "overview": 200, "health": 200,
+                    "batch_unauthenticated": 401, "host": "127.0.0.1"}
+    assert s.password not in capsys.readouterr().out
+    seen.clear()
+    assert main(["serve", "--host", "0.0.0.0", "--port", "8765"]) == 0
+    assert seen["login_page"] == 404 and seen["health"] == 200
+    assert "Manager dashboard not mounted" in capsys.readouterr().out

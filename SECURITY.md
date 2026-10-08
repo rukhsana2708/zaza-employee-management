@@ -320,6 +320,11 @@ disruptive to what's already running.
   - Logout, revocation, a password reset or disabling the account ends
     sessions immediately.
   - Tokens are never logged, rendered or audited.
+- **Localhost-only in Phase 7:** `serve` mounts the dashboard only on a
+  loopback bind host (`127.0.0.1`, `localhost`, `::1`). On `0.0.0.0`, LAN or
+  public addresses it is not mounted (404 on `/manager`, plus a printed
+  notice), so it is never exposed over plain network HTTP. The sync API is
+  unchanged.
 - **Production MUST set `ZAZA_DASHBOARD_COOKIE_SECURE=true` behind HTTPS
   (Phase 10).** The default `false` exists only so the dashboard works on
   `http://127.0.0.1` during development; `serve` prints a warning while it

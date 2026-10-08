@@ -1265,7 +1265,19 @@ is not deployed (Phase 10).
 
 Each request goes route → `DashboardService` / `ManagerAuth` → repository →
 PostgreSQL. Optional extra: `zaza-dashboard` (Jinja2, argon2-cffi).
-`serve` mounts the dashboard when the backend is PostgreSQL.
+
+**Localhost-only during Phase 7.** `serve` builds its app with
+`build_server_app()`. The dashboard is mounted only when **both** of these
+hold:
+- the backend is PostgreSQL;
+- the bind host is loopback: `127.0.0.1` (any 127.x), `localhost` or `::1`.
+
+For `0.0.0.0`, `::`, LAN, public or other named hosts, the dashboard is not
+mounted; `/manager` returns 404 and `serve` prints "Manager dashboard not
+mounted: Phase 7 dashboard is localhost-only. HTTPS reverse-proxy deployment
+is Phase 10." The sync API is unaffected and keeps its own host rules.
+Phase 10 binds the application locally behind the HTTPS proxy and sets
+`ZAZA_DASHBOARD_COOKIE_SECURE=true`.
 
 ### 6.1 Manager accounts, sessions and CSRF
 
@@ -1398,6 +1410,15 @@ inside each employee's own range:
   Sheets Dashboard.
 - **Late / Absent / Data-Incomplete Employees:** employees with at least one
   LATE (or LATE_AND_EARLY) / ABSENT / DATA_INCOMPLETE day in the period.
+  - They are counted by **employee ID**, never by display name, so two
+    employees both called "John Smith" who were both late count as 2.
+  - In the names list, a display name shared by several employees gets the
+    ID appended, e.g. "John Smith (emp-01)".
+  - The JSON gives both the IDs and the count.
+- **Active Employees:** the number of selected employees whose account is
+  active (`employees.is_active`). "All Employees" selects active employees.
+  A former employee selected explicitly is still fully reportable (history
+  stays available) but gives Active Employees = 0.
 - **Employee page:** late and early-leave minutes, and counts of days
   worked, late, absent and data-incomplete.
 - **Wording:** "Active Hours", never "Actual Work Hours".

@@ -283,7 +283,9 @@ number means is in ARCHITECTURE.md §4.11.
    python -m deskmate.zaza_server serve
    ```
 
-3. Open http://127.0.0.1:8765/manager and sign in.
+3. Open http://127.0.0.1:8765/manager and sign in. The dashboard is
+   localhost-only in Phase 7: with `serve --host 0.0.0.0` (or any non-loopback
+   address) it is not mounted, and only the sync API is served.
 
 Other account commands: `manager-list`, `manager-disable`, `manager-enable`,
 `manager-reset-password` and `manager-revoke-sessions` (all take

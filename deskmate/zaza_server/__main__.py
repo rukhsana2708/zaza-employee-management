@@ -432,7 +432,25 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
 
-def _mount_dashboard(app, repo, args: argparse.Namespace) -> None:  # noqa: ANN001
+DASHBOARD_LOCALHOST_ONLY = ("Manager dashboard not mounted: Phase 7 dashboard is localhost-only. "
+                            "HTTPS reverse-proxy deployment is Phase 10.")
+
+
+def is_loopback(host: str) -> bool:
+    """127.0.0.0/8, ::1 or ``localhost``. 0.0.0.0, LAN and public addresses
+    are not loopback."""
+    import ipaddress  # noqa: PLC0415
+
+    host = host.strip().strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # any other name could resolve anywhere
+
+
+def _mount_dashboard(app, repo, host: str, port: int) -> bool:  # noqa: ANN001
     from .dashboard.config import dashboard_settings_from_env  # noqa: PLC0415
 
     settings = dashboard_settings_from_env()
@@ -444,10 +462,28 @@ def _mount_dashboard(app, repo, args: argparse.Namespace) -> None:  # noqa: ANN0
         from .dashboard.routes import mount_dashboard  # noqa: PLC0415
     except ImportError:
         print("Manager dashboard: not installed (pip install -e .[zaza-dashboard]); serving the sync API only.")
-        return
+        return False
     mount_dashboard(app, PostgresDashboardRepository(repo), settings)
-    print(f"Manager dashboard on http://{args.host}:{args.port}/manager  "
+    print(f"Manager dashboard on http://{host}:{port}/manager  "
           f"(session cookie Secure={'on' if settings.cookie_secure else 'OFF - localhost development only'})")
+    return True
+
+
+def build_server_app(repo, backend: str, host: str, port: int):  # noqa: ANN001, ANN201
+    """The FastAPI app that ``serve`` runs: the sync API, plus the manager
+    dashboard only with the PostgreSQL backend AND a loopback bind host.
+    During Phase 7 the dashboard is never exposed over plain HTTP on a
+    network interface; the sync API keeps its own host rules."""
+    from .app import create_app  # noqa: PLC0415
+
+    app = create_app(repo)
+    if backend != "postgres":
+        print("Manager dashboard: not available on the SQLite development backend (needs PostgreSQL).")
+    elif not is_loopback(host):
+        print(DASHBOARD_LOCALHOST_ONLY)
+    else:
+        _mount_dashboard(app, repo, host, port)
+    return app
 
 
 def _run(args: argparse.Namespace, backend: str) -> int:
@@ -460,17 +496,11 @@ def _run(args: argparse.Namespace, backend: str) -> int:
         if args.command == "serve":
             import uvicorn  # noqa: PLC0415
 
-            from .app import create_app  # noqa: PLC0415
-
             logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
             if args.host not in ("127.0.0.1", "localhost", "::1"):
                 print("WARNING: listening beyond localhost over plain HTTP. Production must sit behind HTTPS.")
             print(f"ZaZa sync API on http://{args.host}:{args.port}  ({backend}: {where})")
-            app = create_app(repo)
-            if backend == "postgres":
-                _mount_dashboard(app, repo, args)
-            else:
-                print("Manager dashboard: not available on the SQLite development backend (needs PostgreSQL).")
+            app = build_server_app(repo, backend, args.host, args.port)
             uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         elif args.command == "add-employee":
             e = repo.add_employee(args.employee_id, args.name, role=args.role, timezone=args.timezone)

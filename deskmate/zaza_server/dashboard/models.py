@@ -175,6 +175,11 @@ class Totals:
     early_leave_days: int = 0
     absent_days: int = 0
     incomplete_days: int = 0
+    # Distinct employees, counted by employee_id (names are not unique); the
+    # *_employees lists are the matching display labels for the UI.
+    late_employee_ids: list[str] = field(default_factory=list)
+    absent_employee_ids: list[str] = field(default_factory=list)
+    incomplete_employee_ids: list[str] = field(default_factory=list)
     late_employees: list[str] = field(default_factory=list)
     absent_employees: list[str] = field(default_factory=list)
     incomplete_employees: list[str] = field(default_factory=list)

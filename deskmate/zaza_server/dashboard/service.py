@@ -14,7 +14,7 @@ Sources (ARCHITECTURE.md §6):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -109,24 +109,45 @@ def add_summary(totals: Totals, s: DailySummary) -> None:
     totals.incomplete_days += st is AttendanceStatus.DATA_INCOMPLETE
 
 
-def team_totals(rows: list[DayRow]) -> Totals:
+def employee_labels(people: Iterable[Employee]) -> dict[str, str]:
+    """employee_id → display label. Names shared by several employees get
+    their ID appended ("John Smith (emp-01)") so lists stay unambiguous."""
+    people = {e.employee_id: e for e in people}
+    counts: dict[str, int] = {}
+    for e in people.values():
+        counts[e.display_name.casefold()] = counts.get(e.display_name.casefold(), 0) + 1
+    return {eid: f"{e.display_name} ({eid})" if counts[e.display_name.casefold()] > 1 else e.display_name
+            for eid, e in people.items()}
+
+
+def team_totals(rows: list[DayRow], people: Iterable[Employee] = ()) -> Totals:
     """Sum the stored daily rows. An employee counts as late / absent /
-    data-incomplete if at least one of their days in the period was."""
+    data-incomplete if at least one of their days in the period was —
+    counted by employee ID (display names are not unique)."""
     totals = Totals()
-    flags: dict[str, set[str]] = {}
+    flagged: dict[str, set[str]] = {"late": set(), "absent": set(), "incomplete": set()}
     for row in rows:
         add_summary(totals, row.summary)
         st = row.summary.attendance_status
-        name = row.employee.display_name
+        eid = row.employee.employee_id
         if st in (AttendanceStatus.LATE, AttendanceStatus.LATE_AND_EARLY):
-            flags.setdefault("late", set()).add(name)
+            flagged["late"].add(eid)
         if st is AttendanceStatus.ABSENT:
-            flags.setdefault("absent", set()).add(name)
+            flagged["absent"].add(eid)
         if st is AttendanceStatus.DATA_INCOMPLETE:
-            flags.setdefault("incomplete", set()).add(name)
-    totals.late_employees = sorted(flags.get("late", ()), key=str.casefold)
-    totals.absent_employees = sorted(flags.get("absent", ()), key=str.casefold)
-    totals.incomplete_employees = sorted(flags.get("incomplete", ()), key=str.casefold)
+            flagged["incomplete"].add(eid)
+    everyone = {e.employee_id: e for e in people} | {r.employee.employee_id: r.employee for r in rows}
+    labels = employee_labels(everyone.values())
+
+    def ordered(ids: set[str]) -> list[str]:
+        return sorted(ids, key=lambda eid: (everyone[eid].display_name.casefold(), eid))
+
+    totals.late_employee_ids = ordered(flagged["late"])
+    totals.absent_employee_ids = ordered(flagged["absent"])
+    totals.incomplete_employee_ids = ordered(flagged["incomplete"])
+    totals.late_employees = [labels[eid] for eid in totals.late_employee_ids]
+    totals.absent_employees = [labels[eid] for eid in totals.absent_employee_ids]
+    totals.incomplete_employees = [labels[eid] for eid in totals.incomplete_employee_ids]
     return totals
 
 
@@ -301,8 +322,10 @@ class DashboardService:
             rows.append({"employee": e, "status": statuses[e.employee_id], "today": d, "summary": s,
                          "schedule": sched})
         return {
-            "selection": sel, "period": self.describe(sel), "totals": team_totals(self.day_rows(sel)),
-            "active_employees": len(people),
+            "selection": sel, "period": self.describe(sel), "totals": team_totals(self.day_rows(sel), people),
+            # employees whose account is active — an explicitly selected former
+            # employee is still reportable, but is not an "active employee"
+            "active_employees": sum(1 for e in people if e.is_active),
             "status_counts": self.status_counts([statuses[e.employee_id] for e in people]),
             "rows": rows, "summaries_updated_at": self.repo.summaries_updated_at(), "now": self.clock(),
         }

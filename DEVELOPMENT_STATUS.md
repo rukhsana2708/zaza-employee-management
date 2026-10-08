@@ -1,6 +1,6 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-09 (Phase 7 review fixes)
 
 ## Current phase: Phase 7 — Manager web dashboard (implemented, pending your review)
 
@@ -61,15 +61,35 @@ tests used a throwaway local instance, which has since been deleted.
   - Changes apply from the employee's local today; running weekly rules are
     split or ended from a date, and past rules are read-only.
 - **Tests:**
-  - Default run: 607 pass and 127 skip. The skips are the opt-in PostgreSQL
+  - Default run: 627 pass and 128 skip. The skips are the opt-in PostgreSQL
     tests and the opt-in live-Google test.
-  - With `ZAZA_TEST_POSTGRES_URL` set: 733 pass and 1 skip (the live
+  - With `ZAZA_TEST_POSTGRES_URL` set: 754 pass and 1 skip (the live
     Google test).
-  - New: 76 dashboard tests (`test_dashboard.py`, no database) and 6
+  - New: 96 dashboard tests (`test_dashboard.py`, no database) and 7
     PostgreSQL tests (`test_dashboard_postgres.py`).
+
+### Phase 7 review fixes (pending your approval)
+
+1. **Employee-level flags are counted by employee ID.** Late, absent and
+   data-incomplete employees are deduplicated by ID, not display name.
+   Duplicate names are shown with their ID ("John Smith (emp-01)"). The JSON
+   adds `*_count` and `*_ids`.
+2. **"Active Employees" counts `is_active` employees.** An explicitly
+   selected former employee gives 0, while their history stays reportable.
+3. **The dashboard is localhost-only.** `serve` mounts `/manager` only on a
+   loopback bind host (`build_server_app()`); otherwise it prints a notice
+   and serves the sync API alone, whose behaviour is unchanged.
+4. **Real `serve` wiring tests.** `main(["serve", …])` is run with
+   `uvicorn.run` replaced: offline with an in-memory repository, and on
+   PostgreSQL with a full login. The tests check that the dashboard and the
+   sync API share the app, and that the dashboard is refused on non-loopback
+   hosts.
 
 ### Phase 7 known limitations / risks
 
+- **The loopback check trusts the `--host` value.** A host name other than
+  `localhost` is refused, even one that resolves locally. Phase 10 replaces
+  this with the HTTPS reverse-proxy setup.
 - **No login rate limiting or lockout.** Argon2 slows guessing, but Phase 10
   should rate-limit `/manager/login` at the reverse proxy.
 - **The Secure cookie flag is off by default** so the dashboard works on
