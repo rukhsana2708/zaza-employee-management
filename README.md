@@ -235,11 +235,14 @@ With the PostgreSQL settings from the section above, in the same window:
 
 1. Give the employee a schedule. Weekdays use ISO numbers (1 = Monday). A
    shift that ends earlier than it starts runs overnight, and belongs to the
-   day it starts.
+   day it starts. Schedules always use the **employee's** timezone (set with
+   `add-employee --timezone`); a different `--timezone` is rejected.
+   Weekly rules start today in the employee's timezone unless you give
+   `--effective-from`.
 
    ```powershell
-   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 1-5 --start 09:00 --end 17:00 --expected-hours 8 --timezone Asia/Dhaka
-   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 6,7 --day-off --timezone Asia/Dhaka
+   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 1-5 --start 09:00 --end 17:00 --expected-hours 8
+   python -m deskmate.zaza_server add-schedule --employee-id alice --weekdays 6,7 --day-off
    python -m deskmate.zaza_server list-schedules --employee-id alice
    ```
 
@@ -254,7 +257,9 @@ With the PostgreSQL settings from the section above, in the same window:
    python -m deskmate.zaza_server recalculate --recent-days 7
    ```
 
-Running a command again updates the same rows and never duplicates them.
+`--recent-days 7` means today and the 6 days before it, in each
+employee's own timezone. Running a command again updates the same rows and
+never duplicates them.
 Today's figures are marked *(provisional)* until the day is over. What every
 number means is in ARCHITECTURE.md §4.11.
 

@@ -26,6 +26,7 @@ from deskmate.zaza_server.attendance import (  # noqa: E402
     SummaryService,
 )
 from deskmate.zaza_server.attendance.models import (  # noqa: E402
+    CALCULATION_VERSION,
     DeviceInput,
     PeriodInput,
     SessionInput,
@@ -287,7 +288,7 @@ def test_policy_is_recorded_with_each_summary(world):
     service.calculate_daily("emp-1", MON)
     with repo.connection() as conn:
         row = conn.execute("SELECT policy, calculation_version FROM daily_summaries").fetchone()
-    assert row["policy"]["late_grace_seconds"] == 0 and row["calculation_version"] == 1
+    assert row["policy"]["late_grace_seconds"] == 0 and row["calculation_version"] == CALCULATION_VERSION == 2
     assert json.dumps(row["policy"])  # plain JSON object
 
 
@@ -299,3 +300,79 @@ def test_unused_input_types_load(world):
     assert store.devices("emp-1")[0] == DeviceInput("device-1", "ACTIVE", LATER)
     assert store.periods("emp-1", at(MON, "00:00"), at(MON, "23:59")) == []
     assert isinstance(PeriodInput, type) and DataQuality.COMPLETE.value == "COMPLETE"
+
+
+# ─── review fixes ──────────────────────────────────────────────────────────
+
+
+def test_schedule_timezone_must_equal_employee_timezone(world, pg_settings):
+    repo, store, _, _ = world
+    sid = store.add_schedule("emp-1", is_working_day=True, schedule_date=MON, start_time=time(20),
+                             end_time=time(4), expected_work_seconds=8 * H)  # overnight, default timezone
+    assert {r.timezone for r in store.schedules("emp-1") if r.schedule_id == sid} == {TZ}
+    store.add_schedule("emp-1", timezone=TZ, is_working_day=False, schedule_date=MON + timedelta(days=1))
+    with pytest.raises(ValueError, match="differs from employee 'emp-1' timezone 'Asia/Dhaka'"):
+        store.add_schedule("emp-1", timezone="Europe/London", is_working_day=False,
+                           schedule_date=MON + timedelta(days=2))
+    with pytest.raises(ValueError, match="unknown employee"):
+        store.add_schedule("nobody", is_working_day=False, schedule_date=MON)
+    # Direct SQL can't bypass it, in either direction.
+    with pytest.raises(errors.ForeignKeyViolation, match="work_schedules_timezone_matches_employee"):
+        with psycopg.connect(**pg_settings.connect_kwargs(), autocommit=True) as conn:
+            conn.execute("INSERT INTO work_schedules (employee_id, schedule_date, is_working_day, timezone) "
+                         "VALUES ('emp-1', '2026-12-25', false, 'Europe/London')")
+    with pytest.raises(errors.ForeignKeyViolation):
+        with psycopg.connect(**pg_settings.connect_kwargs(), autocommit=True) as conn:
+            conn.execute("UPDATE employees SET timezone = 'Europe/London' WHERE employee_id = 'emp-1'")
+
+
+def test_migration_0003_refuses_existing_mismatched_schedules():
+    from deskmate.zaza_server.postgres import migrate
+
+    settings = pg_test_settings("zaza_pytest_mig5tz")
+    pg_admin_execute(settings, "DROP SCHEMA IF EXISTS zaza_pytest_mig5tz CASCADE", "CREATE SCHEMA zaza_pytest_mig5tz")
+    try:
+        migrate.upgrade(settings, "0002_attendance_summaries")
+        with psycopg.connect(**settings.connect_kwargs(), autocommit=True) as conn:
+            conn.execute("INSERT INTO employees (employee_id, display_name, timezone) VALUES ('e', 'E', 'Asia/Dhaka')")
+            conn.execute("INSERT INTO work_schedules (employee_id, schedule_date, is_working_day, timezone) "
+                         "VALUES ('e', '2026-12-25', false, 'Europe/London')")
+        with pytest.raises(Exception, match="different from their employee"):
+            migrate.upgrade(settings)
+        with psycopg.connect(**settings.connect_kwargs(), autocommit=True) as conn:
+            conn.execute("UPDATE work_schedules SET timezone = 'Asia/Dhaka'")
+        migrate.upgrade(settings)
+        with psycopg.connect(**settings.connect_kwargs(), autocommit=True) as conn:
+            assert migrate.current_revision(conn) == "0003_schedule_timezone"
+    finally:
+        pg_admin_execute(settings, "DROP SCHEMA IF EXISTS zaza_pytest_mig5tz CASCADE")
+
+
+def test_cli_schedule_timezone_defaults_and_recent_days(world, pg_settings, monkeypatch, capsys):
+    from deskmate.zaza_server.__main__ import main
+
+    repo, store, _, _ = world
+    s = pg_settings
+    for k, v in {"ZAZA_SERVER_BACKEND": "postgres", "ZAZA_DB_HOST": s.host, "ZAZA_DB_PORT": str(s.port),
+                 "ZAZA_DB_NAME": s.dbname, "ZAZA_DB_USER": s.user, "ZAZA_DB_PASSWORD": s.password,
+                 "ZAZA_DB_SCHEMA": s.schema}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ZAZA_DATABASE_URL", raising=False)
+    repo.add_employee("emp-ny", "New York", timezone="America/New_York")
+    assert main(["add-schedule", "--employee-id", "emp-ny", "--weekdays", "1-5", "--start", "09:00", "--end",
+                 "17:00", "--expected-hours", "8"]) == 0  # no --timezone: the employee's
+    out = capsys.readouterr().out
+    ny_today = datetime.now(ZoneInfo("America/New_York")).date()
+    assert f"from {ny_today} (America/New_York)" in out
+    assert {r.timezone for r in store.schedules("emp-ny")} == {"America/New_York"}
+    assert {r.effective_from for r in store.schedules("emp-ny")} == {ny_today}
+    assert main(["add-schedule", "--employee-id", "emp-ny", "--date", "2026-12-25", "--day-off",
+                 "--timezone", "Asia/Dhaka"]) == 1
+    assert "schedules must use the employee's timezone" in capsys.readouterr().err
+    assert main(["recalculate", "--recent-days", "0"]) == 1
+    assert ">= 1" in capsys.readouterr().err
+    assert main(["recalculate", "--recent-days", "1", "--employee-id", "emp-ny"]) == 0
+    with repo.connection() as conn:
+        latest = conn.execute("SELECT max(local_date) AS d FROM daily_summaries WHERE employee_id = 'emp-ny'"
+                              ).fetchone()["d"]
+    assert latest == datetime.now(ZoneInfo("America/New_York")).date()  # nothing in the future

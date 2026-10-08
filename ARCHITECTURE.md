@@ -745,6 +745,8 @@ These steps were rehearsed locally on a throwaway PostgreSQL 16:
 
 `daily_summaries`, `weekly_summaries` and `monthly_summaries` (migration
 `0002_attendance_summaries`) hold the **authoritative** attendance figures.
+Migration `0003_schedule_timezone` adds the schedule-timezone rule
+(§4.11.2).
 Google Sheets, the dashboard and charts (Phases 6–8) read these rows and
 must never recalculate them.
 
@@ -783,8 +785,25 @@ For employee E and local date D:
    several rules match, the newest `effective_from` wins.
 3. Otherwise there is no schedule, and the status is `NO_SCHEDULE`.
 
-**Shift times.** A shift belongs to the date it **starts** on, in the rule's
-time zone:
+**One timezone per employee (Phase 5 limitation).** A schedule's
+`timezone` must equal the employee's reporting timezone
+(`employees.timezone`). Date attribution (§4.11.3) uses the employee's
+timezone and shift times use the schedule's, so a different zone would give
+inconsistent days. This is enforced three ways:
+- `add_schedule()` and `add-schedule` default to the employee's timezone and
+  reject any other one with a clear error;
+- the database: `work_schedules (employee_id, timezone)` is a foreign key to
+  `employees (employee_id, timezone)` (`work_schedules_timezone_matches_employee`),
+  so direct SQL can't insert a mismatched rule, and an employee's timezone
+  can't be changed while schedules in the old zone exist;
+- migration `0003` refuses to apply if existing rows already mismatch.
+
+Per-schedule ("travel") timezones are not supported. Changing an employee's
+timezone needs a deliberate migration of their schedules (and a
+recalculation), not a quiet update.
+
+**Shift times.** A shift belongs to the date it **starts** on, in the
+employee's (= the rule's) time zone:
 - The shift starts at D `start_time`.
 - It ends at D `end_time` if `end_time > start_time`. Otherwise it ends at
   (D+1) `end_time`, i.e. the next day.
@@ -844,7 +863,7 @@ Everything below is measured inside the date's window from §4.11.3.
 | `pre_shift_active_seconds` / `post_shift_active_seconds` | ACTIVE time in the window before / after the shift |
 | **First / last activity** | first and last ACTIVE instant in the window. With no ACTIVE time they are NULL; `first_tracked_at` / `last_tracked_at` give the first and last instant with any data. |
 | **Late** (`late_seconds`) | Only on a working day, and looking only at the shift neighbourhood [start − 4 h, end + 4 h).<br>• Let *f* be the first ACTIVE instant there. Late counts only if *f* − start > `late_grace` (0 by default).<br>• Then late = *f* − max(start, end of any UNKNOWN time between start and *f*). Uncertain monitoring goes to the employee's benefit, with flag `START_UNCERTAIN`.<br>• Never negative. |
-| **Early Leave** (`early_leave_seconds`) | Only after the shift has ended.<br>• Let *l* be the last ACTIVE instant in the neighbourhood. Early leave counts only if end − *l* > `early_leave_grace` (0 by default) and *l* is after the shift start.<br>• Then early leave = min(end, start of any UNKNOWN time after *l*) − *l*.<br>• It is **not charged** (`END_UNCERTAIN`) if the agent session covering *l* ended INTERRUPTED (crash or power loss), or a device hasn't contacted the server since the shift ended. |
+| **Early Leave** (`early_leave_seconds`) | Only after the shift has ended, and only if *l* (the last ACTIVE instant in the neighbourhood) is after the shift start.<br>• Early leave = the **reliably observed** part of [*l*, end): (end − *l*) − uncertain time in [*l*, end). It counts only if it is > `early_leave_grace` (0 by default).<br>• **Uncertain time** is: UNKNOWN periods; after an INTERRUPTED session (crash, power loss), from its last heartbeat until that device's next session starts (or open-ended); after a relevant device's last contact with the server (`last_seen_at`), open-ended, because data for it may not be uploaded yet.<br>• Reliable IDLE/LOCKED time, and no-data time after a cleanly CLOSED session (PC shut down), still count. So a later crash or unsynced tail protects only the uncertain part; it doesn't erase earlier reliable inactivity. Any uncertain time sets `END_UNCERTAIN`.<br>• Examples (09:00–17:00): ACTIVE to 12:00, IDLE/LOCKED to 15:00, crash at 15:00 → 3 h. ACTIVE to 15:00 then crash → 0. ACTIVE to 12:00, IDLE to 14:00, UNKNOWN to 17:00 → 2 h. ACTIVE to 12:00, crash, agent back at 12:05 and IDLE to 17:00 → 4 h 55 min. |
 | **Overtime** (`overtime_seconds`) | **ACTIVE time only.**<br>• On a working day: active before the shift (configurable, on by default) + active after the shift. Each side counts only if it is ≥ `overtime_min` (0 by default).<br>• On a day off: all ACTIVE time.<br>• With no schedule: 0, because overtime can't be defined.<br>• Idle, locked and unknown time outside the shift is never overtime. |
 | **Detected Break / Idle** (`detected_break_seconds`) | Inside the shift: unbroken runs of IDLE or LOCKED time (no ACTIVE, UNKNOWN or untracked time in between) lasting at least 15 min (`break_min`). It is **not** an official break: label it "Detected Break / Idle". It is not subtracted from anything. |
 | `scheduled_seconds` | §4.11.2. 0 on days off and days without a schedule. |
@@ -881,7 +900,7 @@ Each day gets flags, which then set its quality level.
 |---|---|
 | `PROVISIONAL` | the day isn't over, or a session or period is still open. The summary will change. |
 | `UNKNOWN_TIME` | some time was UNKNOWN |
-| `START_UNCERTAIN` / `END_UNCERTAIN` | the start or end couldn't be judged, so nothing was charged for it |
+| `START_UNCERTAIN` / `END_UNCERTAIN` | part of the start or end couldn't be judged; that part wasn't charged as lateness / early leave |
 | `AWAITING_DEVICE_SYNC` | a device hasn't contacted the server since the shift or day ended; data may be in its backlog |
 | `NO_DEVICE` | the employee has no enabled device |
 | `NO_SCHEDULE` | no schedule rule applies to the date |
@@ -953,18 +972,28 @@ scheduled.
   `updated_at` doesn't change.
 - **New data:** a higher synced version of a period, or a new period, gives
   a different result on the next calculation, and the row is updated.
-- **Rows also store** `calculation_version` (currently 1) and the `policy`
-  used (as JSON), so rows made by older formulas can be found and
-  recalculated.
+- **Rows also store** `calculation_version` and the `policy` used (as
+  JSON), so rows made by older formulas can be found and recalculated.
+  Version 2 (the current one) changed early leave to exclude only the
+  uncertain part of the shift's end; recalculate rows with version 1.
 - **`recalculate`** covers whole weeks and months, so roll-ups are always
-  built from fresh days. It never creates rows for future dates; a week or
-  month in progress shows its figures so far and is marked provisional.
+  built from fresh days. It never creates rows after the employee's own
+  local today; a week or month in progress shows its figures so far and is
+  marked provisional.
+- **`--recent-days N`** (N ≥ 1) means the last N local dates **including
+  today**, evaluated in **each employee's own timezone**
+  (`SummaryService.recalculate_recent`). On October 8 local time, 7 means
+  October 2–8. Just after midnight in Dhaka, UTC (and New York) may still be
+  on October 7, so a New York employee's range then ends on October 7. The
+  server's date is never used.
 
 #### 4.11.11 Commands
 
 All need `ZAZA_SERVER_BACKEND=postgres`:
-- `add-schedule --employee-id E (--weekdays 1-5 | --date D) --start 09:00 --end 17:00 --expected-hours 8 --timezone Asia/Dhaka [--day-off] [--effective-from/--effective-to]`.
-  It is audited as `work_schedule.create`.
+- `add-schedule --employee-id E (--weekdays 1-5 | --date D) --start 09:00 --end 17:00 --expected-hours 8 [--day-off] [--effective-from/--effective-to] [--timezone Z]`.
+  The timezone is the employee's; `--timezone` is optional and rejected if
+  it differs. `--effective-from` defaults to today in the employee's
+  timezone. It is audited as `work_schedule.create`.
 - `list-schedules --employee-id E`
 - `summarize-day --date D [--employee-id E]`
 - `summarize-week --date D`
@@ -982,11 +1011,16 @@ periodically.
 | `ZAZA_ATTENDANCE_LATE_GRACE_SECONDS` | 0 | lateness up to this is ignored |
 | `ZAZA_ATTENDANCE_EARLY_LEAVE_GRACE_SECONDS` | 0 | early leave up to this is ignored |
 | `ZAZA_ATTENDANCE_OVERTIME_MIN_SECONDS` | 0 | minimum before or after the shift to count as overtime |
+| `ZAZA_ATTENDANCE_COUNT_PRE_SHIFT_OVERTIME` | true | ACTIVE time before the shift counts as overtime (`true/false`, `1/0`, `yes/no`, `on/off`) |
+| `ZAZA_ATTENDANCE_ATTRIBUTION_MARGIN_SECONDS` | 14400 | activity this close to a shift belongs to that shift's date (§4.11.3); 0–43200 |
 | `ZAZA_ATTENDANCE_BREAK_MIN_SECONDS` | 900 | minimum IDLE/LOCKED run for "Detected Break / Idle" |
+| `ZAZA_ATTENDANCE_INCOMPLETE_UNKNOWN_RATIO` | 0.5 | UNKNOWN share of a shift at which "absent" can't be concluded (`DATA_INCOMPLETE`); > 0 and ≤ 1 |
 
-The attribution margin (4 h), whether pre-shift work counts as overtime
-(yes), and the UNKNOWN threshold for `DATA_INCOMPLETE` (50%) are
-`AttendancePolicy` fields in code.
+Every `AttendancePolicy` field has a variable. Unset or empty means the
+default. Invalid values (not a number, out of range, an unknown boolean)
+stop the command with an error naming the variable. The policy is global,
+and every summary row records the policy it was calculated with; after
+changing a setting, recalculate the affected dates.
 
 ## 5. Component 4 — Google Sheets live reporting layer
 

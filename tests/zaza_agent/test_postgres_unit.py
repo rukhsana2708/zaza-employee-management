@@ -173,7 +173,8 @@ def test_single_linear_migration_head():
 
     script = ScriptDirectory.from_config(migrate.alembic_config())
     assert len(script.get_heads()) == 1
-    assert migrate.head_revision() == "0002_attendance_summaries"
+    assert migrate.head_revision() == "0003_schedule_timezone"
+    assert script.get_revision("0003_schedule_timezone").down_revision == "0002_attendance_summaries"
     assert script.get_revision("0002_attendance_summaries").down_revision == "0001_initial"
 
 

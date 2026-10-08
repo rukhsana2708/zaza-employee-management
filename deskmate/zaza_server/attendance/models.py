@@ -8,13 +8,16 @@ Everything here is plain data. The calculation itself is in
 from __future__ import annotations
 
 import enum
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time
 
 # Bump when a formula changes; stored on every summary row so old rows can be
 # found and recalculated.
-CALCULATION_VERSION = 1
+#   1  initial Phase 5 formulas
+#   2  early leave excludes only the uncertain part of the shift's end
+CALCULATION_VERSION = 2
 
 
 class AttendanceStatus(str, enum.Enum):
@@ -40,7 +43,7 @@ class QualityFlag(str, enum.Enum):
     PROVISIONAL = "PROVISIONAL"                    # day/shift not over, or a session is still open
     UNKNOWN_TIME = "UNKNOWN_TIME"                  # some time was UNKNOWN (monitoring uncertain)
     START_UNCERTAIN = "START_UNCERTAIN"            # UNKNOWN before first activity: lateness not charged for it
-    END_UNCERTAIN = "END_UNCERTAIN"                # end can't be judged: early leave not charged
+    END_UNCERTAIN = "END_UNCERTAIN"                # part of the shift's end can't be judged: not charged as early leave
     AWAITING_DEVICE_SYNC = "AWAITING_DEVICE_SYNC"  # a device hasn't contacted the server since the shift/day ended
     NO_DEVICE = "NO_DEVICE"                        # employee has no enabled device
     NO_SCHEDULE = "NO_SCHEDULE"
@@ -56,9 +59,59 @@ INFORMATIONAL_FLAGS = frozenset({QualityFlag.DST_ADJUSTED})
 STATUS_PRIORITY = {"ACTIVE": 4, "IDLE": 3, "LOCKED": 2, "UNKNOWN": 1}
 
 
-def _env_int(name: str, default: int) -> int:
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
+
+def _env_raw(name: str) -> str | None:
     raw = os.environ.get(name)
-    return int(raw) if raw not in (None, "") else default
+    return raw.strip() if raw is not None and raw.strip() != "" else None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env_raw(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number of seconds, got {raw!r}") from None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = _env_raw(name)
+    if raw is None:
+        return default
+    if raw.lower() in _TRUE:
+        return True
+    if raw.lower() in _FALSE:
+        return False
+    raise ValueError(f"{name} must be true or false, got {raw!r}")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = _env_raw(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {raw!r}")
+    return value
+
+
+# AttendancePolicy field -> environment variable (all optional; see .env.example)
+POLICY_ENV = {
+    "late_grace_seconds": "ZAZA_ATTENDANCE_LATE_GRACE_SECONDS",
+    "early_leave_grace_seconds": "ZAZA_ATTENDANCE_EARLY_LEAVE_GRACE_SECONDS",
+    "overtime_min_seconds": "ZAZA_ATTENDANCE_OVERTIME_MIN_SECONDS",
+    "count_pre_shift_overtime": "ZAZA_ATTENDANCE_COUNT_PRE_SHIFT_OVERTIME",
+    "attribution_margin_seconds": "ZAZA_ATTENDANCE_ATTRIBUTION_MARGIN_SECONDS",
+    "break_min_seconds": "ZAZA_ATTENDANCE_BREAK_MIN_SECONDS",
+    "incomplete_unknown_ratio": "ZAZA_ATTENDANCE_INCOMPLETE_UNKNOWN_RATIO",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +134,8 @@ class AttendancePolicy:
                 raise ValueError(f"{name} must be >= 0")
         if not 0 <= self.attribution_margin_seconds <= 12 * 3600:
             raise ValueError("attribution_margin_seconds must be 0..43200 (12 h)")
+        if not isinstance(self.count_pre_shift_overtime, bool):
+            raise ValueError("count_pre_shift_overtime must be true or false")
         if not 0 < self.incomplete_unknown_ratio <= 1:
             raise ValueError("incomplete_unknown_ratio must be in (0, 1]")
 
@@ -89,12 +144,24 @@ class AttendancePolicy:
 
     @classmethod
     def from_env(cls) -> AttendancePolicy:
-        return cls(
-            late_grace_seconds=_env_int("ZAZA_ATTENDANCE_LATE_GRACE_SECONDS", 0),
-            early_leave_grace_seconds=_env_int("ZAZA_ATTENDANCE_EARLY_LEAVE_GRACE_SECONDS", 0),
-            overtime_min_seconds=_env_int("ZAZA_ATTENDANCE_OVERTIME_MIN_SECONDS", 0),
-            break_min_seconds=_env_int("ZAZA_ATTENDANCE_BREAK_MIN_SECONDS", 15 * 60),
-        )
+        """Every field can be set from the environment (``POLICY_ENV``);
+        unset or empty variables keep the defaults. Invalid values raise
+        ``ValueError`` naming the variable."""
+        defaults = cls()
+        values: dict = {}
+        for name, env in POLICY_ENV.items():
+            default = getattr(defaults, name)
+            if isinstance(default, bool):
+                values[name] = _env_bool(env, default)
+            elif isinstance(default, float):
+                values[name] = _env_float(env, default)
+            else:
+                values[name] = _env_int(env, default)
+        try:
+            return cls(**values)
+        except ValueError as exc:
+            field_name = str(exc).split()[0]
+            raise ValueError(f"{POLICY_ENV.get(field_name, field_name)}: {exc}") from None
 
 
 # ─── inputs ────────────────────────────────────────────────────────────────

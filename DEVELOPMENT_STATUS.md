@@ -31,7 +31,8 @@ deleted.
 - **Fairness:**
   - UNKNOWN is never treated as idle, lateness or early leave.
   - Missing or unsynced data gives `DATA_INCOMPLETE`, not `ABSENT`.
-  - An agent crash means early leave isn't charged.
+  - An agent crash or unsynced device excludes only the uncertain part
+    of the shift's end from early leave.
   - Every instant belongs to exactly one date, so nothing is counted twice.
 - **Formulas and statuses:** ARCHITECTURE.md §4.11; the reporting
   interpretation is in SECURITY.md §6.4.
@@ -39,12 +40,28 @@ deleted.
   `summarize-week`, `summarize-month` and `recalculate`. They need the
   PostgreSQL backend.
 - **Tests:**
-  - Without PostgreSQL: 417 pass in `tests/zaza_agent/` and 109 skip. The
+  - Without PostgreSQL: 453 pass in `tests/zaza_agent/` and 112 skip. The
     skips are the opt-in PostgreSQL tests.
-  - With `ZAZA_TEST_POSTGRES_URL` set: 526 pass and 0 skip.
-  - New: 48 engine tests (`test_attendance.py`) and 10 PostgreSQL tests
+  - With `ZAZA_TEST_POSTGRES_URL` set: 565 pass and 0 skip.
+  - New: 84 engine tests (`test_attendance.py`) and 13 PostgreSQL tests
     (`test_attendance_postgres.py`). The PostgreSQL tests include exact
     equality between the PostgreSQL and in-memory results.
+
+### Phase 5 review fixes (pending your approval)
+
+1. **Schedule timezone = employee timezone.** `add_schedule` /
+   `add-schedule` default to the employee's timezone and reject any other;
+   migration `0003_schedule_timezone` adds a composite foreign key so direct
+   SQL can't create a mismatch (and refuses to apply over existing
+   mismatches). Per-schedule travel timezones are not supported.
+2. **`--recent-days N`** = the last N local dates including today, per
+   employee timezone (`recalculate_recent`); N ≥ 1. `add-schedule`'s default
+   `--effective-from` is the employee's local today.
+3. **Early leave** excludes only uncertain time (UNKNOWN, after a crash until
+   the agent restarts, after a device's last contact). Earlier reliable
+   inactivity still counts. `calculation_version` is now 2.
+4. **Policy settings:** every `AttendancePolicy` field is configurable from
+   the environment with validation (`.env.example`).
 
 ### Phase 5 known limitations / risks
 
@@ -66,6 +83,13 @@ deleted.
   newer weekly rule supersedes an older one from its `effective_from` date.
 - **The policy is global.** It is not per employee, and changing it
   requires recalculating.
+- **One timezone per employee.** Schedules can't use a different zone
+  (travel, remote shifts in another region). Changing an employee's timezone
+  is blocked while they have schedules; it needs a deliberate migration.
+- **Crash point = last heartbeat.** After an INTERRUPTED session, uncertainty
+  starts at its last heartbeat; reliable data synced just after it (within
+  one heartbeat interval) is not charged as early leave. This errs in the
+  employee's favour.
 - **`application_usage_daily` is not part of the attendance figures,** by
   design, because of its device-local dates.
 

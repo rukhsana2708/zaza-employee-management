@@ -16,10 +16,12 @@ Commands:
 Attendance (PostgreSQL only, Phase 5):
 
 - ``add-schedule`` / ``list-schedules``   weekly rule, one-off date, or day off
+  (always in the employee's timezone)
 - ``summarize-day``     calculate (upsert) daily summaries for a date
 - ``summarize-week``    the ISO week (Mon–Sun) containing a date
 - ``summarize-month``   a calendar month (``--month 2026-10``)
-- ``recalculate``       a date range, or ``--recent-days N`` (whole weeks/months)
+- ``recalculate``       a date range, or ``--recent-days N`` (the last N local
+  dates per employee, today included; whole weeks/months)
 
 Backend: ``--backend sqlite|postgres`` or ``ZAZA_SERVER_BACKEND`` (default
 ``sqlite``). The SQLite development database defaults to
@@ -38,7 +40,7 @@ import logging
 import os
 import sys
 from collections import Counter
-from datetime import date, time
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from .auth import register_device, rotate_token
@@ -141,6 +143,11 @@ def _attendance(args: argparse.Namespace) -> int:
     try:
         store = PostgresAttendanceStore(repo)
         if args.command == "add-schedule":
+            from .attendance.summary_service import local_date_at  # noqa: PLC0415
+
+            employee = store.get_employee(args.employee_id)
+            if employee is None:
+                raise ValueError(f"unknown employee {args.employee_id!r}")
             expected = round(args.expected_hours * 3600) if args.expected_hours is not None else None
             common = {"timezone": args.timezone, "is_working_day": not args.day_off,
                       "start_time": None if args.day_off else args.start,
@@ -150,11 +157,13 @@ def _attendance(args: argparse.Namespace) -> int:
                 store.add_schedule(args.employee_id, schedule_date=args.date, **common)
                 print(f"Added schedule for {args.employee_id} on {args.date}.")
             else:
-                start = args.effective_from or date.today()
+                # Default: the employee's local today, not the server's date.
+                start = args.effective_from or local_date_at(employee.timezone, datetime.now(timezone.utc))
                 for dow in _weekdays(args.weekdays):
                     store.add_schedule(args.employee_id, day_of_week=dow, effective_from=start,
                                        effective_to=args.effective_to, **common)
-                print(f"Added weekly schedule for {args.employee_id}, weekdays {args.weekdays}, from {start}.")
+                print(f"Added weekly schedule for {args.employee_id}, weekdays {args.weekdays}, from {start} "
+                  f"({employee.timezone}).")
             return 0
         if args.command == "list-schedules":
             for r in store.schedules(args.employee_id):
@@ -173,12 +182,14 @@ def _attendance(args: argparse.Namespace) -> int:
         ids = [args.employee_id] if args.employee_id else [e.employee_id for e in store.list_employees()]
         if args.command == "recalculate":
             if args.recent_days is not None:
-                start, end = service.recent_range(args.recent_days)
+                if args.date_from or args.date_to:
+                    raise ValueError("give either --from/--to or --recent-days, not both")
+                # "today" is each employee's own local date
+                result = service.recalculate_recent(args.recent_days, ids)
             elif args.date_from and args.date_to:
-                start, end = args.date_from, args.date_to
+                result = service.recalculate(args.date_from, args.date_to, ids)
             else:
                 raise ValueError("give --from and --to, or --recent-days N")
-            result = service.recalculate(start, end, ids)
             print(f"Recalculated {result.days} day(s) ({result.days_changed} changed), "
                   f"{result.weeks} week(s), {result.months} month(s) for {len(ids)} employee(s).")
             return 0
@@ -242,8 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     sch.add_argument("--end", type=_time, help="HH:MM local end; earlier than start = ends next day")
     sch.add_argument("--expected-hours", type=float, help="expected work hours (> 0, <= shift span)")
     sch.add_argument("--day-off", action="store_true")
-    sch.add_argument("--timezone", required=True, help="IANA name, e.g. Asia/Dhaka")
-    sch.add_argument("--effective-from", type=_date, help="weekly rules: first date (default today)")
+    sch.add_argument("--timezone", help="optional; must equal the employee's timezone (the default)")
+    sch.add_argument("--effective-from", type=_date,
+                     help="weekly rules: first date (default: today in the employee's timezone)")
     sch.add_argument("--effective-to", type=_date, help="weekly rules: last date (default open-ended)")
     lsch = sub.add_parser("list-schedules", help="(PostgreSQL) list schedule rules")
     lsch.add_argument("--employee-id", required=True)
@@ -261,7 +273,8 @@ def main(argv: list[str] | None = None) -> int:
     recalc.add_argument("--employee-id", help="default: every active employee")
     recalc.add_argument("--from", dest="date_from", type=_date)
     recalc.add_argument("--to", dest="date_to", type=_date)
-    recalc.add_argument("--recent-days", type=int, help="instead of --from/--to: the last N days up to today")
+    recalc.add_argument("--recent-days", type=int,
+                        help="instead of --from/--to: the last N local dates, today included, per employee")
 
     args = parser.parse_args(argv)
     try:

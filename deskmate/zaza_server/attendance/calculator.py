@@ -70,6 +70,32 @@ def window_bounds(rules: Sequence[ScheduleRule], local_date: date, employee_tz: 
     return window[0][0], window[-1][1]
 
 
+def _uncertain_intervals(unknown: Sequence[tl.Segment], sessions: Sequence[SessionInput],
+                         devices: Sequence[DeviceInput]) -> list[tl.Interval]:
+    """Times whose activity can't be judged (used for early leave):
+
+    - UNKNOWN periods;
+    - after an INTERRUPTED session (crash, power loss): from its last sign of
+      life until that device's next session starts (open-ended if none);
+    - after a device's last contact with the server: data for that time may
+      not have been uploaded yet (open-ended; never contacted = everything).
+
+    Time with no data after a cleanly CLOSED session is not uncertain: the
+    agent was stopped normally (PC shut down, user signed out).
+    """
+    out: list[tl.Interval] = [(u.start, u.end) for u in unknown]
+    for s in sessions:
+        if s.status != "INTERRUPTED":
+            continue
+        crash = _ts(s.effective_end)
+        resumed = [_ts(o.started_at) for o in sessions
+                   if o is not s and o.device_id == s.device_id and _ts(o.started_at) >= crash]
+        out.append((crash, min(resumed, default=math.inf)))
+    for d in devices:
+        out.append((_ts(d.last_seen_at) if d.last_seen_at is not None else -math.inf, math.inf))
+    return out
+
+
 def calculate_daily(
     *,
     employee_id: str,
@@ -173,19 +199,18 @@ def calculate_daily(
                 late = max(0.0, f - base)
                 if unknowns:
                     flags.add(QualityFlag.START_UNCERTAIN)
-            if now_t >= E and E - last > policy.early_leave_grace_seconds and last > S:
-                unknowns = [u for u in near_unknown if u.start < E and u.end > last]
-                interrupted = any(
-                    s.status == "INTERRUPTED" and _ts(s.started_at) <= last <= _ts(s.effective_end) + 60
-                    for s in win_sessions
-                )
-                if interrupted or awaiting_sync(E):
+            if now_t >= E and last > S and E - last > 0:
+                # Early leave = the part of [last activity, shift end) that
+                # was reliably observed as not working. Only the uncertain
+                # parts are excluded, so a later crash or an unsynced tail
+                # doesn't erase earlier reliable IDLE/LOCKED/no-data time.
+                tail = [(last, E)]
+                uncertain = tl.intersect(_uncertain_intervals(near_unknown, win_sessions, relevant), tail)
+                reliable = (E - last) - tl.total(uncertain)
+                if uncertain:
                     flags.add(QualityFlag.END_UNCERTAIN)
-                else:
-                    end_ref = min([E] + [max(u.start, last) for u in unknowns])
-                    early = max(0.0, end_ref - last)
-                    if unknowns:
-                        flags.add(QualityFlag.END_UNCERTAIN)
+                if reliable > policy.early_leave_grace_seconds:
+                    early = reliable
 
     # ── status ──────────────────────────────────────────────────────────
     if day.rule is None:

@@ -28,7 +28,7 @@ from .models import (
     ScheduleRule,
     SessionInput,
 )
-from .store import summary_hash
+from .store import check_schedule_timezone, summary_hash
 
 _DAILY_FIELDS = [f.name for f in fields(DailySummary)]
 _PERIOD_FIELDS = [f.name for f in fields(PeriodSummary) if f.name not in ("period_kind", "period_start",
@@ -170,8 +170,8 @@ class PostgresAttendanceStore:
         self,
         employee_id: str,
         *,
-        timezone: str,
         is_working_day: bool,
+        timezone: str | None = None,
         day_of_week: int | None = None,
         effective_from: date | None = None,
         effective_to: date | None = None,
@@ -181,9 +181,18 @@ class PostgresAttendanceStore:
         expected_work_seconds: int | None = None,
     ) -> str:
         """Insert one schedule rule (database constraints validate it) and
-        write an audit row in the same transaction."""
+        write an audit row in the same transaction.
+
+        Phase 5 rule: a schedule's timezone is the employee's reporting
+        timezone. ``timezone`` defaults to it; any other zone is rejected
+        (and the database enforces the same with
+        ``work_schedules_timezone_matches_employee``)."""
         from psycopg import errors  # noqa: PLC0415
 
+        employee = self.get_employee(employee_id)
+        if employee is None:
+            raise ValueError(f"unknown employee {employee_id!r}")
+        timezone = check_schedule_timezone(employee, timezone)
         schedule_id = str(uuid.uuid4())
         values = {
             "schedule_id": schedule_id, "employee_id": employee_id, "day_of_week": day_of_week,

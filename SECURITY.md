@@ -263,7 +263,9 @@ Attendance summaries are built to be **fair to employees**:
     employee has no enabled device, or a device hasn't synced since the
     shift ended.
   - Days marked `DATA_INCOMPLETE` count on neither side of the attendance %.
-  - An agent crash means early leave isn't charged.
+  - An agent crash or an unsynced device excludes the uncertain part of
+    the shift's end from early leave; only reliably observed inactivity is
+    charged.
 - **Detected Break / Idle is not an official break.** It is a detected
   away-from-keyboard run of 15 min or more, and is labelled that way.
 - **Configuration is explicit.** There are no hidden grace periods: every

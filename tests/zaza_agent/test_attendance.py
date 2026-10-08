@@ -617,3 +617,216 @@ def test_policy_validation():
         AttendancePolicy(attribution_margin_seconds=13 * H)
     with pytest.raises(ValueError):
         AttendancePolicy(late_grace_seconds=-1)
+
+
+# ─── review fix 1: schedule timezone = employee timezone ───────────────────
+
+
+def test_schedule_in_the_employee_timezone_is_accepted():
+    w = World(weekly=False)
+    w.rule(day_of_week=1, start="09:00", end="17:00", expected=8 * H)  # the employee's timezone
+    w.rule(day_of_week=2, start="09:00", end="17:00", expected=8 * H, tz=TZ)  # explicit and equal
+    assert {r.timezone for r in w.store.rules} == {TZ}
+
+
+def test_schedule_in_a_different_timezone_is_rejected():
+    w = World(weekly=False)
+    with pytest.raises(ValueError, match="differs from employee 'emp-1' timezone 'Asia/Dhaka'"):
+        w.rule(day_of_week=1, start="09:00", end="17:00", expected=8 * H, tz="Europe/London")
+    assert w.store.rules == []
+
+
+def test_overnight_schedule_in_the_employee_timezone_still_works():
+    w = World(weekly=False)
+    w.rule(day_of_week=1, start="20:00", end="04:00", expected=8 * H, tz=TZ)
+    w.active(MON, "20:00", "04:00", end_day=TUE)
+    s = w.day(MON)
+    assert s.attendance_status is S.PRESENT and s.active_in_shift_seconds == 8 * H
+    assert s.scheduled_end == at(TUE, "04:00")
+
+
+def test_dst_schedule_in_the_employee_timezone_still_works():
+    sat = date(2026, 3, 7)
+    w = World(tz=NY, weekly=False)
+    w.rule(day_of_week=6, start="22:00", end="06:00", expected=8 * H, tz=NY)
+    w.period("ACTIVE", at(sat, "22:00", NY), at(sat + timedelta(days=1), "06:00", NY))
+    s = w.day(sat)
+    assert s.timezone == NY and s.scheduled_seconds == 7 * H and s.attendance_status is S.PRESENT
+
+
+# ─── review fix 2: --recent-days per employee local date ───────────────────
+
+# 2026-10-07 18:30 UTC = 2026-10-08 00:30 in Dhaka (UTC+6) = 2026-10-07 14:30 in New York
+JUST_AFTER_DHAKA_MIDNIGHT = datetime(2026, 10, 7, 18, 30, tzinfo=UTC)
+
+
+def _two_timezone_world() -> World:
+    w = World(now=JUST_AFTER_DHAKA_MIDNIGHT)
+    w.store.add_employee("emp-ny", NY)
+    w.store.add_device("emp-ny", DeviceInput("dev-ny", "ACTIVE", JUST_AFTER_DHAKA_MIDNIGHT))
+    for dow in range(1, 6):
+        w.store.add_rule(ScheduleRule(str(uuid.uuid4()), "emp-ny", True, NY, day_of_week=dow,
+                                      effective_from=date(2026, 1, 1), start_time=time(9), end_time=time(17),
+                                      expected_work_seconds=8 * H))
+    return w
+
+
+def test_recent_days_1_is_only_the_employee_local_today():
+    w = World(now=JUST_AFTER_DHAKA_MIDNIGHT)
+    assert JUST_AFTER_DHAKA_MIDNIGHT.date() == date(2026, 10, 7)  # UTC is still the previous date
+    assert w.service.recent_range("emp-1", 1) == (date(2026, 10, 8), date(2026, 10, 8))
+
+
+def test_recent_days_7_is_today_and_the_previous_6_local_dates():
+    w = World(now=JUST_AFTER_DHAKA_MIDNIGHT)
+    assert w.service.recent_range("emp-1", 7) == (date(2026, 10, 2), date(2026, 10, 8))
+
+
+def test_recent_days_use_each_employee_own_today_and_never_create_future_days():
+    w = _two_timezone_world()
+    assert w.service.recent_range("emp-ny", 7) == (date(2026, 10, 1), date(2026, 10, 7))
+    w.service.recalculate_recent(7)
+    dhaka = w.store.list_daily("emp-1", date(2026, 1, 1), date(2027, 1, 1))
+    ny = w.store.list_daily("emp-ny", date(2026, 1, 1), date(2027, 1, 1))
+    assert dhaka[-1].local_date == date(2026, 10, 8)  # Dhaka is already on October 8
+    assert ny[-1].local_date == date(2026, 10, 7)     # New York is still on October 7
+    assert dhaka[0].local_date == ny[0].local_date == date(2026, 9, 28)  # whole ISO week (Mon)
+    assert w.store.get_period("emp-1", "WEEK", MON) is not None
+    assert w.store.get_period("emp-ny", "MONTH", date(2026, 10, 1)).is_provisional
+    assert w.service.recalculate_recent(7).days_changed == 0  # idempotent
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5])
+def test_recent_days_must_be_at_least_1(bad):
+    w = World(now=JUST_AFTER_DHAKA_MIDNIGHT)
+    with pytest.raises(ValueError, match=">= 1"):
+        w.service.recalculate_recent(bad)
+    with pytest.raises(ValueError, match=">= 1"):
+        w.service.recent_range("emp-1", bad)
+
+
+# ─── review fix 3: uncertainty protects only the uncertain part ────────────
+
+
+def test_early_leave_crash_immediately_after_last_activity_is_not_charged():
+    w = World()
+    w.session(at(MON, "09:00"), None, status="INTERRUPTED", heartbeat=at(MON, "15:00"))
+    w.active(MON, "09:00", "15:00")
+    s = w.day(MON)
+    assert s.early_leave_seconds == 0 and s.attendance_status is S.PRESENT
+    assert "END_UNCERTAIN" in s.quality_flags
+
+
+def test_early_leave_keeps_reliable_idle_before_a_crash():
+    w = World()
+    w.session(at(MON, "09:00"), None, status="INTERRUPTED", heartbeat=at(MON, "15:00"))
+    w.active(MON, "09:00", "12:00")
+    w.status("IDLE", MON, "12:00", "14:00")
+    w.status("LOCKED", MON, "14:00", "15:00")  # reliably not working until the crash at 15:00
+    s = w.day(MON)
+    assert s.early_leave_seconds == 3 * H and s.attendance_status is S.EARLY_LEAVE
+    assert "END_UNCERTAIN" in s.quality_flags and "INTERRUPTED_SESSION" in s.quality_flags
+
+
+def test_early_leave_with_unknown_tail_counts_only_until_unknown_begins():
+    w = World()
+    w.active(MON, "09:00", "12:00")
+    w.status("IDLE", MON, "12:00", "14:00")
+    w.status("UNKNOWN", MON, "14:00", "17:00")
+    s = w.day(MON)
+    assert s.early_leave_seconds == 2 * H and "END_UNCERTAIN" in s.quality_flags
+
+
+def test_early_leave_excludes_only_an_uncertain_gap_followed_by_reliable_idle():
+    w = World()
+    w.session(at(MON, "09:00"), at(MON, "12:00"), status="INTERRUPTED")
+    w.active(MON, "09:00", "12:00")
+    w.session(at(MON, "12:05"), at(MON, "17:00"))  # agent restarted: reliably idle afterwards
+    w.status("IDLE", MON, "12:05", "17:00")
+    s = w.day(MON)
+    assert s.early_leave_seconds == 5 * H - 5 * 60 and "END_UNCERTAIN" in s.quality_flags
+
+
+def test_early_leave_with_unsynced_tail_keeps_earlier_reliable_inactivity():
+    w = World()
+    w.active(MON, "09:00", "12:00")
+    w.status("IDLE", MON, "12:00", "15:00")
+    w.store.set_last_seen("dev-1", at(MON, "15:00"))  # disconnected at 15:00, not synced since
+    s = w.day(MON)
+    assert s.early_leave_seconds == 3 * H and s.attendance_status is S.EARLY_LEAVE
+    assert {"END_UNCERTAIN", "AWAITING_DEVICE_SYNC"} <= set(s.quality_flags)
+    w.store.set_last_seen("dev-1", at(MON, "12:00"))  # nothing after the last activity is known
+    assert w.day(MON).early_leave_seconds == 0
+
+
+def test_clean_early_leave_is_unchanged():
+    w = World()
+    w.session(at(MON, "09:00"), at(MON, "16:30"))  # clean sign-out
+    w.active(MON, "09:00", "16:30")
+    s = w.day(MON)
+    assert s.early_leave_seconds == 30 * 60 and s.attendance_status is S.EARLY_LEAVE
+    assert s.quality_flags == () and s.data_quality is DataQuality.COMPLETE
+    w2 = World(policy=AttendancePolicy(early_leave_grace_seconds=30 * 60))
+    w2.active(MON, "09:00", "16:30")
+    assert w2.day(MON).attendance_status is S.PRESENT  # within the grace
+
+
+def test_crash_after_the_shift_does_not_erase_early_leave():
+    w = World()
+    w.session(at(MON, "09:00"), None, status="INTERRUPTED", heartbeat=at(MON, "18:00"))
+    w.active(MON, "09:00", "16:00")
+    w.status("IDLE", MON, "16:00", "18:00")
+    s = w.day(MON)
+    assert s.early_leave_seconds == H and "END_UNCERTAIN" not in s.quality_flags
+
+
+# ─── review fix 4: every policy value configurable ─────────────────────────
+
+POLICY_ENV_NAMES = ("LATE_GRACE_SECONDS", "EARLY_LEAVE_GRACE_SECONDS", "OVERTIME_MIN_SECONDS",
+                    "COUNT_PRE_SHIFT_OVERTIME", "ATTRIBUTION_MARGIN_SECONDS", "BREAK_MIN_SECONDS",
+                    "INCOMPLETE_UNKNOWN_RATIO")
+
+
+@pytest.fixture
+def clean_policy_env(monkeypatch):
+    for name in POLICY_ENV_NAMES:
+        monkeypatch.delenv(f"ZAZA_ATTENDANCE_{name}", raising=False)
+    return monkeypatch
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("true", True), ("FALSE", False), (" 1 ", True), ("0", False),
+                                                ("yes", True), ("off", False), ("", True)])
+def test_policy_env_pre_shift_overtime_boolean(clean_policy_env, raw, expected):
+    clean_policy_env.setenv("ZAZA_ATTENDANCE_COUNT_PRE_SHIFT_OVERTIME", raw)
+    assert AttendancePolicy.from_env().count_pre_shift_overtime is expected
+
+
+def test_policy_env_loads_every_field(clean_policy_env):
+    values = dict(zip(POLICY_ENV_NAMES, ("60", "120", "900", "false", "7200", "600", "0.75"), strict=True))
+    for k, v in values.items():
+        clean_policy_env.setenv(f"ZAZA_ATTENDANCE_{k}", v)
+    assert AttendancePolicy.from_env() == AttendancePolicy(
+        late_grace_seconds=60, early_leave_grace_seconds=120, overtime_min_seconds=900,
+        count_pre_shift_overtime=False, attribution_margin_seconds=7200, break_min_seconds=600,
+        incomplete_unknown_ratio=0.75)
+
+
+def test_policy_env_defaults_when_unset(clean_policy_env):
+    assert AttendancePolicy.from_env() == AttendancePolicy()
+
+
+@pytest.mark.parametrize(("name", "raw", "message"), [
+    ("COUNT_PRE_SHIFT_OVERTIME", "maybe", "must be true or false"),
+    ("ATTRIBUTION_MARGIN_SECONDS", "50000", "ZAZA_ATTENDANCE_ATTRIBUTION_MARGIN_SECONDS: .*0..43200"),
+    ("ATTRIBUTION_MARGIN_SECONDS", "-1", "ZAZA_ATTENDANCE_ATTRIBUTION_MARGIN_SECONDS"),
+    ("ATTRIBUTION_MARGIN_SECONDS", "4h", "must be a whole number of seconds"),
+    ("INCOMPLETE_UNKNOWN_RATIO", "0", r"ZAZA_ATTENDANCE_INCOMPLETE_UNKNOWN_RATIO: .*\(0, 1\]"),
+    ("INCOMPLETE_UNKNOWN_RATIO", "1.5", "ZAZA_ATTENDANCE_INCOMPLETE_UNKNOWN_RATIO"),
+    ("INCOMPLETE_UNKNOWN_RATIO", "nan", "finite"),
+    ("INCOMPLETE_UNKNOWN_RATIO", "half", "must be a number"),
+    ("LATE_GRACE_SECONDS", "-5", "ZAZA_ATTENDANCE_LATE_GRACE_SECONDS: late_grace_seconds must be >= 0"),
+])
+def test_policy_env_invalid_values_are_rejected_clearly(clean_policy_env, name, raw, message):
+    clean_policy_env.setenv(f"ZAZA_ATTENDANCE_{name}", raw)
+    with pytest.raises(ValueError, match=message):
+        AttendancePolicy.from_env()

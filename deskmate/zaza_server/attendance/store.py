@@ -32,6 +32,22 @@ def summary_hash(summary: DailySummary | PeriodSummary) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+def check_schedule_timezone(employee: EmployeeInfo, timezone: str | None) -> str:
+    """Phase 5: a schedule uses its employee's reporting timezone.
+
+    Date attribution (which local date an instant belongs to) uses the
+    employee's timezone and shift times use the schedule's, so the two must
+    be the same zone. Per-schedule ("travel") timezones are not supported.
+    Returns the timezone to store.
+    """
+    if timezone is None or timezone == employee.timezone:
+        return employee.timezone
+    raise ValueError(
+        f"schedule timezone {timezone!r} differs from employee {employee.employee_id!r} timezone "
+        f"{employee.timezone!r}; schedules must use the employee's timezone"
+    )
+
+
 class AttendanceStore(Protocol):
     def get_employee(self, employee_id: str) -> EmployeeInfo | None: ...
     def list_employees(self, *, active_only: bool = True) -> list[EmployeeInfo]: ...
@@ -66,6 +82,7 @@ class InMemoryAttendanceStore:
         self.employees[employee_id] = EmployeeInfo(employee_id, timezone, is_active)
 
     def add_rule(self, rule: ScheduleRule) -> None:
+        check_schedule_timezone(self.employees[rule.employee_id], rule.timezone)  # same rule as the database
         self.rules.append(rule)
 
     def add_device(self, employee_id: str, device: DeviceInput) -> None:
