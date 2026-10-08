@@ -47,7 +47,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 6 | Google Sheets reporting | One-way, read-only export from PostgreSQL into the 5 required tabs (Activity Log from activity periods, Daily/Weekly/Monthly summaries, Dashboard), via a service account; full deterministic refresh with safe failure behaviour |
 | 7 | Manager web dashboard | Server-rendered dashboard on PostgreSQL: Argon2id manager accounts, server-side sessions, CSRF; Overview, Employees, Attendance, Applications, Schedules (audited, from today onwards); employee-local period filters; no charts |
 | 8 | Charts & automatic analysis | Six server-rendered SVG charts (no JS library/CDN) and an Analytics page; deterministic rule-based insights with previous-period comparison and data-quality gating; no AI, no productivity score |
-| 9 | Windows employee installer | Single-file install + autostart for the 5 machines |
+| 9 | Windows employee installer | `ZaZaWorkAgentSetup.exe` (PyInstaller + Inno Setup): ZaZa-only audited package, DPAPI enrollment, transparent logon task, Status & Privacy window, upgrade/uninstall that preserve unsynced data |
 | 10 | Production VPS deployment | Deploy to the existing VPS, isolated from other services |
 | 11 | Pilot testing | Run with real employees, fix gaps |
 | 12 | Optional AI analysis | Natural-language summaries layered on top of Phase 5/8 output |
@@ -92,6 +92,6 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 8 (charts & automatic rule-based
-analysis — see DEVELOPMENT_STATUS.md). Phase 9 (Windows employee installer)
-does not begin until Phase 8 is separately approved.
+Awaiting review/approval of Phase 9 (Windows employee installer — see
+DEVELOPMENT_STATUS.md). Phase 10 (production VPS deployment) does not begin
+until Phase 9 is separately approved.

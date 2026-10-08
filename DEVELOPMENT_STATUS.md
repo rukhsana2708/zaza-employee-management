@@ -1,8 +1,63 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-09 (Phase 8 review fix)
+**Last updated:** 2026-10-09 (Phase 9)
 
-## Current phase: Phase 8 — Charts & automatic analysis (implemented, pending your review)
+## Current phase: Phase 9 — Windows employee installer (implemented, pending your review)
+
+Phase 8 was approved with its review fix. Phase 9 packages the approved ZaZa
+agent as `ZaZaWorkAgentSetup.exe`. **No VPS deployment, pilot or AI.** The
+central server is not deployed.
+
+### Phase 9 summary
+
+- **Product:** ZaZa Work Agent 0.9.0, publisher ZaZa.
+  - `ZaZaWorkAgent.exe` (PyInstaller 6.22, one folder, no console window).
+  - `ZaZaWorkAgentSetup.exe` (Inno Setup 6.7; installs into Program Files,
+    admin once).
+- **New agent modules** (`deskmate/zaza/`):
+  - `workagent.py` (entry point), `runner.py`, `enrollment.py`;
+  - `instance.py` (single-instance lock), `autostart.py` (logon task XML),
+    `control.py` (stop requests);
+  - `status.py`, `ui.py` (Status & Privacy and enrollment windows);
+  - `app_logging.py` (rotating, privacy-filtered logs), `edition.py`,
+    `privacy_notice.py`.
+
+  `paths.py` now uses `%LOCALAPPDATA%\ZaZa\WorkAgent` and migrates the old
+  path. The recorder and sync code are unchanged.
+- **Installer tooling** (`installer/`): `build.ps1`, `ZaZaWorkAgent.spec`,
+  `build_config.py`, `audit_package.py`, `ZaZaWorkAgent.iss`,
+  `smoke-test.ps1` (for a disposable VM), `make_icon.py` and
+  `assets/zaza.ico` (a replaceable placeholder).
+- **Docs:** `docs/zaza/ADMIN_INSTALL.md`, `docs/zaza/EMPLOYEE_PRIVACY.md`.
+- **Tests:**
+  - Default run: 750 passed, 0 failed, 129 skipped.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 878 passed, 0 failed, 1 skipped.
+  - New: 61 tests in `test_installer.py`.
+
+### Phase 9 known limitations / risks
+
+- **Not run as a frozen program yet.** On the build machine, Smart App
+  Control blocks unsigned executables, so neither `ZaZaWorkAgent.exe` nor
+  `ZaZaWorkAgentSetup.exe` could be run there. Not done yet:
+  - the full Windows smoke test (`installer\smoke-test.ps1`) in a
+    disposable VM with Smart App Control off, or with a signed build;
+  - an interactive pass over the setup wizard, the enrollment and Status
+    windows, upgrade and uninstall.
+
+  The same code path was smoke-tested with the minimal build environment's
+  Python against a local server.
+- **Unsigned:** SmartScreen and Smart App Control will warn or block until
+  a real Authenticode certificate is used.
+- **No tray icon** (deferred), and no automatic updates.
+- **Enrollment** happens after installation, as the employee (DPAPI is
+  per user); silent installs need a separate per-user enrollment step.
+- **Website domains** are not detected (unchanged from Phase 2); the
+  privacy notice says so.
+
+### Phase 8 (approved)
+
+Approved with its review fix (summary coverage gates comparisons).
+
 
 Phase 7 was approved with its review fixes. Phase 8 adds six charts and
 automatic, **deterministic rule-based analysis (not artificial
@@ -45,7 +100,7 @@ AI.** No new telemetry. Everything runs on localhost only.
     Google test).
   - New: 62 tests in `test_analytics.py` and 1 PostgreSQL analytics test.
 
-### Phase 8 review fix (pending your approval)
+### Phase 8 review fix (approved)
 
 - **Summary coverage.** For each employee and period, the expected dates are
   the selected local dates up to their local today; future dates are never
@@ -690,8 +745,8 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 5 — Attendance & work-time calculations (approved)
 - [x] Phase 6 — Google Sheets reporting (approved)
 - [x] Phase 7 — Manager web dashboard (approved; localhost only)
-- [x] Phase 8 — Charts & automatic rule-based analysis (implemented, pending review)
-- [ ] Phase 9 — Windows employee installer
+- [x] Phase 8 — Charts & automatic rule-based analysis (approved)
+- [x] Phase 9 — Windows employee installer (implemented, pending review; unsigned; frozen-exe smoke test pending on a Windows VM)
 - [ ] Phase 10 — Production VPS deployment
 - [ ] Phase 11 — Pilot testing
 - [ ] Phase 12 — Optional AI analysis
@@ -715,10 +770,10 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 8** before Phase 9 begins. The Windows
-installer, VPS deployment, the pilot and AI analysis are explicitly **not**
-started. The production database has **not** been created or touched, and
-nothing is deployed.
+**Awaiting your review of Phase 9** before Phase 10 begins. Before approval,
+run `installer\smoke-test.ps1` on a disposable Windows VM where unsigned
+builds may run (see Phase 9 risks). The production VPS, Caddy, DNS and
+PostgreSQL have **not** been touched.
 
 ## Explicitly cancelled from any earlier direction
 

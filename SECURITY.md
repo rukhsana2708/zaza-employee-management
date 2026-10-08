@@ -102,6 +102,57 @@ Unless both keyboard and mouse hooks are `HEALTHY`, time is recorded as
 `UNKNOWN`, not as "employee idle". A monitoring failure, restart, or gap is
 never reported as an attendance fact.
 
+### 2.5 The shipped employee package (Phase 9)
+
+- **Shipped first-party code:** `deskmate` (the version only) and
+  `deskmate.zaza.*`.
+- **Never shipped:**
+  - upstream DeskMate packages (`a11y`, `audio`, `capture`, `screen`,
+    `engine`, `mcp`, `ui` and the rest);
+  - the central server;
+  - the developer CLI;
+  - every screenshot, OCR, audio, webcam, UI Automation, clipboard and
+    keyboard library.
+
+  The build environment does not even contain those libraries.
+- **`installer/audit_package.py` checks the built `ZaZaWorkAgent.exe`:**
+  - it lists every packaged Python module from the executable's own archive
+    and every file next to it;
+  - it fails the build on anything prohibited, and on any
+    non-standard-library module outside the justified allowlist (pydantic,
+    httpx and its dependencies, certifi, psutil);
+  - it scans the source of every shipped ZaZa module for calls that would
+    capture the clipboard, the screen, OCR, audio, the webcam, key
+    identities or typed text, accessibility-tree content or browser URLs,
+    or that would disable TLS verification.
+
+  Allowed exceptions are documented in the report: tkinter (UI; its generic
+  clipboard methods are never called) and ctypes (Win32 calls, each
+  checked). The report is `dist/package-audit.txt`.
+- **No hidden switch:** the installed product has no option to enable a
+  capture feature, pass a token or disable TLS checks.
+- **Transparent installation:** it is visible in Installed apps, the Start
+  menu, Task Manager and Task Scheduler. It runs as the employee with least
+  privilege, opens no inbound port and runs no local server.
+- **Device token:**
+  - it is entered in the enrollment window or provided on standard input
+    (`--enroll-stdin`), and is never a command-line argument;
+  - it is verified with the server first;
+  - it is stored only DPAPI-encrypted (current user);
+  - it never appears in `config.json`, SQLite, `status.json`, logs or the
+    UI, and is never shown again.
+
+  Re-enrollment needs the token again. Changing to a different device ID
+  needs explicit confirmation.
+- **Logs:** `%LOCALAPPDATA%\ZaZa\WorkAgent\logs\agent.log`, rotated at
+  1 MB with 5 kept. A filter drops window titles, application names and
+  per-tick activity lines and masks bearer tokens, so the logs never become
+  a second copy of the telemetry.
+- **Signing:** builds are unsigned until a real Authenticode certificate is
+  available, so SmartScreen / Smart App Control may warn or block. The
+  build process can sign with `signtool` (`-SignToolCommand`).
+  Certificates and passwords never go in Git.
+
 ## 3. Why this boundary exists
 
 Computer activity (app in focus, input presence, idle/lock state) is enough to

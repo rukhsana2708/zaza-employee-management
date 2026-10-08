@@ -248,6 +248,74 @@ its own short transaction. Because Phase 3 isn't built yet, nothing is
 SYNCED today, so summarized data is currently retained indefinitely. At
 roughly a few hundred periods per working day, that is a few MB per year.
 
+### 2.9 Windows installer and the installed agent (Phase 9)
+
+`ZaZaWorkAgentSetup.exe` (Inno Setup 6) installs `ZaZaWorkAgent.exe`, a
+PyInstaller one-folder bundle with no console window, into `C:\Program
+Files\ZaZa Work Agent\`. The agent's behaviour is unchanged: it wraps the
+same `ActivityAgent` and `SyncWorker` (Phases 1–3), including local-first
+SQLite, the idle grace, UNKNOWN fairness, crash recovery and exact-ACK sync.
+
+- **One entry point:** `deskmate/zaza/workagent.py`. The modes are
+  `--background` (the recorder), `--status`, `--enroll`, `--first-run`,
+  `--enroll-stdin`, `--remove-local-data`, plus installer-only modes
+  (`--register-autostart`, `--stop-agents`, `--uninstall-cleanup`). No mode
+  takes a token, disables TLS verification or enables any other capture.
+- **Package contents:** built in a dedicated environment with only the
+  agent's runtime dependencies (`installer/requirements-build.txt`). The
+  spec excludes every upstream DeskMate package and capture library.
+  `installer/audit_package.py` inspects the **built** executable's archive
+  and fails the build on any prohibited or unallowlisted module, file or
+  capture call (SECURITY.md §2.5).
+- **Autostart:** the Task Scheduler task `\ZaZa\ZaZa Work Agent`:
+  - a logon trigger for the Users group, in the user's **interactive
+    session** (no Session 0 service);
+  - `LeastPrivilege`, no stored password, 30 s delay, `IgnoreNew`;
+  - restart after a crash every 5 min, at most 3 times.
+
+  The installer creates it with `/F` (replace, never duplicate) and the
+  uninstaller deletes it.
+- **Single instance:** an OS file lock, `agent.lock`, next to the database.
+  It is released by the OS if the process dies; a second copy exits.
+- **Enrollment:** server URL, device ID and token are checked against
+  `GET /api/v1/devices/me`; the employee ID comes from the server.
+  - The token goes to the DPAPI credentials file (current user).
+  - The URL, device ID and employee ID go to `config.json`.
+  - Enrollment runs as the signed-in employee (Finish page, Start menu, or
+    `--enroll-stdin` for provisioning), never inside the elevated installer,
+    whose account may differ.
+  - The recorder records nothing until the device is enrolled, so no record
+    carries a placeholder identity. Re-enrollment restarts it with the new
+    identity.
+- **Server URL:** HTTPS for every server; plain HTTP only for
+  `127.0.0.1` / `localhost` / `[::1]`; certificates are always verified.
+- **Data:** `%LOCALAPPDATA%\ZaZa\WorkAgent\` holds `activity.db`,
+  `device_credentials.json`, `config.json`, `status.json`, `agent.lock` and
+  `logs\agent.log`. The previous development path `~\.zaza_agent` is moved
+  there once: the database is checkpointed, files are moved and nothing is
+  overwritten.
+- **Status:** the agent writes `status.json` (state, health, sync state,
+  last sync, pending count — no token, no activity data). The Status &
+  Privacy window (tkinter) reads it. Nothing listens on the network.
+- **Stopping:** through files, not a network channel.
+  - Per user: `<data>\stop.request`.
+  - Machine-wide, for setup/uninstall: `<Program Files>\ZaZa Work
+    Agent\stop.request`, writable only by administrators.
+  - Requests older than the agent's start are ignored. Stragglers are
+    terminated after 20 s; Phase 2 recovery then closes their session.
+- **Upgrade:** setup stops the agents, replaces the files and re-registers
+  the task. The data folder is untouched.
+- **Uninstall:** stops the agents, removes the task, files and shortcuts,
+  and **preserves local data** by default. `--remove-local-data` (run as
+  the employee) deletes it after warning how many records are not uploaded
+  yet.
+- **Not built in Phase 9:** a tray icon (deferred, to keep the recorder
+  stable) and automatic updates (upgrades are manual installer runs).
+
+Build and administration: `installer/build.ps1`, `installer/smoke-test.ps1`,
+`docs/zaza/ADMIN_INSTALL.md`. The employee notice is
+`docs/zaza/EMPLOYEE_PRIVACY.md`.
+
 ## 3. Component 2 — Central Synchronization API
 
 - Future home: existing Windows Server 2022 VPS, bound to `127.0.0.1:8100` so

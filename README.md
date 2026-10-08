@@ -60,11 +60,14 @@ for the current phase and what's implemented so far. As of this writing:
   - Phase 7: the manager web dashboard (`deskmate/zaza_server/dashboard/`,
     ARCHITECTURE.md §6). It is server-rendered, reads PostgreSQL directly,
     and is localhost-only.
-- **Implemented, awaiting review:** Phase 8, charts and automatic analysis
-  on the dashboard: six server-rendered SVG charts and an Analytics page
-  (ARCHITECTURE.md §6.7–6.8). The analysis is **deterministic rule-based
-  analysis, not artificial intelligence**, and there is no productivity
-  score.
+  - Phase 8: charts and deterministic, rule-based analysis on the
+    dashboard (ARCHITECTURE.md §6.7–6.8). Not AI, and no productivity score.
+- **Implemented, awaiting review:** Phase 9, the Windows employee installer
+  `ZaZaWorkAgentSetup.exe` (ARCHITECTURE.md §2.9). Build with
+  `installer\build.ps1`; the administrator guide is
+  [docs/zaza/ADMIN_INSTALL.md](docs/zaza/ADMIN_INSTALL.md) and the employee
+  notice [docs/zaza/EMPLOYEE_PRIVACY.md](docs/zaza/EMPLOYEE_PRIVACY.md).
+  Builds are unsigned for now.
 
 Everything runs locally only. PostgreSQL has been tested locally, and Sheets
 only against an in-memory fake (a live test is available, opt-in). Nothing

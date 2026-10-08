@@ -20,7 +20,9 @@ def _configure() -> None:
         return
     root = logging.getLogger("zaza")
     root.setLevel(logging.INFO)
-    if not root.handlers:
+    import sys  # noqa: PLC0415
+
+    if not root.handlers and sys.stderr is not None:  # a windowed (no-console) build has no stderr
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
         root.addHandler(handler)
