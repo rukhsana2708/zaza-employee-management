@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{% block title %}ZaZa Manager{% endblock %} · ZaZa</title>
+  <link rel="stylesheet" href="/manager/static/dashboard.css">
+  <script src="/manager/static/dashboard.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{% if user %}
+<header class="topbar">
+  <div class="brand">ZaZa <span>Manager Dashboard</span></div>
+  <nav aria-label="Main">
+    <ul>
+      {% for key, label, href in [("overview", "Overview", "/manager"), ("employees", "Employees", "/manager/employees"),
+                                  ("attendance", "Attendance", "/manager/attendance"),
+                                  ("applications", "Applications", "/manager/applications"),
+                                  ("schedules", "Schedules", "/manager/schedules")] %}
+      <li><a href="{{ href }}"{% if page == key %} aria-current="page"{% endif %}>{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  </nav>
+  <div class="account">
+    <span>{{ user.display_name }} <small>({{ user.role|lower }})</small></span>
+    <form method="post" action="/manager/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="link-button">Log out</button>
+    </form>
+  </div>
+</header>
+{% endif %}
+<main id="main">
+{% block content %}{% endblock %}
+</main>
+<footer class="footer">
+  Activity is a proxy for work, not proof of it. Figures are not a productivity score.
+  Data source: the ZaZa database (PostgreSQL).
+</footer>
+</body>
+</html>

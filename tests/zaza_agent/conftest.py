@@ -206,6 +206,7 @@ def pg_settings():
 
 
 PG_TABLES = (
+    "manager_sessions", "manager_users",
     "daily_summaries", "weekly_summaries", "monthly_summaries",
     "audit_logs", "application_usage_daily", "idle_periods", "activity_periods", "work_sessions",
     "work_schedules", "device_tokens", "devices", "employees",

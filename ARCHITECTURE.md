@@ -1245,28 +1245,208 @@ already running.
 whatever summaries are stored, and the Dashboard shows when they were last
 calculated.
 
-## 6. Component 5 — Manager Web Dashboard
+## 6. Component 5 — Manager Web Dashboard (Phase 7)
 
-A separate manager-facing web app, reading only from PostgreSQL (not Sheets).
+A server-rendered web dashboard inside the existing FastAPI server, under
+`/manager`. It is built with Jinja2 templates, local CSS and one small
+vanilla JavaScript file: no frontend framework, build step, CDN or external
+font. It reads **PostgreSQL directly** — never Google Sheets — and works
+whether or not Sheets is configured. Phase 7 is local/development only; it
+is not deployed (Phase 10).
 
-### 6.1 Date scope & filters
+**Code:** `deskmate/zaza_server/dashboard/`:
+- `config.py`, `security.py` (passwords, tokens, headers), `models.py`.
+- `queries.py`: `PostgresDashboardRepository`, plus an in-memory version for
+  tests.
+- `auth.py`: accounts, login, sessions.
+- `service.py`: period filters, KPIs, current status, schedules.
+- `routes.py`: routes and rendering only; no SQL and no business logic.
+- `templates/`, `static/`.
 
-Ranges: Today, Yesterday, This Week, Last Week, This Month, Last Month, custom
-range. Employee filter: All employees, or one individual employee.
+Each request goes route → `DashboardService` / `ManagerAuth` → repository →
+PostgreSQL. Optional extra: `zaza-dashboard` (Jinja2, argon2-cffi).
+`serve` mounts the dashboard when the backend is PostgreSQL.
 
-### 6.2 KPIs
+### 6.1 Manager accounts, sessions and CSRF
 
-Employee count; currently working / idle / offline counts; scheduled hours;
-tracked hours; active hours; idle hours; average active hours; attendance
-percentage.
+**Accounts** (`manager_users`, migration `0004_manager_dashboard_auth`):
+- **Usernames** are stored lower-case and unique case-insensitively
+  (`Manager`, `manager` and `MANAGER` are one account). Display names keep
+  their capitals.
+- **Passwords** are Argon2id hashes (`argon2-cffi` defaults). A CHECK
+  refuses anything that isn't an `$argon2id$` hash, so plaintext can't be
+  stored. Policy: at least 12 characters, no leading or trailing spaces, must
+  not contain the username, not too repetitive.
+- **Roles:**
+  - MANAGER can view everything and manage schedules.
+  - ADMIN can do the same, and is reserved for account administration,
+    which is CLI-only in Phase 7.
+- **No default account.** Accounts come from `manager-create`, which asks
+  for the password with `getpass`; a password is never a command-line
+  argument.
 
-### 6.3 Employee detail view
+**Login** (`GET/POST /manager/login`):
+- The failure message is always "Invalid username or password." — for an
+  unknown user, a wrong password or a disabled account. An unknown username
+  still costs one Argon2 check, so timing doesn't reveal which accounts
+  exist.
+- The login form has its own double-submit token (cookie
+  `zaza_manager_login` plus a hidden field).
+- A successful login sets `last_login_at` and is audited.
+- Passwords stored with older Argon2 settings are re-hashed on login.
 
-Schedule; first/last activity; tracked/active/idle hours; late time; early
-finish; overtime; application usage breakdown; daily timeline; calendar view;
-daily report; weekly report.
+**Sessions** (`manager_sessions`):
+- The browser gets a 256-bit random token (`secrets.token_urlsafe(32)`) in
+  the cookie `zaza_manager_session`. The cookie is HttpOnly,
+  SameSite=Strict and Path=/manager, and is marked Secure when
+  `ZAZA_DASHBOARD_COOKIE_SECURE=true`. Its Max-Age is
+  `ZAZA_DASHBOARD_SESSION_HOURS`.
+- The database stores only SHA-256(token). Identity and role are never in
+  the cookie.
+- **Expiry is absolute** (default 12 h) and there is no sliding renewal.
+  `last_seen_at` is updated at most every 5 minutes.
+- A session stops working immediately when it expires, at logout (which
+  revokes it), on revocation, on a password reset (all of the account's
+  sessions), or when the account is disabled.
 
-### 6.4 Interactive charts (Phase 8)
+**CSRF:**
+- Every POST (logout and every schedule change) must carry the session's
+  CSRF token: HMAC-SHA256(session token, `"zaza-csrf"`).
+- The token is tied to the session, is useless without the cookie, is
+  checked in constant time, and its SHA-256 is stored with the session.
+- A request whose `Origin` header is not the dashboard's own origin is also
+  refused.
+- GET requests never change data. The only bookkeeping write on a GET is the
+  throttled session `last_seen_at`.
+
+**Headers** on every `/manager` response:
+- `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`.
+- `Content-Security-Policy: default-src 'none'; script-src 'self';
+  style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self';
+  frame-ancestors 'none'; base-uri 'none'`. The templates have no inline
+  scripts or styles.
+
+**XSS:** all database text is untrusted. Jinja2 runs with `autoescape=True`
+for every template, the JavaScript writes only with `textContent`, and
+nothing from the database is placed in a URL scheme or an HTML attribute
+without escaping.
+
+### 6.2 Pages
+
+The navigation is Overview · Employees · Attendance · Applications ·
+Schedules · Log out. There are no charts (Phase 8) and no productivity
+score.
+
+| Route | Content |
+|---|---|
+| `/manager` | **Filters** (period, employee); **"right now"** cards (Active Employees, Currently Active, Idle, Locked, Unknown, Online/no recent activity, Offline); **selected-period KPI cards** (Scheduled, Tracked, Active, Idle, Unknown and Locked Hours, Overtime, Attendance %, Late / Absent / Data-Incomplete Employees with names); **employee table** (Current Status, Last Seen, Today's Schedule, Today's Active/Idle/Unknown Hours, Attendance Status, Late, Overtime, Data Quality with explanations). The status counts refresh every 60 s from `/manager/api/current-status`, paused while the tab is hidden. |
+| `/manager/employees` | each employee's status, time zone and last contact |
+| `/manager/employees/{id}` | **Header:** name, ID, time zone, current status, last seen, today's schedule and attendance. **Sections:** selected-period summary (Scheduled … Data-Incomplete Days); daily attendance table; application usage table; recent activity periods (newest first, at most `ZAZA_DASHBOARD_ACTIVITY_ROWS`). |
+| `/manager/attendance` | stored daily summaries for the filter. Every column sorts on the server through a whitelisted key; ties are broken deterministically. |
+| `/manager/applications` | application usage table, grouped by application (All Employees) or by application and employee |
+| `/manager/schedules` | weekly and date-specific rules per employee; add, edit and remove forms (§6.6) |
+| `/manager/api/{current-status,overview,attendance,applications}` | the same figures as JSON. Same session required: 401 without one. |
+
+### 6.3 Current status (live)
+
+This is kept separate from the historical figures: it is never used for
+attendance, and attendance is never rebuilt from it. For each employee:
+
+1. **Only enabled devices count.** No enabled device → **No enabled
+   device**.
+2. **Online or offline:** a device is online if `devices.last_seen_at` is
+   within `ZAZA_DASHBOARD_ONLINE_THRESHOLD_SECONDS` (default 300). Otherwise
+   it is **Offline**.
+3. **What an online device is doing:** the status of its latest
+   `activity_periods` row (ACTIVE, IDLE, LOCKED or UNKNOWN, exactly as
+   recorded) if that period ended within the threshold. Otherwise it is
+   **Online, no recent activity**.
+4. **Several devices:** the highest wins, ACTIVE > IDLE > LOCKED > UNKNOWN >
+   ONLINE_NO_ACTIVITY > OFFLINE.
+
+UNKNOWN is never shown as idle, and "online" is never called working. The
+"Offline" card counts offline employees plus those without an enabled
+device.
+
+### 6.4 Period filters (employee-local dates)
+
+- **Choices:** Today, Yesterday, This Week, Last Week, This Month, Last
+  Month, and Custom (From/To). Employee: All Employees (active ones) or one
+  employee.
+- **Every period is resolved per employee** from that employee's own local
+  today, in `employees.timezone`, which is also the schedule's zone. Weeks
+  are ISO Monday–Sunday; months are calendar months.
+- **Custom From/To** are local calendar dates for every employee, at most
+  366 days. They are compared with `daily_summaries.local_date`, never with
+  UTC timestamps.
+- **Mixed local periods:** when employees' local periods differ (e.g. Dhaka
+  is already on 8 October while New York is on 7 October), the page says
+  "local periods differ between employees" and lists each employee's range.
+- **Filters are resolved and summed on the server.** The page receives the
+  finished values; no metric is computed in JavaScript.
+
+### 6.5 KPI definitions (from stored Phase 5 summaries; never recalculated)
+
+For the selected employees, sum `daily_summaries` rows whose `local_date` is
+inside each employee's own range:
+- **Scheduled / Tracked / Active / Idle / Unknown / Locked Hours, Overtime:**
+  SUM of the matching `*_seconds` columns.
+- **Attendance %** = SUM(`attendance_credit_seconds`) ÷
+  SUM(`attendance_basis_seconds`) × 100; "–" when the basis is 0. It is
+  **never** an average of daily percentages, and it matches §4.11.7 and the
+  Sheets Dashboard.
+- **Late / Absent / Data-Incomplete Employees:** employees with at least one
+  LATE (or LATE_AND_EARLY) / ABSENT / DATA_INCOMPLETE day in the period.
+- **Employee page:** late and early-leave minutes, and counts of days
+  worked, late, absent and data-incomplete.
+- **Wording:** "Active Hours", never "Actual Work Hours".
+- **Data quality** (COMPLETE / PARTIAL / INSUFFICIENT) is shown with
+  plain-language explanations of its flags: UNKNOWN time, START/END
+  uncertain, AWAITING_DEVICE_SYNC, DATA_INCOMPLETE "not counted as absent",
+  and so on.
+- **Overnight shift:** "today's schedule" is the shift that starts on the
+  employee's local today, e.g. "20:00 – 04:00 (+1 day)". Its summary row is
+  the shift-start date (§4.11.2).
+
+**Application usage** (`application_usage_daily`) is supplementary activity
+information, not attendance:
+- Its `usage_date` is the device's calendar date, which for an overnight
+  shift can differ from the attendance date.
+- It is filtered by each employee's local date range and sorted by Active
+  Hours.
+- "Usage Days" counts distinct calendar dates.
+- It is labelled as "not a productivity score".
+
+**Recent activity** comes from `activity_periods` only: no raw events, no
+payloads, no hashes, no record versions. Privacy-excluded periods show the
+stored placeholders, and the Privacy column marks them.
+
+### 6.6 Schedule management
+
+This uses the **same write path** as the CLI, `PostgresAttendanceStore`.
+There is no second validator: the database constraints validate every rule
+(timezone = employee's, overnight shifts, start ≠ end, 0 < expected ≤ shift
+span, day-off shape, one rule per weekday/start date and per date), and
+violations come back as friendly messages. Every change writes its
+`audit_logs` row in the same transaction: actor type MANAGER or ADMIN, the
+username, the action, the schedule ID, and old and new values.
+
+**History safety:** dashboard changes take effect on the employee's local
+today or later, so already-calculated days never change silently.
+
+| Rule | Allowed from the dashboard |
+|---|---|
+| Upcoming (weekly from ≥ today, or a date ≥ today) | edit in place; remove (DELETE, audited) |
+| In effect (weekly, started before today) | **change from a date ≥ today**: the old rule ends the day before and a new rule starts (one transaction); **stop from a date ≥ today** by setting `effective_to` |
+| Past (ended before today, or a past date) | read-only |
+
+New weekly rules start today or later (the default is the employee's local
+today). New date rules (override or day off) must be today or later. A date
+rule overrides the weekly rule (§4.11.2). Correcting history stays an
+administrator task: the CLI, followed by `recalculate`.
+
+### 6.7 Interactive charts (Phase 8)
 
 1. Active Hours by Employee
 2. Active vs Idle Hours by Employee
@@ -1279,7 +1459,7 @@ All charts respond to the active employee + date filters, and all are built
 from `daily_summaries`/`weekly_summaries`/`monthly_summaries` and
 `application_usage` — not from raw events.
 
-### 6.5 Deterministic analysis (Phase 8, no AI required for V1)
+### 6.8 Deterministic analysis (Phase 8, no AI required for V1)
 
 Highest/lowest active-hours employee, team average active hours, late
 starts, early finishes, unusually high idle time, overtime, day-over-day and

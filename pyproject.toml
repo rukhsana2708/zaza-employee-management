@@ -62,6 +62,9 @@ zaza-postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2", "alembic>=1.13", "
 # ZaZa Google Sheets reporting (Phase 6): the official Google API client and
 # auth libraries. Server-side only; never needed by the employee agent.
 zaza-sheets = ["google-api-python-client>=2.100", "google-auth>=2.23", "google-auth-httplib2>=0.2"]
+# ZaZa manager web dashboard (Phase 7): server-rendered templates and Argon2id
+# password hashing. Server-side only; never needed by the employee agent.
+zaza-dashboard = ["jinja2>=3.1", "argon2-cffi>=23.1"]
 full = [
     "pytesseract>=0.3.10",
     "sounddevice>=0.4.6",
@@ -93,6 +96,7 @@ deskmate = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 # are run as scripts (python <path>) / read at runtime. SKILL.md is shared.
 "deskmate.apps" = ["*.md", "*/app.py", "*/pipe.md", "*/*.md"]
 "deskmate.zaza_server.postgres" = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
+"deskmate.zaza_server.dashboard" = ["templates/*.html", "static/*.css", "static/*.js"]
 
 [tool.ruff]
 line-length = 100

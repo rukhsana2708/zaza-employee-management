@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Attendance{% endblock %}
+{% block content %}
+<h1>Attendance</h1>
+{{ m.filters(f, employees, "/manager/attendance") }}
+{{ m.period_note(view.period) }}
+<p class="note">One row per employee and local date, from the stored attendance summaries.
+  Select a column heading to sort. Totals: {{ view.totals.active|hours }} active of
+  {{ view.totals.scheduled|hours }} scheduled; attendance {{ view.totals.attendance_fraction|pct(fraction=True) }}.</p>
+{% macro th(key, label) %}
+<th scope="col"{% if view.sort == key %} aria-sort="{{ 'descending' if view.direction == 'desc' else 'ascending' }}"{% endif %}>
+  <a href="{{ sort_link(key) }}">{{ label }}{% if view.sort == key %} {{ "▼" if view.direction == "desc" else "▲" }}{% endif %}</a></th>
+{% endmacro %}
+<div class="table-wrap">
+<table>
+  <thead><tr>
+    {{ th("employee", "Employee") }}{{ th("date", "Date") }}{{ th("scheduled", "Scheduled Hours") }}
+    {{ th("tracked", "Tracked Hours") }}{{ th("active", "Active Hours") }}{{ th("idle", "Idle Hours") }}
+    {{ th("unknown", "Unknown Hours") }}{{ th("locked", "Locked Hours") }}{{ th("late", "Late") }}
+    {{ th("early", "Early Leave") }}{{ th("overtime", "Overtime") }}{{ th("status", "Attendance Status") }}
+    {{ th("attendance", "Attendance %") }}{{ th("quality", "Data Quality") }}
+  </tr></thead>
+  <tbody>
+  {% for row in view.rows %}{% set s = row.summary %}
+  <tr>
+    <th scope="row"><a href="/manager/employees/{{ row.employee.employee_id|urlencode }}">{{ row.employee.display_name }}</a></th>
+    <td>{{ s.local_date.isoformat() }}</td><td>{{ s.scheduled_seconds|hours }}</td><td>{{ s.tracked_seconds|hours }}</td>
+    <td>{{ s.active_seconds|hours }}</td><td>{{ s.idle_seconds|hours }}</td><td>{{ s.unknown_seconds|hours }}</td>
+    <td>{{ s.locked_seconds|hours }}</td><td>{{ s.late_seconds|minutes }}</td><td>{{ s.early_leave_seconds|minutes }}</td>
+    <td>{{ s.overtime_seconds|hours }}</td><td>{{ m.attendance_badge(s) }}</td><td>{{ s.attendance_percentage|pct }}</td>
+    <td>{{ m.quality(s) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="14" class="muted">No calculated days in this period.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

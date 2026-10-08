@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Schedules{% endblock %}
+{% macro hours_fields(prefix, rule=None) %}
+<div class="field"><label for="{{ prefix }}-start">Start</label>
+  <input id="{{ prefix }}-start" name="start" type="time" value="{{ rule.start_time.strftime('%H:%M') if rule and rule.start_time else '09:00' }}"></div>
+<div class="field"><label for="{{ prefix }}-end">End</label>
+  <input id="{{ prefix }}-end" name="end" type="time" value="{{ rule.end_time.strftime('%H:%M') if rule and rule.end_time else '17:00' }}"></div>
+<div class="field"><label for="{{ prefix }}-expected">Expected hours</label>
+  <input id="{{ prefix }}-expected" name="expected_hours" type="number" min="0.25" max="24" step="0.25"
+         value="{{ '%g'|format(rule.expected_work_seconds / 3600) if rule and rule.expected_work_seconds else '8' }}"></div>
+<div class="field check"><input id="{{ prefix }}-off" name="day_off" type="checkbox" value="1"{% if rule and not rule.is_working_day %} checked{% endif %}>
+  <label for="{{ prefix }}-off">Day off</label></div>
+{% endmacro %}
+{% macro hours_text(r) %}{% if r.is_working_day %}{{ r.start_time.strftime('%H:%M') }} – {{ r.end_time.strftime('%H:%M') }}{% if r.end_time <= r.start_time %} (+1 day){% endif %}, {{ '%g'|format(r.expected_work_seconds / 3600) }} h{% else %}Day off{% endif %}{% endmacro %}
+{% macro state_text(state) %}{{ {"past": "Past (read-only)", "running": "In effect", "future": "Upcoming"}[state] }}{% endmacro %}
+{% block content %}
+<h1>Schedules</h1>
+{% if message %}<p class="alert ok" role="status">{{ message }}</p>{% endif %}
+{% if error is defined and error %}<p class="alert error" role="alert">{{ error }}</p>{% endif %}
+<p class="note">Schedules use each employee's own time zone. A shift whose end is earlier than its start ends the
+  next day and belongs to the day it starts. A one-date rule overrides the weekly rule for that date.
+  Changes apply from today (the employee's local date) onwards; past days keep their schedule. Correcting a
+  past schedule is an administrator task (command line, followed by a recalculation).</p>
+
+<form class="filters" method="get" action="/manager/schedules">
+  <div class="field"><label for="employee">Employee</label>
+    <select id="employee" name="employee"><option value="">All Employees</option>
+      {% for e in employees %}<option value="{{ e.employee_id }}"{% if view.selected == e.employee_id %} selected{% endif %}>{{ e.display_name }}</option>{% endfor %}
+    </select></div>
+  <div class="field"><button type="submit">Show</button></div>
+</form>
+
+{% for item in view.employees %}{% set e = item.employee %}
+<section class="schedule-block">
+  <h2>{{ e.display_name }} <small class="muted">{{ e.timezone }} · today {{ item.today.isoformat() }}</small></h2>
+  <h3>Weekly schedule</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Weekday</th><th scope="col">Hours</th><th scope="col">Effective from</th>
+      <th scope="col">Effective to</th><th scope="col">State</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+    {% for r, state in item.weekly %}
+    <tr>
+      <th scope="row">{{ WEEKDAYS[r.day_of_week - 1] }}</th><td>{{ hours_text(r) }}</td>
+      <td>{{ r.effective_from.isoformat() }}</td><td>{{ r.effective_to.isoformat() if r.effective_to else "open-ended" }}</td>
+      <td>{{ state_text(state) }}</td>
+      <td>{% if state != "past" %}
+        <details><summary>Edit / remove</summary>
+          <form method="post" action="/manager/schedules/{{ r.schedule_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+            {{ hours_fields("u-" ~ r.schedule_id, r) }}
+            <div class="field"><label for="u-{{ r.schedule_id }}-from">{{ "Change from" if state == "running" else "Effective from" }}</label>
+              <input id="u-{{ r.schedule_id }}-from" name="from_date" type="date" min="{{ item.today.isoformat() }}"
+                     value="{{ item.today.isoformat() if state == 'running' else r.effective_from.isoformat() }}"></div>
+            {% if state == "future" %}<div class="field"><label for="u-{{ r.schedule_id }}-to">Effective to</label>
+              <input id="u-{{ r.schedule_id }}-to" name="effective_to" type="date" value="{{ r.effective_to.isoformat() if r.effective_to else '' }}"></div>{% endif %}
+            <div class="field"><button type="submit">Save change</button></div>
+          </form>
+          <form method="post" action="/manager/schedules/{{ r.schedule_id }}/remove" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+            {% if state == "running" %}<div class="field"><label for="r-{{ r.schedule_id }}">Stop from</label>
+              <input id="r-{{ r.schedule_id }}" name="from_date" type="date" min="{{ item.today.isoformat() }}" value="{{ item.today.isoformat() }}"></div>{% endif %}
+            <div class="field"><button type="submit" class="danger">{{ "Stop this rule" if state == "running" else "Remove" }}</button></div>
+          </form>
+        </details>{% else %}<span class="muted">–</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No weekly rules.</td></tr>
+    {% endfor %}
+    </tbody></table></div>
+
+  <h3>Date-specific rules</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Date</th><th scope="col">Hours</th><th scope="col">State</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+    {% for r, state in item.dated %}
+    <tr>
+      <th scope="row">{{ r.schedule_date.isoformat() }}</th><td>{{ hours_text(r) }}</td><td>{{ state_text(state) }}</td>
+      <td>{% if state != "past" %}
+        <details><summary>Edit / remove</summary>
+          <form method="post" action="/manager/schedules/{{ r.schedule_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+            <div class="field"><label for="d-{{ r.schedule_id }}-date">Date</label>
+              <input id="d-{{ r.schedule_id }}-date" name="schedule_date" type="date" min="{{ item.today.isoformat() }}" value="{{ r.schedule_date.isoformat() }}"></div>
+            {{ hours_fields("d-" ~ r.schedule_id, r) }}
+            <div class="field"><button type="submit">Save change</button></div>
+          </form>
+          <form method="post" action="/manager/schedules/{{ r.schedule_id }}/remove" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+            <div class="field"><button type="submit" class="danger">Remove</button></div>
+          </form>
+        </details>{% else %}<span class="muted">–</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No date-specific rules.</td></tr>
+    {% endfor %}
+    </tbody></table></div>
+
+  <details class="add"><summary>Add a weekly rule</summary>
+    <form method="post" action="/manager/schedules/weekly" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="employee_id" value="{{ e.employee_id }}">
+      <input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+      <fieldset class="weekdays"><legend>Weekdays</legend>
+        {% for name in WEEKDAYS %}<span class="check"><input id="w-{{ e.employee_id }}-{{ loop.index }}" type="checkbox" name="weekday" value="{{ loop.index }}"{% if loop.index <= 5 %} checked{% endif %}>
+          <label for="w-{{ e.employee_id }}-{{ loop.index }}">{{ name }}</label></span>{% endfor %}
+      </fieldset>
+      {{ hours_fields("w-" ~ e.employee_id) }}
+      <div class="field"><label for="w-{{ e.employee_id }}-from">Effective from</label>
+        <input id="w-{{ e.employee_id }}-from" name="effective_from" type="date" min="{{ item.today.isoformat() }}" value="{{ item.today.isoformat() }}"></div>
+      <div class="field"><label for="w-{{ e.employee_id }}-to">Effective to (optional)</label>
+        <input id="w-{{ e.employee_id }}-to" name="effective_to" type="date"></div>
+      <div class="field"><button type="submit">Add weekly rule</button></div>
+    </form>
+  </details>
+  <details class="add"><summary>Add a rule for one date (override or day off)</summary>
+    <form method="post" action="/manager/schedules/date" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="employee_id" value="{{ e.employee_id }}">
+      <input type="hidden" name="return_employee" value="{{ view.selected or '' }}">
+      <div class="field"><label for="dt-{{ e.employee_id }}">Date</label>
+        <input id="dt-{{ e.employee_id }}" name="schedule_date" type="date" min="{{ item.today.isoformat() }}" required></div>
+      {{ hours_fields("dt-" ~ e.employee_id) }}
+      <div class="field"><button type="submit">Add date rule</button></div>
+    </form>
+  </details>
+</section>
+{% endfor %}
+{% endblock %}

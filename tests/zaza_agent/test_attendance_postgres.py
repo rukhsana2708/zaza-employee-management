@@ -343,7 +343,7 @@ def test_migration_0003_refuses_existing_mismatched_schedules():
             conn.execute("UPDATE work_schedules SET timezone = 'Asia/Dhaka'")
         migrate.upgrade(settings)
         with psycopg.connect(**settings.connect_kwargs(), autocommit=True) as conn:
-            assert migrate.current_revision(conn) == "0003_schedule_timezone"
+            assert migrate.current_revision(conn) == migrate.head_revision()  # 0003 applied, and later ones
     finally:
         pg_admin_execute(settings, "DROP SCHEMA IF EXISTS zaza_pytest_mig5tz CASCADE")
 

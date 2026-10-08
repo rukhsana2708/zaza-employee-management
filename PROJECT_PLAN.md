@@ -45,7 +45,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 4 | PostgreSQL central storage | Typed, constrained PostgreSQL schema (Alembic migrations) behind the Phase 3 repository interface; concurrency-safe idempotent upserts; device registry and append-only audit log; small connection pool. Built and tested locally; VPS database created only in Phase 10 |
 | 5 | Attendance & work-time calculations | Deterministic daily/weekly/monthly summaries in PostgreSQL (authoritative for Sheets/dashboard), with DST-correct schedule resolution including overnight shifts, fair data-quality handling, and recalculation commands |
 | 6 | Google Sheets reporting | One-way, read-only export from PostgreSQL into the 5 required tabs (Activity Log from activity periods, Daily/Weekly/Monthly summaries, Dashboard), via a service account; full deterministic refresh with safe failure behaviour |
-| 7 | Manager web dashboard | KPIs, filters, employee detail views |
+| 7 | Manager web dashboard | Server-rendered dashboard on PostgreSQL: Argon2id manager accounts, server-side sessions, CSRF; Overview, Employees, Attendance, Applications, Schedules (audited, from today onwards); employee-local period filters; no charts |
 | 8 | Interactive charts & automatic analysis | Charting + deterministic insights (no AI yet) |
 | 9 | Windows employee installer | Single-file install + autostart for the 5 machines |
 | 10 | Production VPS deployment | Deploy to the existing VPS, isolated from other services |
@@ -92,6 +92,6 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 6 (Google Sheets reporting — see
-DEVELOPMENT_STATUS.md). Phase 7 (manager dashboard) does not begin until
-Phase 6 is separately approved.
+Awaiting review/approval of Phase 7 (manager web dashboard — see
+DEVELOPMENT_STATUS.md). Phase 8 (charts & automatic analysis) does not
+begin until Phase 7 is separately approved.

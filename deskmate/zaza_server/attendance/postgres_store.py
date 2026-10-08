@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict, fields
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from psycopg import sql
@@ -169,6 +169,54 @@ class PostgresAttendanceStore:
         return PeriodSummary(**data)
 
     # ── schedules (admin input; audited) ──────────────────────────────────
+    # The ONE schedule write path (CLI and manager dashboard): the database
+    # constraints are the validator (overnight shifts, start != end,
+    # 0 < expected <= shift span, day-off shape, timezone = employee's), and
+    # every change writes its audit row in the same transaction.
+
+    _COLUMNS = ("employee_id", "day_of_week", "effective_from", "effective_to", "schedule_date", "is_working_day",
+                "start_time", "end_time", "expected_work_seconds", "timezone")
+
+    def _actor(self, actor: tuple[str, str] | None) -> tuple[str, str | None]:
+        return actor or (self.repo.actor_type, self.repo.actor_id)
+
+    @staticmethod
+    def _audit(conn, actor: tuple[str, str | None], action: str, schedule_id: str,  # noqa: ANN001
+               old: dict | None, new: dict | None) -> None:
+        def clean(v: dict | None) -> str | None:
+            return json.dumps({k: x for k, x in v.items() if k != "schedule_id"}, default=str) if v else None
+
+        conn.execute(
+            "INSERT INTO audit_logs (actor_type, actor_id, action, entity_type, entity_id, old_values, new_values) "
+            "VALUES (%s, %s, %s, 'work_schedule', %s, %s::jsonb, %s::jsonb)",
+            (actor[0], actor[1], action, schedule_id, clean(old), clean(new)))
+
+    @staticmethod
+    def _invalid(exc: Exception) -> ValueError:
+        name = getattr(getattr(exc, "diag", None), "constraint_name", None)
+        reason = SCHEDULE_ERRORS.get(name or "", "a value is not valid")
+        return ValueError(f"invalid schedule: {reason} ({name or 'invalid value'})")
+
+    def get_schedule(self, schedule_id: str) -> ScheduleRule | None:
+        try:
+            uuid.UUID(str(schedule_id))
+        except ValueError:
+            return None
+        rows = self._rows(
+            "SELECT schedule_id::text AS schedule_id, employee_id, is_working_day, timezone, day_of_week, "
+            "effective_from, effective_to, schedule_date, start_time, end_time, expected_work_seconds "
+            "FROM work_schedules WHERE schedule_id = %s::uuid", (str(schedule_id),))
+        return ScheduleRule(**rows[0]) if rows else None
+
+    @staticmethod
+    def _insert(conn, values: dict) -> None:  # noqa: ANN001
+        conn.execute(
+            "INSERT INTO work_schedules (schedule_id, employee_id, day_of_week, effective_from, effective_to, "
+            "schedule_date, is_working_day, start_time, end_time, expected_work_seconds, timezone) VALUES "
+            "(%(schedule_id)s::uuid, %(employee_id)s, %(day_of_week)s, %(effective_from)s, %(effective_to)s, "
+            "%(schedule_date)s, %(is_working_day)s, %(start_time)s, %(end_time)s, "
+            "%(expected_work_seconds)s, %(timezone)s)", values)
+
     def add_schedule(
         self,
         employee_id: str,
@@ -182,6 +230,7 @@ class PostgresAttendanceStore:
         start_time: time | None = None,
         end_time: time | None = None,
         expected_work_seconds: int | None = None,
+        actor: tuple[str, str] | None = None,
     ) -> str:
         """Insert one schedule rule (database constraints validate it) and
         write an audit row in the same transaction.
@@ -205,19 +254,109 @@ class PostgresAttendanceStore:
         }
         try:
             with self.repo.connection() as conn, conn.transaction():
-                conn.execute(
-                    "INSERT INTO work_schedules (schedule_id, employee_id, day_of_week, effective_from, effective_to, "
-                    "schedule_date, is_working_day, start_time, end_time, expected_work_seconds, timezone) VALUES "
-                    "(%(schedule_id)s::uuid, %(employee_id)s, %(day_of_week)s, %(effective_from)s, %(effective_to)s, "
-                    "%(schedule_date)s, %(is_working_day)s, %(start_time)s, %(end_time)s, "
-                    "%(expected_work_seconds)s, %(timezone)s)", values)
-                conn.execute(
-                    "INSERT INTO audit_logs (actor_type, actor_id, action, entity_type, entity_id, new_values) "
-                    "VALUES (%s, %s, 'work_schedule.create', 'work_schedule', %s, %s::jsonb)",
-                    (self.repo.actor_type, self.repo.actor_id, schedule_id,
-                     json.dumps({k: v for k, v in values.items() if k != "schedule_id"}, default=str)),
-                )
+                self._insert(conn, values)
+                self._audit(conn, self._actor(actor), "work_schedule.create", schedule_id, None, values)
         except (errors.IntegrityError, errors.DataError) as exc:
-            name = getattr(exc.diag, "constraint_name", None)
-            raise ValueError(f"invalid schedule ({name or 'invalid value'})") from None
+            raise self._invalid(exc) from None
         return schedule_id
+
+    def add_schedules(self, employee_id: str, rules: list[dict], *,
+                      actor: tuple[str, str] | None = None) -> list[str]:
+        """Insert several rules (e.g. one per weekday) all-or-nothing, each
+        validated by the database and audited."""
+        from psycopg import errors  # noqa: PLC0415
+
+        employee = self.get_employee(employee_id)
+        if employee is None:
+            raise ValueError(f"unknown employee {employee_id!r}")
+        rows = []
+        for rule in rules:
+            fields = {k: rule.get(k) for k in self._COLUMNS if k not in ("employee_id", "timezone")}
+            rows.append({**fields, "schedule_id": str(uuid.uuid4()), "employee_id": employee_id,
+                         "timezone": check_schedule_timezone(employee, rule.get("timezone"))})
+        try:
+            with self.repo.connection() as conn, conn.transaction():
+                for values in rows:
+                    self._insert(conn, values)
+                    self._audit(conn, self._actor(actor), "work_schedule.create", values["schedule_id"], None, values)
+        except (errors.IntegrityError, errors.DataError) as exc:
+            raise self._invalid(exc) from None
+        return [r["schedule_id"] for r in rows]
+
+    def update_schedule(self, schedule_id: str, changes: dict, *,
+                        actor: tuple[str, str] | None = None) -> ScheduleRule:
+        """Change fields of one rule in place (validated by the database).
+        The employee, timezone and rule kind can't be changed."""
+        from psycopg import errors  # noqa: PLC0415
+
+        allowed = {"effective_from", "effective_to", "schedule_date", "is_working_day", "start_time", "end_time",
+                   "expected_work_seconds", "day_of_week"}
+        if set(changes) - allowed:
+            raise ValueError(f"these schedule fields can't be changed: {', '.join(sorted(set(changes) - allowed))}")
+        old = self.get_schedule(schedule_id)
+        if old is None:
+            raise ValueError("schedule not found")
+        old_values = {k: getattr(old, k) for k in self._COLUMNS}
+        new_values = {**old_values, **changes}
+        sets = sql.SQL(", ").join(sql.SQL("{} = {}").format(sql.Identifier(k), sql.Placeholder(k)) for k in changes)
+        try:
+            with self.repo.connection() as conn, conn.transaction():
+                conn.execute(sql.SQL("UPDATE work_schedules SET {} WHERE schedule_id = %(schedule_id)s::uuid")
+                             .format(sets), {**changes, "schedule_id": str(schedule_id)})
+                self._audit(conn, self._actor(actor), "work_schedule.update", str(schedule_id),
+                            old_values, new_values)
+        except (errors.IntegrityError, errors.DataError) as exc:
+            raise self._invalid(exc) from None
+        return self.get_schedule(schedule_id)
+
+    def split_schedule(self, schedule_id: str, from_date: date, changes: dict, *,
+                       actor: tuple[str, str] | None = None) -> str:
+        """For a weekly rule: end it on ``from_date - 1`` and start a new rule
+        with ``changes`` on ``from_date`` (until the old rule's end), in one
+        transaction. Days before ``from_date`` keep the old rule."""
+        from psycopg import errors  # noqa: PLC0415
+
+        old = self.get_schedule(schedule_id)
+        if old is None or old.day_of_week is None:
+            raise ValueError("only a weekly rule can be changed from a date")
+        if not old.effective_from < from_date <= (old.effective_to or date.max):
+            raise ValueError("the change date must be after the rule's start and within its effective range")
+        old_values = {k: getattr(old, k) for k in self._COLUMNS}
+        new_id = str(uuid.uuid4())
+        ended = {**old_values, "effective_to": from_date - timedelta(days=1)}
+        new_values = {**old_values, **changes, "schedule_id": new_id, "effective_from": from_date,
+                      "effective_to": old.effective_to}
+        try:
+            with self.repo.connection() as conn, conn.transaction():
+                conn.execute("UPDATE work_schedules SET effective_to = %s WHERE schedule_id = %s::uuid",
+                             (ended["effective_to"], str(schedule_id)))
+                self._audit(conn, self._actor(actor), "work_schedule.update", str(schedule_id), old_values, ended)
+                self._insert(conn, new_values)
+                self._audit(conn, self._actor(actor), "work_schedule.create", new_id, None, new_values)
+        except (errors.IntegrityError, errors.DataError) as exc:
+            raise self._invalid(exc) from None
+        return new_id
+
+    def delete_schedule(self, schedule_id: str, *, actor: tuple[str, str] | None = None) -> ScheduleRule:
+        old = self.get_schedule(schedule_id)
+        if old is None:
+            raise ValueError("schedule not found")
+        with self.repo.connection() as conn, conn.transaction():
+            conn.execute("DELETE FROM work_schedules WHERE schedule_id = %s::uuid", (str(schedule_id),))
+            self._audit(conn, self._actor(actor), "work_schedule.delete", str(schedule_id),
+                        {k: getattr(old, k) for k in self._COLUMNS}, None)
+        return old
+
+
+# Friendly reasons for the schedule constraints (the database stays the validator).
+SCHEDULE_ERRORS = {
+    "work_schedules_hours_valid": "a working day needs a start and an end that differ, and expected hours "
+                                  "above 0 and no longer than the shift; a day off has no hours",
+    "work_schedules_kind_valid": "a rule is either weekly (weekday + effective from) or for one date",
+    "work_schedules_day_of_week_valid": "weekday must be 1 (Monday) to 7 (Sunday)",
+    "work_schedules_effective_range": "'effective to' can't be before 'effective from'",
+    "work_schedules_timezone_matches_employee": "the schedule must use the employee's timezone",
+    "work_schedules_employee_fk": "unknown employee",
+    "work_schedules_weekly_unique": "a rule for that weekday already starts on that date",
+    "work_schedules_date_unique": "there is already a rule for that date",
+}

@@ -142,9 +142,13 @@ work time" — because activity presence is a proxy for work, not proof of it.
     spreadsheet formula.
   - Access to the spreadsheet is limited to the people it is shared with
     (managers) plus the service account (§6.5).
-- **PostgreSQL → Dashboard:** manager-authenticated reads only; the dashboard
-  has no write path into raw activity data (schedule edits and similar are
-  the only writes, and those go through `audit_logs`).
+- **PostgreSQL → Dashboard (Phase 7):** manager-authenticated, read-mostly.
+  - The dashboard reads PostgreSQL directly and never Google Sheets.
+  - It has no write path into activity data.
+  - Its only writes are: sessions; account bookkeeping (`last_login_at`);
+    schedule changes, which go through the Phase 5 schedule store, are
+    validated by the database and are audited; and the audit rows
+    themselves.
 
 ## 5. Isolation from the existing VPS
 
@@ -234,6 +238,10 @@ disruptive to what's already running.
   GRANT SELECT ON alembic_version TO zaza_app;
   -- Phase 5 (migration 0002): summaries are recalculated and upserted, never deleted
   GRANT SELECT, INSERT, UPDATE ON daily_summaries, weekly_summaries, monthly_summaries TO zaza_app;
+  -- Phase 7 (migration 0004): manager accounts and sessions (never deleted; revoked/disabled)
+  GRANT SELECT, INSERT, UPDATE ON manager_users, manager_sessions TO zaza_app;
+  -- Phase 7: the dashboard removes upcoming schedule rules (audited); nothing else is deleted
+  GRANT DELETE ON work_schedules TO zaza_app;
   ```
 
   Re-check the grants after any migration that adds a table. Retention jobs
@@ -293,15 +301,57 @@ disruptive to what's already running.
         monthly_summaries, alembic_version TO zaza_report;
   ```
 
-### 6.3 Manager and employee access (Phases 5–7)
+### 6.3 Manager dashboard access (Phase 7)
 
-- Employees do not get dashboard login — they are the subjects of reports,
-  not viewers of the manager dashboard, unless a future requirement adds an
-  employee-facing self-view.
-- Manager/PM accounts (`manager_users`) authenticate to the dashboard and to
-  whatever admin actions exist (editing schedules, managing devices).
-- All manager actions that change state (schedules, employee/device records)
-  are written to `audit_logs` — who did what, when.
+- **Who logs in:** employees do not; they are the subjects of reports.
+  Managers and admins log in with `manager_users` accounts.
+  - There is no default account. Accounts are created, disabled, enabled,
+    reset and signed out with the `manager-*` CLI commands.
+  - Passwords are typed at a `getpass` prompt, never passed as arguments.
+- **Passwords:** Argon2id (`argon2-cffi`). A database CHECK refuses
+  anything but an `$argon2id$` hash. Minimum 12 characters.
+  - Login failures always give the same message.
+  - Unknown usernames still cost one hash check.
+- **Sessions:**
+  - The browser holds an opaque random token; PostgreSQL stores only its
+    SHA-256.
+  - The cookie is HttpOnly, SameSite=Strict, `Path=/manager`, with an
+    absolute expiry of `ZAZA_DASHBOARD_SESSION_HOURS`, default 12.
+  - Logout, revocation, a password reset or disabling the account ends
+    sessions immediately.
+  - Tokens are never logged, rendered or audited.
+- **Production MUST set `ZAZA_DASHBOARD_COOKIE_SECURE=true` behind HTTPS
+  (Phase 10).** The default `false` exists only so the dashboard works on
+  `http://127.0.0.1` during development; `serve` prints a warning while it
+  is off.
+- **CSRF:** every POST carries a per-session token (an HMAC of the session
+  token) and is refused if its `Origin` is foreign. The login form has its
+  own double-submit token. GET requests don't change data.
+- **Browser hardening:**
+  - `Cache-Control: no-store`, `nosniff`, `Referrer-Policy: no-referrer`,
+    `X-Frame-Options: DENY`.
+  - A strict CSP with `script-src 'self'`, no inline scripts or styles, and
+    `frame-ancestors 'none'`.
+  - Everything is served locally: no CDN, fonts, analytics or tracking.
+- **XSS:** window titles, application names, domains and employee names are
+  untrusted. Templates auto-escape everything, and the script uses only
+  `textContent`. Tests render `<script>` / `<img onerror>` /
+  `javascript:` values and check they appear as text.
+- **What the dashboard never shows:** payloads, content or summary hashes,
+  record versions, device tokens, password hashes, database settings.
+  Privacy-excluded periods show only the stored placeholders.
+- **Audit (`audit_logs`):**
+  - What is recorded: manager account creation, login, logout, password
+    reset, disable/enable and session revocation (entity
+    `manager_user`), and every schedule create/update/delete (entity
+    `work_schedule`).
+  - Each row has the actor (role + username), the action, the IDs and the
+    old/new values.
+  - Never recorded: passwords, tokens or CSRF values. Page views are not
+    audited.
+- **Not yet built:** login rate limiting / lockout. Phase 10 puts the
+  dashboard behind the HTTPS reverse proxy, which should add rate limiting
+  on `/manager/login`.
 
 ### 6.4 Reporting interpretation (Phase 5)
 

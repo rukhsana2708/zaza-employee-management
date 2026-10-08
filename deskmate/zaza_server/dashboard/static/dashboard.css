@@ -1,0 +1,102 @@
+/* ZaZa manager dashboard — restrained, neutral, no external fonts. */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2430; --muted: #5b6575; --line: #d9dee6;
+  --accent: #1f5fa8; --accent-dark: #174a84; --ok: #1d6b3a; --warn: #8a5a00; --bad: #a12a2a; --focus: #f0a400;
+}
+* { box-sizing: border-box; }
+html { font-size: 15px; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; line-height: 1.45; }
+a { color: var(--accent); }
+a:hover { color: var(--accent-dark); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 1rem; top: 1rem; background: var(--panel); padding: .5rem; z-index: 10; }
+
+.topbar { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; padding: .6rem 1.5rem;
+  background: #24324a; color: #fff; }
+.brand { font-weight: 700; }
+.brand span { font-weight: 400; opacity: .85; }
+.topbar nav ul { display: flex; gap: .25rem; list-style: none; margin: 0; padding: 0; flex-wrap: wrap; }
+.topbar nav a { color: #fff; text-decoration: none; padding: .35rem .7rem; border-radius: 4px; display: inline-block; }
+.topbar nav a:hover, .topbar nav a[aria-current="page"] { background: rgba(255,255,255,.16); }
+.account { margin-left: auto; display: flex; gap: .75rem; align-items: center; }
+.account form { margin: 0; }
+.link-button { background: none; border: 1px solid rgba(255,255,255,.5); color: #fff; padding: .25rem .6rem;
+  border-radius: 4px; cursor: pointer; font: inherit; }
+
+main { max-width: 1400px; margin: 0 auto; padding: 1.25rem 1.5rem 2rem; }
+h1 { font-size: 1.5rem; margin: .25rem 0 1rem; }
+h2.section, .schedule-block h2 { font-size: 1.15rem; margin: 1.6rem 0 .6rem; }
+h3 { font-size: 1rem; margin: 1rem 0 .4rem; }
+small, .muted { color: var(--muted); }
+.note { color: var(--muted); font-size: .9rem; max-width: 70rem; }
+.footer { text-align: center; color: var(--muted); font-size: .85rem; padding: 1rem 1.5rem 2rem; }
+
+.filters { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: flex-end; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: .75rem 1rem; margin-bottom: .75rem; }
+.field { display: flex; flex-direction: column; gap: .2rem; }
+.field.check, .check { flex-direction: row; align-items: center; gap: .3rem; display: inline-flex; }
+label { font-size: .85rem; color: var(--muted); }
+input, select { font: inherit; padding: .35rem .5rem; border: 1px solid #aeb6c2; border-radius: 4px; background: #fff; }
+button { font: inherit; padding: .4rem .9rem; border-radius: 4px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; cursor: pointer; }
+button:hover { background: var(--accent-dark); }
+button.danger { background: #fff; color: var(--bad); border-color: var(--bad); }
+[hidden] { display: none !important; }
+
+.period { background: var(--panel); border-left: 4px solid var(--accent); padding: .5rem .9rem; margin: .5rem 0 1rem; }
+.period.differs { border-left-color: var(--warn); }
+.period p { margin: .3rem 0 0; }
+.period ul { margin: .2rem 0 0 1.2rem; padding: 0; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: .75rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .7rem .9rem;
+  display: flex; flex-direction: column; gap: .15rem; }
+.card .label { color: var(--muted); font-size: .85rem; }
+.card .value { font-size: 1.4rem; font-weight: 600; }
+.card .names { font-size: .8rem; color: var(--muted); }
+
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { background: #eef1f5; font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+thead th a { color: var(--text); text-decoration: none; }
+tbody th { font-weight: 600; }
+td.wrap { max-width: 28rem; overflow-wrap: anywhere; }
+
+.badge { display: inline-block; padding: .1rem .5rem; border-radius: 10px; font-size: .8rem; background: #e8ebf0; }
+.s-active, .a-present { background: #dcefe2; color: var(--ok); }
+.s-idle, .s-locked, .a-pending, .a-day_off, .a-no_schedule { background: #eceff3; color: #3c4553; }
+.s-unknown, .a-data_incomplete { background: #fff1d6; color: var(--warn); }
+.s-offline, .s-no_device, .s-online_no_activity { background: #e8ebf0; color: var(--muted); }
+.a-late, .a-early_leave, .a-late_and_early { background: #fde6cf; color: #8a4300; }
+.a-absent { background: #f8dcdc; color: var(--bad); }
+.a-worked_day_off { background: #e0ecfa; color: var(--accent-dark); }
+.quality { font-weight: 600; }
+.q-complete { color: var(--ok); }
+.q-partial { color: var(--warn); }
+.q-insufficient { color: var(--bad); }
+.flags { display: block; color: var(--muted); font-size: .8rem; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .5rem 1rem;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .75rem 1rem; }
+.facts dt { color: var(--muted); font-size: .85rem; }
+.facts dd { margin: 0; }
+
+.alert { padding: .6rem .9rem; border-radius: 4px; }
+.alert.error { background: #f8dcdc; color: var(--bad); }
+.alert.ok { background: #dcefe2; color: var(--ok); }
+.login { max-width: 24rem; margin: 4rem auto; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 1.5rem; }
+.login form { display: flex; flex-direction: column; gap: .5rem; }
+.login button { margin-top: .5rem; }
+
+.schedule-block { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .5rem 1rem 1rem;
+  margin-top: 1rem; }
+.inline-form { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: flex-end; margin: .5rem 0; }
+details summary { cursor: pointer; color: var(--accent); }
+details.add { margin-top: .75rem; }
+.weekdays { border: 0; padding: 0; margin: 0; display: flex; gap: .5rem; flex-wrap: wrap; }
+.weekdays legend { font-size: .85rem; color: var(--muted); }
+.group-toggle { font-size: .9rem; }

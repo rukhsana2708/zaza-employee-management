@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ view.employee.display_name }}{% endblock %}
+{% block content %}
+{% set e = view.employee %}{% set t = view.totals %}{% set tz = e.timezone %}
+<h1>{{ e.display_name }}</h1>
+<dl class="facts">
+  <div><dt>Employee ID</dt><dd>{{ e.employee_id }}</dd></div>
+  <div><dt>Reporting time zone</dt><dd>{{ tz }}</dd></div>
+  <div><dt>Current status</dt><dd>{{ m.status_badge(view.status) }}</dd></div>
+  <div><dt>Last seen</dt><dd>{{ view.status.last_seen_at|local(tz) }} ({{ view.status.last_seen_at|ago(now) }})</dd></div>
+  <div><dt>Today ({{ view.today.isoformat() }})</dt><dd>{{ view.schedule.text }}</dd></div>
+  <div><dt>Today's attendance</dt><dd>{% if view.today_summary %}{{ m.attendance_badge(view.today_summary) }}{% else %}<span class="muted">Not calculated yet</span>{% endif %}</dd></div>
+</dl>
+
+{{ m.filters(f, employees, "/manager/employees/" ~ (e.employee_id|urlencode), show_employee=False) }}
+{{ m.period_note(view.period) }}
+
+<h2 class="section">Selected period summary</h2>
+<div class="cards">
+  <div class="card"><span class="label">Scheduled</span><span class="value">{{ t.scheduled|hours }}</span></div>
+  <div class="card"><span class="label">Tracked</span><span class="value">{{ t.tracked|hours }}</span></div>
+  <div class="card"><span class="label">Active</span><span class="value">{{ t.active|hours }}</span></div>
+  <div class="card"><span class="label">Idle</span><span class="value">{{ t.idle|hours }}</span></div>
+  <div class="card"><span class="label">Unknown</span><span class="value">{{ t.unknown|hours }}</span></div>
+  <div class="card"><span class="label">Locked</span><span class="value">{{ t.locked|hours }}</span></div>
+  <div class="card"><span class="label">Overtime</span><span class="value">{{ t.overtime|hours }}</span></div>
+  <div class="card"><span class="label">Attendance %</span><span class="value">{{ t.attendance_fraction|pct(fraction=True) }}</span></div>
+  <div class="card"><span class="label">Late</span><span class="value">{{ t.late_seconds|minutes }}</span><span class="names">{{ t.late_days }} day(s)</span></div>
+  <div class="card"><span class="label">Early Leave</span><span class="value">{{ t.early_leave_seconds|minutes }}</span><span class="names">{{ t.early_leave_days }} day(s)</span></div>
+  <div class="card"><span class="label">Days Worked</span><span class="value">{{ t.days_worked }}</span></div>
+  <div class="card"><span class="label">Absent Days</span><span class="value">{{ t.absent_days }}</span></div>
+  <div class="card"><span class="label">Data-Incomplete Days</span><span class="value">{{ t.incomplete_days }}</span></div>
+</div>
+
+<h2 class="section">Daily attendance</h2>
+<p class="note">Each row is one local date. An overnight shift belongs to the date it starts on. Times are in {{ tz }}.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr>
+    <th scope="col">Date</th><th scope="col">Scheduled Start</th><th scope="col">Scheduled End</th>
+    <th scope="col">Scheduled Hours</th><th scope="col">Active Hours</th><th scope="col">Idle Hours</th>
+    <th scope="col">Unknown Hours</th><th scope="col">Locked Hours</th><th scope="col">Detected Break / Idle</th>
+    <th scope="col">Late</th><th scope="col">Early Leave</th><th scope="col">Overtime</th>
+    <th scope="col">Attendance Status</th><th scope="col">Attendance %</th><th scope="col">Data Quality</th>
+  </tr></thead>
+  <tbody>
+  {% for row in view.days %}{% set s = row.summary %}
+  <tr>
+    <th scope="row">{{ s.local_date.isoformat() }}</th>
+    <td>{{ s.scheduled_start|local(tz) }}</td><td>{{ s.scheduled_end|local(tz) }}</td>
+    <td>{{ s.scheduled_seconds|hours }}</td><td>{{ s.active_seconds|hours }}</td><td>{{ s.idle_seconds|hours }}</td>
+    <td>{{ s.unknown_seconds|hours }}</td><td>{{ s.locked_seconds|hours }}</td><td>{{ s.detected_break_seconds|hours }}</td>
+    <td>{{ s.late_seconds|minutes }}</td><td>{{ s.early_leave_seconds|minutes }}</td><td>{{ s.overtime_seconds|hours }}</td>
+    <td>{{ m.attendance_badge(s) }}</td><td>{{ s.attendance_percentage|pct }}</td><td>{{ m.quality(s) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="15" class="muted">No calculated days in this period.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2 class="section">Application usage</h2>
+<p class="note">Application usage is based on recorded application periods and is not a productivity score.
+  It is grouped by the device's calendar date, which for an overnight shift can differ from the
+  attendance date above.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th scope="col">Application</th><th scope="col">Active Hours</th><th scope="col">Idle Hours</th>
+    <th scope="col">Unknown Hours</th><th scope="col">Usage Days</th></tr></thead>
+  <tbody>
+  {% for g in view.apps %}
+  <tr><th scope="row">{{ g.app }}</th><td>{{ g.active|hours }}</td><td>{{ g.idle|hours }}</td>
+    <td>{{ g.unknown|hours }}</td><td>{{ g.usage_days }}</td></tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No application usage recorded in this period.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2 class="section">Recent activity periods</h2>
+<p class="note">Newest first{% if view.activity_truncated %}; showing the latest {{ view.activity_limit }} only{% endif %}.
+  Times are in {{ tz }}.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th scope="col">Start</th><th scope="col">End</th><th scope="col">Duration</th><th scope="col">Status</th>
+    <th scope="col">Application</th><th scope="col">Window / Activity</th><th scope="col">Domain</th>
+    <th scope="col">Privacy</th></tr></thead>
+  <tbody>
+  {% for p in view.activity %}
+  <tr>
+    <td>{{ p.started_at|local(tz, "%Y-%m-%d %H:%M:%S") }}</td><td>{{ p.ended_at|local(tz, "%H:%M:%S") }}{% if p.is_open %} <small class="muted">(in progress)</small>{% endif %}</td>
+    <td>{{ p.duration_seconds|duration }}</td><td>{{ p.status|capitalize }}</td>
+    <td>{{ p.app_name or "–" }}</td><td class="wrap">{{ p.window_title or "–" }}</td><td>{{ p.domain or "–" }}</td>
+    <td>{{ "Excluded / Private" if p.privacy_excluded else "" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="muted">No activity periods in this period.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

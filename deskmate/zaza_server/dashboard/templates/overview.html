@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+{% set t = view.totals %}
+{% set c = view.status_counts %}
+<h1>Overview</h1>
+{{ m.filters(f, employees, "/manager") }}
+{{ m.period_note(view.period) }}
+
+<h2 class="section">Right now <small class="muted" data-refreshed>(updates every minute)</small></h2>
+<div class="cards" data-status-cards>
+  <div class="card"><span class="label">Active Employees</span><span class="value">{{ view.active_employees }}</span></div>
+  <div class="card"><span class="label">Currently Active</span><span class="value" data-count="ACTIVE">{{ c.ACTIVE }}</span></div>
+  <div class="card"><span class="label">Currently Idle</span><span class="value" data-count="IDLE">{{ c.IDLE }}</span></div>
+  <div class="card"><span class="label">Locked</span><span class="value" data-count="LOCKED">{{ c.LOCKED }}</span></div>
+  <div class="card"><span class="label">Unknown</span><span class="value" data-count="UNKNOWN">{{ c.UNKNOWN }}</span></div>
+  <div class="card"><span class="label">Online, no recent activity</span><span class="value" data-count="ONLINE_NO_ACTIVITY">{{ c.ONLINE_NO_ACTIVITY }}</span></div>
+  <div class="card"><span class="label">Offline</span><span class="value" data-count="OFFLINE_TOTAL">{{ c.OFFLINE_TOTAL }}</span></div>
+</div>
+
+<h2 class="section">Selected period</h2>
+<div class="cards">
+  <div class="card"><span class="label">Scheduled Hours</span><span class="value">{{ t.scheduled|hours }}</span></div>
+  <div class="card"><span class="label">Tracked Hours</span><span class="value">{{ t.tracked|hours }}</span></div>
+  <div class="card"><span class="label">Active Hours</span><span class="value">{{ t.active|hours }}</span></div>
+  <div class="card"><span class="label">Idle Hours</span><span class="value">{{ t.idle|hours }}</span></div>
+  <div class="card"><span class="label">Unknown Hours</span><span class="value">{{ t.unknown|hours }}</span></div>
+  <div class="card"><span class="label">Locked Hours</span><span class="value">{{ t.locked|hours }}</span></div>
+  <div class="card"><span class="label">Overtime</span><span class="value">{{ t.overtime|hours }}</span></div>
+  <div class="card"><span class="label">Attendance %</span><span class="value">{{ t.attendance_fraction|pct(fraction=True) }}</span></div>
+  <div class="card"><span class="label">Late Employees</span><span class="value">{{ t.late_employees|length }}</span>
+    {% if t.late_employees %}<span class="names">{{ t.late_employees|join(", ") }}</span>{% endif %}</div>
+  <div class="card"><span class="label">Absent Employees</span><span class="value">{{ t.absent_employees|length }}</span>
+    {% if t.absent_employees %}<span class="names">{{ t.absent_employees|join(", ") }}</span>{% endif %}</div>
+  <div class="card"><span class="label">Data-Incomplete Employees</span><span class="value">{{ t.incomplete_employees|length }}</span>
+    {% if t.incomplete_employees %}<span class="names">{{ t.incomplete_employees|join(", ") }}</span>{% endif %}</div>
+</div>
+<p class="note">Figures come from the stored attendance summaries
+  (last calculated {{ view.summaries_updated_at|ago(now) }}).
+  Attendance % = active time in scheduled shifts ÷ observable scheduled time, across the whole period.
+  For a period longer than one day, an employee counts as late / absent / data-incomplete if at least one day was.</p>
+
+<h2 class="section">Employees today <small class="muted">(each employee's own local date)</small></h2>
+<div class="table-wrap">
+<table data-status-table>
+  <thead><tr>
+    <th scope="col">Employee</th><th scope="col">Current Status</th><th scope="col">Last Seen</th>
+    <th scope="col">Today's Schedule</th><th scope="col">Active Hours</th><th scope="col">Idle Hours</th>
+    <th scope="col">Unknown Hours</th><th scope="col">Attendance Status</th><th scope="col">Late</th>
+    <th scope="col">Overtime</th><th scope="col">Data Quality</th>
+  </tr></thead>
+  <tbody>
+  {% for row in view.rows %}
+  {% set e = row.employee %}{% set s = row.summary %}
+  <tr data-employee-id="{{ e.employee_id }}">
+    <th scope="row"><a href="/manager/employees/{{ e.employee_id|urlencode }}">{{ e.display_name }}</a>
+      <small class="muted">{{ row.today.isoformat() }}</small></th>
+    <td>{{ m.status_badge(row.status) }}</td>
+    <td data-field="last-seen">{{ row.status.last_seen_at|ago(now) }}</td>
+    <td>{{ row.schedule.text }}</td>
+    {% if s %}
+    <td>{{ s.active_seconds|hours }}</td><td>{{ s.idle_seconds|hours }}</td><td>{{ s.unknown_seconds|hours }}</td>
+    <td>{{ m.attendance_badge(s) }}</td><td>{{ s.late_seconds|minutes }}</td><td>{{ s.overtime_seconds|hours }}</td>
+    <td>{{ m.quality(s) }}</td>
+    {% else %}
+    <td colspan="7" class="muted">Today's summary has not been calculated yet.</td>
+    {% endif %}
+  </tr>
+  {% else %}
+  <tr><td colspan="11" class="muted">No employees match the filter.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

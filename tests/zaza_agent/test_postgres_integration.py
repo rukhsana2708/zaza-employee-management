@@ -487,7 +487,7 @@ def test_migration_upgrade_from_empty_database_and_repeat(empty_schema):
         empty_schema, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'zaza_pytest_mig'")}
     assert tables == {"alembic_version", "employees", "devices", "device_tokens", "work_schedules",
                       "work_sessions", "activity_periods", "idle_periods", "application_usage_daily", "audit_logs",
-                      "daily_summaries", "weekly_summaries", "monthly_summaries"}
+                      "daily_summaries", "weekly_summaries", "monthly_summaries", "manager_users", "manager_sessions"}
     assert [r["version_num"] for r in query(empty_schema, "SELECT version_num FROM alembic_version")] == [
         migrate.head_revision()
     ]

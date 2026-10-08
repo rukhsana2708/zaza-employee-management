@@ -1,8 +1,102 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-08
+**Last updated:** 2026-10-09
 
-## Current phase: Phase 6 — Google Sheets reporting (implemented, pending your review)
+## Current phase: Phase 7 — Manager web dashboard (implemented, pending your review)
+
+Phase 6 was approved with its review fixes. Phase 7 adds a server-rendered
+manager dashboard under `/manager` in the existing FastAPI server. It reads
+PostgreSQL directly and never Google Sheets. **No charts, analysis,
+installer, VPS deployment or AI.** It runs on localhost only. PostgreSQL
+tests used a throwaway local instance, which has since been deleted.
+
+### Phase 7 summary
+
+- **Code:** `deskmate/zaza_server/dashboard/`:
+  - `config`, `security`, `models`
+  - `queries`: the PostgreSQL repository, plus an in-memory one for tests
+  - `auth`, `service`
+  - `routes`: rendering only
+  - `templates/`, `static/`
+- **Migration `0004_manager_dashboard_auth`** (forward-only; 0001–0003
+  untouched):
+  - `manager_users`: lower-case unique username; a CHECK that only accepts
+    Argon2id hashes; role ADMIN/MANAGER.
+  - `manager_sessions`: SHA-256 hashes of the session and CSRF tokens; an
+    expiry; revocation.
+  - A `(device_id, ended_at)` index for current status.
+  - `audit_logs` now also accepts entity `manager_user`.
+- **Auth:**
+  - Argon2id passwords (minimum 12 characters) and a generic login error.
+  - Opaque random session token in a cookie that is HttpOnly,
+    SameSite=Strict, Path=/manager and Secure when configured; absolute
+    12-hour expiry.
+  - Per-session CSRF token on every POST, plus an Origin check.
+  - The login form has its own token.
+  - Strict security headers and CSP.
+  - Accounts are managed only by the CLI: `manager-create`, `-list`,
+    `-disable`, `-enable`, `-reset-password`, `-revoke-sessions`, with
+    `getpass` prompts.
+- **Pages:** Overview, Employees, Employee detail, Attendance, Applications,
+  Schedules; plus authenticated JSON for current status, overview,
+  attendance and applications. Status refreshes every 60 s while the tab is
+  visible. No charts.
+- **Figures:**
+  - Totals are sums of stored `daily_summaries` over each employee's own
+    local period.
+  - Attendance % = Σ credit ÷ Σ basis, never an average of daily
+    percentages.
+  - Where employees' local periods differ, the page says so.
+- **Current status:**
+  - Enabled devices only.
+  - Online means `last_seen_at` within 300 s; the device's state comes from
+    its latest period if it is recent.
+  - Several devices: ACTIVE > IDLE > LOCKED > UNKNOWN > online-no-activity
+    > offline.
+  - UNKNOWN is never shown as idle.
+- **Schedules:**
+  - They use the Phase 5 write path, so the database validates every rule
+    and every change is audited with the manager's identity and old/new
+    values.
+  - Changes apply from the employee's local today; running weekly rules are
+    split or ended from a date, and past rules are read-only.
+- **Tests:**
+  - Default run: 607 pass and 127 skip. The skips are the opt-in PostgreSQL
+    tests and the opt-in live-Google test.
+  - With `ZAZA_TEST_POSTGRES_URL` set: 733 pass and 1 skip (the live
+    Google test).
+  - New: 76 dashboard tests (`test_dashboard.py`, no database) and 6
+    PostgreSQL tests (`test_dashboard_postgres.py`).
+
+### Phase 7 known limitations / risks
+
+- **No login rate limiting or lockout.** Argon2 slows guessing, but Phase 10
+  should rate-limit `/manager/login` at the reverse proxy.
+- **The Secure cookie flag is off by default** so the dashboard works on
+  localhost. Production must set `ZAZA_DASHBOARD_COOKIE_SECURE=true` behind
+  HTTPS.
+- **The Origin check compares with the request's own scheme and host.**
+  Behind a TLS-terminating proxy, Phase 10 must forward the original scheme
+  and host (proxy headers) or adjust the check.
+- **Figures are only as fresh as the last `recalculate`.** The dashboard
+  shows "last calculated …", and today's row may be missing until the next
+  run. There is still no scheduler (Phase 10).
+- **Application usage** is grouped by the device's calendar date, which can
+  differ from an overnight shift's attendance date. This is labelled on the
+  pages.
+- **Removing an upcoming rule is a real DELETE** (audited, with old values),
+  so production `zaza_app` needs `GRANT DELETE ON work_schedules`
+  (SECURITY.md §6.2).
+- **Account management is CLI-only**, and the ADMIN role adds nothing in the
+  UI yet.
+- **No manual browser testing yet.** The pages have only been exercised
+  through FastAPI's TestClient.
+
+### Phase 6 (approved)
+
+Approved with its review fixes (one-connection refresh, interval-overlap
+Activity Log window, truthful per-employee Dashboard labels).
+
 
 Phase 5 was approved with its review fixes. Phase 6 adds a one-way,
 read-only export from PostgreSQL to an existing Google spreadsheet. **No
@@ -50,7 +144,7 @@ instance, which has since been deleted.
   - The Google adapter is tested offline with the library's
     `HttpMockSequence`.
 
-### Phase 6 review fixes (pending your approval)
+### Phase 6 review fixes (approved)
 
 1. **One connection per refresh.** `PostgresReportSource.refresh()` takes the
    advisory lock, reads the read-only snapshot on the same connection, and
@@ -492,8 +586,8 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 3 — Central synchronization API (approved)
 - [x] Phase 4 — PostgreSQL central storage (approved; local testing only, no VPS)
 - [x] Phase 5 — Attendance & work-time calculations (approved)
-- [x] Phase 6 — Google Sheets reporting (implemented, pending review)
-- [ ] Phase 7 — Manager dashboard
+- [x] Phase 6 — Google Sheets reporting (approved)
+- [x] Phase 7 — Manager web dashboard (implemented, pending review; localhost only)
 - [ ] Phase 8 — Interactive charts & automatic analysis
 - [ ] Phase 9 — Windows employee installer
 - [ ] Phase 10 — Production VPS deployment
@@ -519,11 +613,10 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 6** before Phase 7 begins. The manager
-dashboard, charts, AI, the installer and VPS deployment are explicitly
-**not** started. The production PostgreSQL database has **not** been
-created or touched, and no real Google account or spreadsheet has been
-used.
+**Awaiting your review of Phase 7** before Phase 8 begins. Charts, automatic
+analysis, AI, the installer and VPS deployment are explicitly **not**
+started. The production PostgreSQL database has **not** been created or
+touched, and the dashboard has not been deployed anywhere.
 
 ## Explicitly cancelled from any earlier direction
 

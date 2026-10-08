@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Employees{% endblock %}
+{% block content %}
+<h1>Employees</h1>
+<div class="table-wrap">
+<table>
+  <thead><tr><th scope="col">Employee</th><th scope="col">Employee ID</th><th scope="col">Reporting Time Zone</th>
+    <th scope="col">Current Status</th><th scope="col">Last Seen</th><th scope="col">Account</th></tr></thead>
+  <tbody>
+  {% for e, st in rows %}
+  <tr>
+    <th scope="row"><a href="/manager/employees/{{ e.employee_id|urlencode }}">{{ e.display_name }}</a></th>
+    <td>{{ e.employee_id }}</td><td>{{ e.timezone }}</td><td>{{ m.status_badge(st) }}</td>
+    <td>{{ st.last_seen_at|ago(now) }}</td><td>{{ "Active" if e.is_active else "Inactive" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">No employees yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

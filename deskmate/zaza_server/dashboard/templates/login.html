@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="login">
+  <h1>ZaZa Manager Dashboard</h1>
+  <p class="muted">Sign in with your manager account.</p>
+  {% if error %}<p class="alert error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/manager/login" autocomplete="on">
+    <input type="hidden" name="login_token" value="{{ login_token }}">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" autocomplete="username" required maxlength="64" autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% macro filters(f, employees, action, show_employee=True, extra=None) %}
+<form class="filters" method="get" action="{{ action }}" aria-label="Filters">
+  <div class="field">
+    <label for="period">Period</label>
+    <select id="period" name="period" data-period-select>
+      {% for key, label in PERIODS.items() %}
+      <option value="{{ key }}"{% if f.period == key %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% if show_employee %}
+  <div class="field">
+    <label for="employee">Employee</label>
+    <select id="employee" name="employee">
+      <option value="">All Employees</option>
+      {% for e in employees %}
+      <option value="{{ e.employee_id }}"{% if f.employee == e.employee_id %} selected{% endif %}>{{ e.display_name }}{% if not e.is_active %} (inactive){% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="field custom-dates" data-custom-dates>
+    <label for="from">From</label>
+    <input id="from" name="from" type="date" value="{{ f['from'] }}">
+  </div>
+  <div class="field custom-dates" data-custom-dates>
+    <label for="to">To</label>
+    <input id="to" name="to" type="date" value="{{ f.to }}">
+  </div>
+  {% if extra %}{{ extra }}{% endif %}
+  <div class="field"><button type="submit">Apply</button></div>
+</form>
+{% endmacro %}
+
+{% macro period_note(period) %}
+<div class="period{% if not period.uniform %} differs{% endif %}" role="status">
+  <strong>{{ period.label }}</strong>
+  {% if not period.uniform %}
+  <p>Each employee is reported for their own local calendar period:</p>
+  <ul>
+    {% for name, tz, label in period.ranges %}<li>{{ name }} ({{ tz }}): {{ label }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro quality(summary) %}
+<span class="quality q-{{ summary.data_quality.value|lower }}">{{ QUALITY_LABELS[summary.data_quality.value] }}</span>
+{% set notes = [] %}
+{% if summary.attendance_status in STATUS_NOTES %}{% set _ = notes.append(STATUS_NOTES[summary.attendance_status]) %}{% endif %}
+{% for flag in summary.quality_flags %}{% if flag in FLAG_NOTES %}{% set _ = notes.append(FLAG_NOTES[flag]) %}{% endif %}{% endfor %}
+{% if notes %}<span class="flags">{{ notes|join("; ") }}</span>{% endif %}
+{% endmacro %}
+
+{% macro status_badge(status) %}
+<span class="badge s-{{ status.status.value|lower }}" data-field="status">{{ status.label }}</span>
+{% endmacro %}
+
+{% macro attendance_badge(summary) %}
+<span class="badge a-{{ summary.attendance_status.value|lower }}">{{ STATUS_LABELS[summary.attendance_status] }}</span>
+{% endmacro %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Applications{% endblock %}
+{% block content %}
+<h1>Applications</h1>
+{{ m.filters(f, employees, "/manager/applications") }}
+{{ m.period_note(view.period) }}
+<p class="note">Application usage is based on recorded application periods and is not a productivity score.
+  It is supplementary activity information grouped by the device's calendar date, separate from attendance.</p>
+{% if not view.selection.employee_id %}
+<p class="group-toggle">Group:
+  {% if view.group == "app" %}<strong>by application</strong>{% else %}<a href="?{{ {'period': f.period, 'from': f['from'], 'to': f.to, 'group': 'app'}|urlencode }}">by application</a>{% endif %}
+  ·
+  {% if view.group == "employee" %}<strong>by application and employee</strong>{% else %}<a href="?{{ {'period': f.period, 'from': f['from'], 'to': f.to, 'group': 'employee'}|urlencode }}">by application and employee</a>{% endif %}
+</p>
+{% endif %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th scope="col">Application</th><th scope="col">Employee</th><th scope="col">Active Hours</th>
+    <th scope="col">Idle Hours</th><th scope="col">Unknown Hours</th><th scope="col">Usage Days</th></tr></thead>
+  <tbody>
+  {% for g in view.rows %}
+  <tr>
+    <th scope="row">{{ g.app }}</th>
+    <td>{% if g.employee %}{{ g.employee.display_name }}{% else %}All ({{ g.employee_count }}){% endif %}</td>
+    <td>{{ g.active|hours }}</td><td>{{ g.idle|hours }}</td><td>{{ g.unknown|hours }}</td><td>{{ g.usage_days }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">No application usage recorded in this period.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

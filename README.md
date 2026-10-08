@@ -55,12 +55,15 @@ for the current phase and what's implemented so far. As of this writing:
   - Phase 4: PostgreSQL central storage.
   - Phase 5: deterministic attendance and work-time calculations (daily,
     weekly and monthly summaries in PostgreSQL; ARCHITECTURE.md §4.11).
-- **Implemented, awaiting review:** Phase 6, one-way Google Sheets reporting
-  from PostgreSQL in `deskmate/zaza_server/sheets/` (ARCHITECTURE.md §5).
+  - Phase 6: one-way Google Sheets reporting from PostgreSQL
+    (`deskmate/zaza_server/sheets/`, ARCHITECTURE.md §5).
+- **Implemented, awaiting review:** Phase 7, the manager web dashboard
+  (`deskmate/zaza_server/dashboard/`, ARCHITECTURE.md §6). It is
+  server-rendered, reads PostgreSQL directly, and has no charts yet.
 
-PostgreSQL has only been tested locally, and Sheets only against an
-in-memory fake (a live test is available, opt-in). Nothing is deployed to
-the VPS yet. There is no manager dashboard yet.
+Everything runs locally only. PostgreSQL has been tested locally, and Sheets
+only against an in-memory fake (a live test is available, opt-in). Nothing
+is deployed to the VPS yet.
 
 ## Derived from DeskMate — attribution
 
@@ -265,6 +268,35 @@ employee's own timezone. Running a command again updates the same rows and
 never duplicates them.
 Today's figures are marked *(provisional)* until the day is over. What every
 number means is in ARCHITECTURE.md §4.11.
+
+### Manager dashboard (Phase 7, PostgreSQL only, localhost development)
+
+1. Install the dashboard libraries: `pip install -e .[zaza-dashboard]`
+   (Jinja2 and argon2-cffi).
+2. In the same window as the PostgreSQL settings above, apply the migrations
+   and create a manager account. You are asked for the password; it is never
+   a command-line argument, and there is no default account.
+
+   ```powershell
+   python -m deskmate.zaza_server migrate
+   python -m deskmate.zaza_server manager-create --username manager --name "Project Manager"
+   python -m deskmate.zaza_server serve
+   ```
+
+3. Open http://127.0.0.1:8765/manager and sign in.
+
+Other account commands: `manager-list`, `manager-disable`, `manager-enable`,
+`manager-reset-password` and `manager-revoke-sessions` (all take
+`--username`).
+
+- **Settings:** `ZAZA_DASHBOARD_*` in `.env.example`.
+- **Local HTTP only:** the session cookie is not marked Secure by default,
+  so this works on `http://127.0.0.1`. **A real deployment must set
+  `ZAZA_DASHBOARD_COOKIE_SECURE=true` and run behind HTTPS (Phase 10).**
+- **Figures:** they come from the stored attendance summaries, so run
+  `recalculate --recent-days 7` to refresh them.
+- **Schedules:** they can be added and changed from today onwards on the
+  Schedules page. Correcting past schedules is still done with the CLI.
 
 ### Google Sheets reporting (Phase 6, optional)
 

@@ -29,6 +29,14 @@ Google Sheets reporting (Phase 6; one-way, read-only from PostgreSQL):
 - ``sheets-sync``       refresh the five tabs from PostgreSQL (needs postgres)
 - ``sheets-status``     check configuration/access, show the last refresh
 
+Manager dashboard (Phase 7; PostgreSQL only; served by ``serve`` at /manager):
+
+- ``manager-create``    create a manager account (password typed at a prompt)
+- ``manager-list``
+- ``manager-disable`` / ``manager-enable``
+- ``manager-reset-password``   (prompt; revokes the account's sessions)
+- ``manager-revoke-sessions``  sign the account out everywhere
+
 Backend: ``--backend sqlite|postgres`` or ``ZAZA_SERVER_BACKEND`` (default
 ``sqlite``). The SQLite development database defaults to
 ``~/.zaza_server_dev/central_dev.db`` (override with ``--db`` or
@@ -254,6 +262,56 @@ def _sheets(args: argparse.Namespace, backend: str) -> int:
     return 0
 
 
+_MANAGER_COMMANDS = ("manager-create", "manager-list", "manager-disable", "manager-enable",
+                     "manager-reset-password", "manager-revoke-sessions")
+
+
+def _new_password(username: str) -> str:
+    """Prompt twice (never echoed, never a command-line argument)."""
+    import getpass  # noqa: PLC0415
+
+    from .dashboard.security import check_password_policy  # noqa: PLC0415
+
+    first = getpass.getpass("New password (at least 12 characters): ")
+    check_password_policy(first, username=username)
+    if getpass.getpass("Repeat the password: ") != first:
+        raise ValueError("the two passwords don't match")
+    return first
+
+
+def _managers(args: argparse.Namespace) -> int:
+    from .dashboard.auth import ManagerAuth  # noqa: PLC0415
+    from .dashboard.queries import PostgresDashboardRepository  # noqa: PLC0415
+    from .dashboard.security import normalize_username  # noqa: PLC0415
+    from .postgres import PostgresRepository  # noqa: PLC0415
+
+    repo = PostgresRepository(database_settings_from_env(), actor_type="CLI", actor_id="server-cli")
+    try:
+        auth = ManagerAuth(PostgresDashboardRepository(repo))
+        if args.command == "manager-list":
+            for u in auth.users():
+                last = f"{u.last_login_at:%Y-%m-%d %H:%M} UTC" if u.last_login_at else "never"
+                print(f"{u.username:<24} {u.display_name:<28} {u.role:<8} "
+                      f"{'active' if u.is_active else 'disabled':<9} last login {last}")
+            return 0
+        username = normalize_username(args.username)
+        if args.command == "manager-create":
+            user = auth.create_user(username, args.name, _new_password(username), role=args.role)
+            print(f"Created {user.role.lower()} account {user.username} ({user.display_name}).")
+        elif args.command == "manager-reset-password":
+            revoked = auth.reset_password(username, _new_password(username))
+            print(f"Password changed for {username}; {revoked} session(s) signed out.")
+        elif args.command in ("manager-disable", "manager-enable"):
+            revoked = auth.set_active(username, args.command == "manager-enable")
+            state = "enabled" if args.command == "manager-enable" else f"disabled; {revoked} session(s) signed out"
+            print(f"Account {username} {state}.")
+        else:
+            print(f"{auth.revoke_sessions(username)} session(s) of {username} signed out.")
+        return 0
+    finally:
+        repo.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m deskmate.zaza_server")
     parser.add_argument("--db", type=Path, default=None, help="SQLite development database path")
@@ -329,6 +387,18 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sheets-sync", help="(Google Sheets) refresh the report tabs from PostgreSQL")
     sub.add_parser("sheets-status", help="(Google Sheets) check configuration/access and the last refresh")
 
+    mc = sub.add_parser("manager-create", help="(dashboard) create a manager account; prompts for the password")
+    mc.add_argument("--username", required=True, help="3-64 characters; case-insensitive")
+    mc.add_argument("--name", required=True, help="display name, e.g. 'Project Manager'")
+    mc.add_argument("--role", default="MANAGER", choices=("MANAGER", "ADMIN"))
+    sub.add_parser("manager-list", help="(dashboard) list manager accounts")
+    for name, helptext in (("manager-disable", "disable an account and sign it out everywhere"),
+                           ("manager-enable", "re-enable an account"),
+                           ("manager-reset-password", "set a new password (prompt); signs the account out"),
+                           ("manager-revoke-sessions", "sign an account out everywhere")):
+        p = sub.add_parser(name, help=f"(dashboard) {helptext}")
+        p.add_argument("--username", required=True)
+
     args = parser.parse_args(argv)
     try:
         backend = args.backend or backend_from_env()
@@ -340,6 +410,10 @@ def main(argv: list[str] | None = None) -> int:
             return _attendance(args)
         if args.command in _SHEETS_COMMANDS:
             return _sheets(args, backend)
+        if args.command in _MANAGER_COMMANDS:
+            if backend != "postgres":
+                raise ConfigError("manager accounts need the PostgreSQL backend (ZAZA_SERVER_BACKEND=postgres)")
+            return _managers(args)
         return _run(args, backend)
     except (ConfigError, RepositoryUnavailable) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -358,6 +432,24 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
 
+def _mount_dashboard(app, repo, args: argparse.Namespace) -> None:  # noqa: ANN001
+    from .dashboard.config import dashboard_settings_from_env  # noqa: PLC0415
+
+    settings = dashboard_settings_from_env()
+    try:
+        import argon2  # noqa: F401, PLC0415
+        import jinja2  # noqa: F401, PLC0415
+
+        from .dashboard.queries import PostgresDashboardRepository  # noqa: PLC0415
+        from .dashboard.routes import mount_dashboard  # noqa: PLC0415
+    except ImportError:
+        print("Manager dashboard: not installed (pip install -e .[zaza-dashboard]); serving the sync API only.")
+        return
+    mount_dashboard(app, PostgresDashboardRepository(repo), settings)
+    print(f"Manager dashboard on http://{args.host}:{args.port}/manager  "
+          f"(session cookie Secure={'on' if settings.cookie_secure else 'OFF - localhost development only'})")
+
+
 def _run(args: argparse.Namespace, backend: str) -> int:
     from .backends import open_repository  # noqa: PLC0415
 
@@ -374,7 +466,12 @@ def _run(args: argparse.Namespace, backend: str) -> int:
             if args.host not in ("127.0.0.1", "localhost", "::1"):
                 print("WARNING: listening beyond localhost over plain HTTP. Production must sit behind HTTPS.")
             print(f"ZaZa sync API on http://{args.host}:{args.port}  ({backend}: {where})")
-            uvicorn.run(create_app(repo), host=args.host, port=args.port, log_level="info")
+            app = create_app(repo)
+            if backend == "postgres":
+                _mount_dashboard(app, repo, args)
+            else:
+                print("Manager dashboard: not available on the SQLite development backend (needs PostgreSQL).")
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         elif args.command == "add-employee":
             e = repo.add_employee(args.employee_id, args.name, role=args.role, timezone=args.timezone)
             print(f"Added employee {e.employee_id} ({e.display_name}, {e.role}, {e.timezone}).")
