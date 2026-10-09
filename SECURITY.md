@@ -144,6 +144,10 @@ never reported as an attendance fact.
 
   Re-enrollment needs the token again. Changing to a different device ID
   needs explicit confirmation.
+
+  Verified with the frozen build in a test VM: a byte-identical copy of one
+  user's credential file in another Windows user's profile cannot be
+  decrypted. That user's agent stays unenrolled and sends nothing.
 - **Logs:** `%LOCALAPPDATA%\ZaZa\WorkAgent\logs\agent.log`, rotated at
   1 MB with 5 kept. A filter drops window titles, application names and
   per-tick activity lines and masks bearer tokens, so the logs never become

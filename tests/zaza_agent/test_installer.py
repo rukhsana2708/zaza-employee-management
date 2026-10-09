@@ -315,10 +315,56 @@ def test_uninstall_cleanup_stops_agents_removes_task_and_keeps_data(monkeypatch,
     _enroll()
     done = []
     monkeypatch.setattr(control, "stop_all", lambda d: done.append("stop") or (1, 0))
+    # isolated from the machine: a real installed ZaZaWorkAgent.exe must not affect this test
+    monkeypatch.setattr(control, "agent_processes", lambda: [])
+    monkeypatch.setattr(autostart, "exists", lambda: False)
     monkeypatch.setattr(autostart, "unregister", lambda: done.append("unregister") or True)
     assert workagent.main(["--uninstall-cleanup"]) == 0
     assert done == ["stop", "unregister"]
     assert paths.config_path().exists() and (home / "device_credentials.json").exists()  # data preserved
+
+
+def test_stop_failures_are_reported_with_a_non_zero_exit(monkeypatch, home, capsys):
+    """Setup (PrepareToInstall) and the uninstaller act on the exit code: an
+    agent that survives must never look like a successful stop."""
+    done = []
+    monkeypatch.setattr(control, "stop_all", lambda d: (0, 1))
+    monkeypatch.setattr(control, "agent_processes", lambda: ["survivor"])
+    monkeypatch.setattr(autostart, "unregister", lambda: done.append("unregister") or True)
+    assert workagent.main(["--stop-agents"]) == 1
+    assert workagent.main(["--uninstall-cleanup"]) == 1
+    assert done == []  # the startup task is kept while an agent still runs
+    assert "could not be stopped" in capsys.readouterr().out
+
+    monkeypatch.setattr(control, "agent_processes", lambda: [])
+    monkeypatch.setattr(autostart, "exists", lambda: True)  # deletion failed
+    assert workagent.main(["--uninstall-cleanup"]) == 1
+    monkeypatch.setattr(autostart, "exists", lambda: False)
+    assert workagent.main(["--stop-agents"]) == 0 and workagent.main(["--uninstall-cleanup"]) == 0
+    assert workagent.main(["--unregister-autostart"]) == 0
+
+
+def test_register_autostart_failure_exits_non_zero(monkeypatch, tmp_path):
+    monkeypatch.setattr(autostart, "_schtasks", lambda *a: subprocess.CompletedProcess(a, 5))
+    assert workagent.main(["--register-autostart"]) == 1
+
+
+def test_windowed_build_without_standard_streams(monkeypatch):
+    """The production exe has no console: sys.stdin/stdout are None unless
+    redirected. Nothing may crash, and --enroll-stdin must fail clearly."""
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stdin", None)
+    if os.name == "nt":
+        import ctypes
+
+        monkeypatch.setattr(ctypes.windll.kernel32, "AttachConsole", lambda pid: 0)
+    assert workagent.main(["--version"]) == 0
+    assert workagent.main(["--enroll-stdin"]) == 2
+
+
+def test_version_output(capsys):
+    assert workagent.main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == f"ZaZa Work Agent {__version__}"
 
 
 # ─── single instance, stop requests ────────────────────────────────────────
@@ -414,6 +460,12 @@ def test_runner_waits_for_enrollment_records_and_stops_cleanly(monkeypatch, home
         thread.join(10)
 
 
+def runner_settle() -> float:
+    import deskmate.zaza.runner as runner_mod
+
+    return runner_mod.ENROLLMENT_SETTLE
+
+
 def _check_runner(thread, result) -> None:  # noqa: ANN001
     _wait(lambda: paths.status_path().exists())
     assert json.loads(paths.status_path().read_text())["state"] == "WAITING_FOR_ENROLLMENT"
@@ -423,7 +475,9 @@ def _check_runner(thread, result) -> None:  # noqa: ANN001
     assert FakeAgent.instances[0].config.device_id == "pc-1"
     assert FakeAgent.instances[0].config.sync_allow_insecure_http is False
     _enroll(token="zzd_rotated-token-abcdefghijk")  # re-enrollment: restart with the new credentials
-    _wait(lambda: len(FakeAgent.instances) == 2)
+    _wait(lambda: len(FakeAgent.instances) >= 2)
+    time.sleep(runner_settle() + 0.5)
+    assert len(FakeAgent.instances) == 2  # one restart per re-enrollment (two files written), never two
     assert FakeAgent.instances[0].stopped
     time.sleep(1.1)  # stop request must be newer than the agent start (mtime resolution)
     control.request_stop(paths.stop_request_path())
@@ -501,6 +555,22 @@ def test_remove_local_data_warns_with_unsynced_count_and_respects_no(home):
     assert not home.exists() and load_credentials() is None and load_enrollment() is None
 
 
+def test_cancelled_local_data_removal_restarts_a_running_agent(home, monkeypatch):
+    """Found in the frozen-VM pass: answering "No" left monitoring stopped
+    until the next sign-in."""
+    _enroll()
+    running = {"agent": True}
+    started = []
+    monkeypatch.setattr("deskmate.zaza.instance.is_running", lambda path: running["agent"])
+    monkeypatch.setattr(control, "request_stop", lambda path: running.update(agent=False))
+    monkeypatch.setattr(workagent, "start_background", lambda: started.append(True))
+    assert workagent.remove_local_data(ask=lambda n: False, wait=1) == 1
+    assert started == [True] and paths.config_path().exists()  # resumed, nothing deleted
+    running["agent"], started[:] = False, []
+    assert workagent.remove_local_data(ask=lambda n: False, wait=1) == 1
+    assert started == []  # it was not running before the question: not started
+
+
 def test_preserved_enrollment_is_reused_after_reinstall(home):
     _enroll()
     save_enrollment(load_enrollment())  # what a reinstall finds on disk
@@ -520,6 +590,11 @@ def test_installer_script_branding_and_rules():
     assert "runasoriginaluser" in iss and "--register-autostart" in iss and "--uninstall-cleanup" in iss
     assert "/TOKEN" not in iss.upper().replace("DEVICE TOKEN", "") and "token=" not in iss.lower()
     assert "ZaZa Work Agent — Status & Privacy" in iss
+    # stop/registration results are checked, never ignored
+    assert "'--stop-agents'" in iss and "ResultCode <> 0" in iss and "[UninstallRun]" not in iss
+    assert "DisableWelcomePage=no" in iss  # Inno Setup 6 hides the Welcome page otherwise
+    prep = iss.split("function PrepareToInstall", 1)[1].split("procedure CurStepChanged", 1)[0]
+    assert "ResultCode <> 0" in prep and "Result :=" in prep
     for never in ("screenshots", "clipboard", "microphone or webcam", "full web addresses"):
         assert never in iss.lower()
 
@@ -535,3 +610,15 @@ def test_build_script_steps():
     assert not any(line.split("==")[0].lower() in ("mss", "pillow", "pytesseract", "fastapi", "uiautomation")
                    for line in pins)
     assert build_config.product_version() == __version__
+
+
+def test_windows_use_the_zaza_icon_and_it_is_bundled():
+    """Found in the frozen-VM pass: the windows showed Tk's default icon."""
+    from deskmate.zaza.ui import icon_path
+
+    assert icon_path() == ROOT / "installer" / "assets" / "zaza.ico"
+    spec = (ROOT / "installer/ZaZaWorkAgent.spec").read_text(encoding="utf-8")
+    assert '"zaza.ico"), ".")' in spec
+    ui = (ROOT / "deskmate/zaza/ui.py").read_text(encoding="utf-8")
+    assert ui.count("_brand(") >= 4  # definition + status, enrollment, remove-data windows
+    assert 'buttons.pack(side="bottom"' in ui  # buttons stay visible on a 768-pixel screen

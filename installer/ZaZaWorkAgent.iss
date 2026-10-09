@@ -33,6 +33,8 @@ VersionInfoCompany=ZaZa
 VersionInfoProductName=ZaZa Work Agent
 VersionInfoDescription=ZaZa Work Agent Setup
 VersionInfoVersion={#AppVersion}
+; Inno Setup 6 hides the Welcome page by default; ZaZa's flow starts with it.
+DisableWelcomePage=no
 DefaultDirName={autopf}\ZaZa Work Agent
 DisableDirPage=yes
 UsePreviousAppDir=yes
@@ -77,14 +79,9 @@ Name: "{group}\What ZaZa records"; Filename: "{app}\ZaZa Work Agent - What is re
 Name: "{group}\Uninstall ZaZa Work Agent"; Filename: "{uninstallexe}"
 
 [Run]
-; Elevated (this is the installer): create/replace the logon task.
-Filename: "{app}\ZaZaWorkAgent.exe"; Parameters: "--register-autostart"; Flags: runhidden waituntilterminated; StatusMsg: "Setting up start at sign-in..."
+; The logon task is created in [Code] (CurStepChanged), which checks the result.
 ; As the signed-in employee: enroll if needed, start the agent, show its status.
 Filename: "{app}\ZaZaWorkAgent.exe"; Parameters: "--first-run"; Description: "Enroll this device and start ZaZa Work Agent"; Flags: postinstall runasoriginaluser nowait skipifsilent
-
-[UninstallRun]
-; Stop every running agent cleanly (session closed), then remove the logon task.
-Filename: "{app}\ZaZaWorkAgent.exe"; Parameters: "--uninstall-cleanup"; Flags: runhidden waituntilterminated; RunOnceId: "ZaZaUninstallCleanup"
 
 [UninstallDelete]
 ; Only the program folder (e.g. a leftover stop.request). Per-user data in
@@ -139,13 +136,55 @@ begin
   OldExe := ExpandConstant('{app}\ZaZaWorkAgent.exe');
   if FileExists(OldExe) then
   begin
+    { A failure leaves the existing installation untouched (nothing replaced yet). }
     if not Exec(OldExe, '--stop-agents', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      Result := 'The running ZaZa Work Agent could not be stopped. Close it and run setup again.';
+      Result := 'The running ZaZa Work Agent could not be stopped (' + SysErrorMessage(ResultCode) + '). ' +
+        'Nothing was changed. Close it and run setup again.'
+    else if ResultCode <> 0 then
+      Result := 'The running ZaZa Work Agent could not be stopped (exit code ' + IntToStr(ResultCode) + '). ' +
+        'Nothing was changed. Sign out the other Windows users or restart the computer, then run setup again.';
+    if Result <> '' then
+      Log('PrepareToInstall: ' + Result);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  { Elevated (this is the installer): create or replace the logon task (/F, so never duplicated). }
+  if CurStep = ssPostInstall then
+  begin
+    WizardForm.StatusLabel.Caption := 'Setting up start at sign-in...';
+    if not Exec(ExpandConstant('{app}\ZaZaWorkAgent.exe'), '--register-autostart', '', SW_HIDE,
+                ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      Log('Startup task registration failed, code ' + IntToStr(ResultCode));
+      SuppressibleMsgBox('ZaZa Work Agent was installed, but its start at sign-in could not be set up ' +
+        '(code ' + IntToStr(ResultCode) + '). Run setup again, or ask your administrator.',
+        mbError, MB_OK, IDOK);
+    end;
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
+  { Before any file is removed: stop every running agent cleanly (work session
+    closed), then remove the logon task. Local data is never touched. }
+  if CurUninstallStep = usUninstall then
+  begin
+    if not Exec(ExpandConstant('{app}\ZaZaWorkAgent.exe'), '--uninstall-cleanup', '', SW_HIDE,
+                ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      Log('Uninstall cleanup failed, code ' + IntToStr(ResultCode));
+      if not UninstallSilent then
+        MsgBox('ZaZa Work Agent could not be stopped completely (code ' + IntToStr(ResultCode) + '). ' +
+          'Some files may remain until the computer is restarted.', mbError, MB_OK);
+    end;
+  end;
+
   if (CurUninstallStep = usPostUninstall) and not UninstallSilent then
     MsgBox('ZaZa Work Agent was removed.' + #13#10 + #13#10 +
       'Local activity data (including any records not yet uploaded) and the stored device credentials were ' +

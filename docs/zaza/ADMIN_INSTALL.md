@@ -120,7 +120,9 @@ immediately.
 **Upgrade:** run a newer `ZaZaWorkAgentSetup.exe`. Setup stops the running
 agents cleanly, so their work sessions are closed. The startup task is
 replaced (never duplicated), and enrollment, configuration and the local
-database (including unsynced records) are preserved.
+database (including unsynced records) are preserved. The employee does not
+enroll again. If a running agent cannot be stopped, setup stops **before
+changing anything** and says so; the existing installation keeps working.
 
 **Uninstall:** Installed apps → ZaZa Work Agent → Uninstall. This stops the
 agents and removes the startup task, the program files and the Start menu
@@ -147,7 +149,9 @@ Run it as the employee, before uninstalling:
 ```
 
 It stops the agent, shows how many records are not uploaded yet, and asks
-for confirmation.
+for confirmation ("No" is the default). Answering **No** deletes nothing,
+and the agent starts again straight away. Administrators can add `--yes` to
+skip the question.
 
 **Reinstall:** the preserved enrollment is reused automatically. Use
 "Enroll or re-enroll this device" to change it. Changing to a different
@@ -166,7 +170,24 @@ installer\build.ps1 -SignToolCommand '"C:\Program Files (x86)\Windows Kits\10\bi
 
 Never commit certificates or passwords.
 
-## 10. Build environment (tested)
+## 10. Windows validation (disposable VM)
+
+`installer\smoke-test.ps1` tests the **frozen** installer from end to end. It
+needs a local test server, so pass a Python that has the server's
+dependencies (only the test server uses it, never the agent):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\smoke-test.ps1 `
+    -Setup dist\ZaZaWorkAgentSetup.exe -ServerPython <python.exe> -ServerSource <repo>
+```
+
+Run it only in a disposable VM or test account, elevated, from the test
+account's desktop session, and never against the production VPS.
+`installer\vm\README.md` describes the complete Hyper-V procedure used for
+the Phase 9 validation: the smoke test, the interactive pass, real
+sign-out/sign-in, and the cross-user DPAPI check.
+
+## 11. Build environment (tested)
 
 | Item | Version |
 |---|---|

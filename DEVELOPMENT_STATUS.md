@@ -1,8 +1,8 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-09 (Phase 9)
+**Last updated:** 2026-10-10 (Phase 9 frozen Windows validation)
 
-## Current phase: Phase 9 — Windows employee installer (implemented, pending your review)
+## Current phase: Phase 9 — Windows employee installer (validated on Windows, pending your review)
 
 Phase 8 was approved with its review fix. Phase 9 packages the approved ZaZa
 agent as `ZaZaWorkAgentSetup.exe`. **No VPS deployment, pilot or AI.** The
@@ -11,9 +11,9 @@ central server is not deployed.
 ### Phase 9 summary
 
 - **Product:** ZaZa Work Agent 0.9.0, publisher ZaZa.
-  - `ZaZaWorkAgent.exe` (PyInstaller 6.22, one folder, no console window).
-  - `ZaZaWorkAgentSetup.exe` (Inno Setup 6.7; installs into Program Files,
-    admin once).
+  - `ZaZaWorkAgent.exe` (PyInstaller 6.22.3, one folder, no console window).
+  - `ZaZaWorkAgentSetup.exe` (Inno Setup 6.7.3; installs into Program
+    Files, admin once).
 - **New agent modules** (`deskmate/zaza/`):
   - `workagent.py` (entry point), `runner.py`, `enrollment.py`;
   - `instance.py` (single-instance lock), `autostart.py` (logon task XML),
@@ -26,33 +26,159 @@ central server is not deployed.
   path. The recorder and sync code are unchanged.
 - **Installer tooling** (`installer/`): `build.ps1`, `ZaZaWorkAgent.spec`,
   `build_config.py`, `audit_package.py`, `ZaZaWorkAgent.iss`,
-  `smoke-test.ps1` (for a disposable VM), `make_icon.py` and
-  `assets/zaza.ico` (a replaceable placeholder).
-- **Docs:** `docs/zaza/ADMIN_INSTALL.md`, `docs/zaza/EMPLOYEE_PRIVACY.md`.
-- **Tests:**
-  - Default run: 750 passed, 0 failed, 129 skipped.
-  - With `ZAZA_TEST_POSTGRES_URL` set: 878 passed, 0 failed, 1 skipped.
-  - New: 61 tests in `test_installer.py`.
+  `smoke-test.ps1`, `make_icon.py` and `assets/zaza.ico` (a replaceable
+  placeholder). `installer/vm/` holds the disposable Hyper-V VM tooling used
+  for the frozen validation.
+- **Docs:** `docs/zaza/ADMIN_INSTALL.md`, `docs/zaza/EMPLOYEE_PRIVACY.md`,
+  `installer/vm/README.md`.
+
+### Phase 9 frozen Windows validation (2026-10-09/10)
+
+The real frozen artifacts were run in a **disposable Hyper-V VM**: Windows 11
+Enterprise Evaluation, build 26300, with Smart App Control off inside the VM
+only. The build PC's security settings were not changed. Only the local
+development server (`http://127.0.0.1`) was used, never the VPS.
+
+- **Build:** clean `installer\build.ps1`, production flavour, **with tests**.
+  - Build PC: Windows 11 Pro 10.0.26300, Python 3.14.6 (64-bit),
+    PyInstaller 6.22.3, Inno Setup 6.7.3.
+  - `ZaZaWorkAgentSetup.exe`: 15,884,037 bytes, **unsigned**.
+    SHA-256 `a0aca39aa0be46cd1886e36a5be77f7980c2ea4284e4e8401818385520f4ce72`.
+  - `ZaZaWorkAgent.exe`: SHA-256
+    `84e7449851f5bc8b3831da5d4f02076a1b3dce62325118a1426ddcab45800568`.
+
+  The build writes the hashes to `dist\SHA256SUMS.txt` and the audit to
+  `dist\package-audit.txt`; both are kept with the build output, not in Git.
+- **Package privacy audit:** `RESULT: PASS`. An independent read of the
+  `PYZ.pyz` inside the built exe found:
+  - 509 modules, of which 36 are first party, all `deskmate.zaza.*`;
+  - no upstream DeskMate module, no server, PostgreSQL, Sheets or dashboard
+    code, and no prohibited library.
+- **Frozen exe before installation**, with no Python on the machine:
+  - `--version` prints `ZaZa Work Agent 0.9.0`;
+  - `--status` opens the Status & Privacy window (Tcl/Tk loads from the
+    bundle).
+- **`installer\smoke-test.ps1`** against that exact installer, from a fresh
+  VM checkpoint: **78 passed, 0 failed**. It covers:
+  - the install, version resource, the real logon task and
+    `--enroll-stdin`;
+  - DPAPI and the token absent from every data file;
+  - URL/TLS rules (public CA accepted; self-signed, expired and wrong-host
+    certificates refused);
+  - the recorder as the user, not SYSTEM and not elevated;
+  - single instance, online sync, the offline queue and its drain;
+  - upgrade with pending records, uninstall, reinstall with the same device
+    identity, log privacy, and `--remove-local-data`.
+- **Interactive pass**, as the standard user `zazaemp`, by screenshots and
+  keyboard/mouse:
+  - UAC credential prompt ("Publisher: Unknown").
+  - Wizard: Welcome → What is recorded → Server and device enrollment →
+    Ready → Finish.
+  - Enrollment as the employee:
+    - a non-loopback `http://` address is refused;
+    - a wrong token gets "Device token was not accepted";
+    - the real token gets "Connection successful".
+  - Status & Privacy shows every required field and no secrets.
+  - Re-enroll never shows the stored token.
+- **Real logon:** after sign-out and sign-in at the lock screen, the logon
+  task started exactly one `ZaZaWorkAgent.exe --background`:
+  - parent: the Task Scheduler service host;
+  - user `ZAZA-TEST\zazaemp`, not SYSTEM, in the user's interactive session;
+  - not elevated;
+  - it synced with its DPAPI credentials.
+
+  The same was repeated after the upgrade.
+- **Cross-user DPAPI:** with a byte-identical copy of `zazaemp`'s
+  `device_credentials.json` and `config.json` in `zazaemp2`'s profile,
+  `zazaemp2`'s agent stayed `WAITING_FOR_ENROLLMENT`. It had no database and
+  sent no request to the server. The Status window said "Device credentials
+  missing - re-enroll this device".
+- **Interactive upgrade** while offline with pending records:
+  - no restart needed, nothing scheduled to be replaced at reboot;
+  - the agent was stopped first;
+  - config and credentials stayed byte-identical, and pending records were
+    kept;
+  - one task and one recorder afterwards; no re-enrollment;
+  - the queue drained when the server returned.
+- **Uninstall from Settings › Installed apps:**
+  - removed: the agent process, program files, task, Start-menu folder and
+    uninstall registration;
+  - `activity.db`, config, credentials and logs were kept.
+- **Reinstall:** the existing enrollment was reused, with no enrollment
+  window. The server still had exactly one device.
+- **`--remove-local-data`:**
+  - with unsynced records it warns "8 activity record(s) have NOT been
+    uploaded yet. Unsynced activity records will be permanently deleted";
+  - **No** keeps everything, and the agent restarts;
+  - **Yes** removes the data folder and the DPAPI credentials.
+- **Logs:** the employee's `agent.log` contained no token, Bearer or
+  Authorization text, URL, window title, per-tick activity, clipboard,
+  screenshot or keystroke content, or database credentials. It is rotated at
+  1 MB with 5 files kept.
+
+**Defects found by the frozen validation and fixed** (each has a regression
+test where testable):
+
+1. **Upgrade ignored a failed stop.** `--stop-agents` always returned 0, and
+   `PrepareToInstall` ignored the exit code. Now a survivor gives exit 1,
+   and setup aborts before changing anything. Startup-task registration and
+   the uninstall cleanup also check their results.
+2. **No console in the windowed exe.** `--version` and `--enroll-stdin`
+   output went nowhere. Output now uses a redirected stdout or the parent
+   console, and `--enroll-stdin` without input fails clearly.
+3. **Tk's feather icon** on every window. The ZaZa icon is now bundled and
+   used.
+4. **Status window taller than a 768-pixel screen,** so its buttons were
+   off-screen. The buttons are now pinned at the bottom, the privacy lists
+   sit side by side, and the window is sized to the screen.
+5. **Welcome page skipped.** Inno Setup 6 hides it by default; it is now
+   enabled (`DisableWelcomePage=no`).
+6. **"No" in `--remove-local-data` left monitoring stopped** until the next
+   sign-in. The agent now restarts. With 0 unsynced records, the dialog says
+   so.
+7. **Re-enrollment could restart recording twice** and split the work
+   session. The credentials file and `config.json` are written separately;
+   the runner now waits until both have settled (2 s). This showed up as a
+   flaky test.
+8. **Enrollment window:** the cursor starts in the first empty field, and
+   Enter submits.
+
+The smoke test itself was also corrected:
+- PowerShell 5.1 `.Count` on a single CIM object;
+- a locked `agent.lock` during the token scan;
+- `[::1]` expectations;
+- counting the VM harness's own tasks.
+
+### Phase 9 test results
+
+- **Default run** (build PC and VM): 756 passed, 0 failed, 129 skipped.
+- **PostgreSQL-enabled** (in the VM, throwaway loopback PostgreSQL 16.15):
+  884 passed, 0 failed, 1 skipped (the live Google Sheets test).
+- `test_installer.py`: 67 tests.
+- **Frozen Windows smoke test:** 78 passed, 0 failed.
 
 ### Phase 9 known limitations / risks
 
-- **Not run as a frozen program yet.** On the build machine, Smart App
-  Control blocks unsigned executables, so neither `ZaZaWorkAgent.exe` nor
-  `ZaZaWorkAgentSetup.exe` could be run there. Not done yet:
-  - the full Windows smoke test (`installer\smoke-test.ps1`) in a
-    disposable VM with Smart App Control off, or with a signed build;
-  - an interactive pass over the setup wizard, the enrollment and Status
-    windows, upgrade and uninstall.
-
-  The same code path was smoke-tested with the minimal build environment's
-  Python against a local server.
-- **Unsigned:** SmartScreen and Smart App Control will warn or block until
-  a real Authenticode certificate is used.
+- **Unsigned build:** SmartScreen and Smart App Control warn or block until
+  a real Authenticode certificate is used. On a PC with Smart App Control
+  on, the unsigned installer will not run at all.
+- **The build PC's Smart App Control blocks unsigned DLLs, intermittently.**
+  For example, SQLAlchemy's compiled extension was blocked once during a
+  build. So the PostgreSQL-enabled suite was run in the VM, and the build's
+  test step may need a re-run on this PC.
+- **Enrollment window focus:** it opens on top, but Windows' foreground
+  lock can leave it without keyboard focus until the employee clicks into
+  it.
+- **Sign-out ends the agent abruptly.** The session is closed by Phase 2
+  recovery at the next start (logged as an interrupted session), not by a
+  clean shutdown.
 - **No tray icon** (deferred), and no automatic updates.
-- **Enrollment** happens after installation, as the employee (DPAPI is
-  per user); silent installs need a separate per-user enrollment step.
+- **Enrollment** happens after installation, as the employee (DPAPI is per
+  user); silent installs need a separate per-user enrollment step.
 - **Website domains** are not detected (unchanged from Phase 2); the
   privacy notice says so.
+- `deskmate/zaza.zip`, an old source snapshot committed in Phase 3, is still
+  in the repository. It is not packaged, and can be deleted in a cleanup.
 
 ### Phase 8 (approved)
 

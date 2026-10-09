@@ -286,7 +286,9 @@ SQLite, the idle grace, UNKNOWN fairness, crash recovery and exact-ACK sync.
     whose account may differ.
   - The recorder records nothing until the device is enrolled, so no record
     carries a placeholder identity. Re-enrollment restarts it with the new
-    identity.
+    identity once, after the credentials file and `config.json` have both
+    stopped changing for 2 s, so one re-enrollment never splits the work
+    session twice.
 - **Server URL:** HTTPS for every server; plain HTTP only for
   `127.0.0.1` / `localhost` / `[::1]`; certificates are always verified.
 - **Data:** `%LOCALAPPDATA%\ZaZa\WorkAgent\` holds `activity.db`,
@@ -304,11 +306,14 @@ SQLite, the idle grace, UNKNOWN fairness, crash recovery and exact-ACK sync.
   - Requests older than the agent's start are ignored. Stragglers are
     terminated after 20 s; Phase 2 recovery then closes their session.
 - **Upgrade:** setup stops the agents, replaces the files and re-registers
-  the task. The data folder is untouched.
+  the task. The data folder is untouched. `--stop-agents` exits 1 if an
+  agent survives; `PrepareToInstall` then aborts **before** any file is
+  replaced, so the existing installation keeps working. Task registration
+  and the uninstall cleanup check their exit codes too.
 - **Uninstall:** stops the agents, removes the task, files and shortcuts,
   and **preserves local data** by default. `--remove-local-data` (run as
   the employee) deletes it after warning how many records are not uploaded
-  yet.
+  yet. Answering "No" restarts the agent it stopped for the question.
 - **Not built in Phase 9:** a tray icon (deferred, to keep the recorder
   stable) and automatic updates (upgrades are manual installer runs).
 

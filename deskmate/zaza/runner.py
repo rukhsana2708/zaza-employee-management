@@ -40,6 +40,10 @@ from .sync.worker import SyncWorker
 logger = get("runner")
 STATUS_INTERVAL = 5.0
 ENROLLMENT_POLL = 10.0
+# A re-enrollment writes two files (credentials, then config.json): restart
+# once, after both have stopped changing - never once per file, which would
+# split the work session twice.
+ENROLLMENT_SETTLE = 2.0
 
 
 class Runner:
@@ -58,6 +62,8 @@ class Runner:
         self.started_at = clock()
         self.status = AgentStatus(version=__version__)
         self._signature: tuple | None = None
+        self._changed: tuple | None = None  # a new signature seen while running, and since when
+        self._changed_at = 0.0
 
     # ── control files ─────────────────────────────────────────────────────
     def stop_requested(self) -> bool:
@@ -158,8 +164,12 @@ class Runner:
                     if now - last_check >= ENROLLMENT_POLL:  # not enrolled yet: look again every 10 s
                         last_check = now
                         self._check_enrollment()
-                elif self._signature_now() != self._signature:  # re-enrolled while running
-                    self._check_enrollment()
+                elif (signature := self._signature_now()) != self._signature:  # re-enrolled while running
+                    if signature != self._changed:
+                        self._changed, self._changed_at = signature, now
+                    elif now - self._changed_at >= ENROLLMENT_SETTLE:
+                        self._changed = None
+                        self._check_enrollment()
                 if now - last_status >= STATUS_INTERVAL:
                     last_status = now
                     try:

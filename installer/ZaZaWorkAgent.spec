@@ -31,7 +31,7 @@ a = Analysis(
     [str(HERE / "entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(work / "build_flavor.txt"), ".")],
+    datas=[(str(work / "build_flavor.txt"), "."), (str(HERE / "assets" / "zaza.ico"), ".")],  # icon of the ZaZa windows
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],

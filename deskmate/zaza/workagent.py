@@ -16,9 +16,15 @@ Employee / logon (run as the signed-in user, never elevated):
 Installer / uninstaller (run elevated):
 
 - ``--register-autostart`` / ``--unregister-autostart``
-- ``--stop-agents``     ask running agents to stop, then terminate stragglers
-- ``--uninstall-cleanup``  stop agents and remove the startup task (local
-                        data is preserved)
+- ``--stop-agents``     ask running agents to stop, then terminate stragglers;
+                        exits 1 if any agent is still running (setup then
+                        stops instead of replacing files in use)
+- ``--uninstall-cleanup``  stop agents, then remove the startup task (local
+                        data is preserved); exits 1 if an agent survives
+
+Output: the production build has no console window, so text goes to a
+redirected standard output if there is one (scripts: ``| Out-String``), else
+to the console the command was typed in.
 
 There is deliberately no option to pass a token, disable TLS verification,
 or enable any other kind of capture.
@@ -44,6 +50,25 @@ _DETACHED = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCE
 
 def _exe() -> Path:
     return Path(sys.executable).resolve()
+
+
+def _out(text: str) -> None:
+    """Print, also from the windowed (no console) build: there ``sys.stdout``
+    is None unless output is redirected, so attach to the parent console."""
+    stream = sys.stdout
+    if stream is None and os.name == "nt":
+        try:
+            import ctypes  # noqa: PLC0415
+
+            if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+                stream = open("CONOUT$", "w", encoding="utf-8")  # noqa: SIM115
+        except (OSError, AttributeError):
+            stream = None
+    if stream is not None:
+        try:
+            print(text, file=stream, flush=True)
+        except (OSError, ValueError):
+            pass
 
 
 def _setup_logging() -> None:
@@ -73,16 +98,19 @@ def run_background() -> int:
 def enroll_from_stdin() -> int:
     from .enrollment import EnrollmentError, enroll  # noqa: PLC0415
 
+    if sys.stdin is None:
+        _out("Enrollment failed: no input (pipe the JSON object to standard input)")
+        return 2
     try:
         data = json.loads(sys.stdin.read() or "{}")
         result = enroll(str(data.get("server_url", "")), str(data.get("device_id", "")), str(data.get("token", "")),
                         allow_device_change=bool(data.get("allow_device_change", False)))
     except (ValueError, EnrollmentError) as exc:
-        print(f"Enrollment failed: {exc if isinstance(exc, EnrollmentError) else 'invalid JSON input'}")
+        _out(f"Enrollment failed: {exc if isinstance(exc, EnrollmentError) else 'invalid JSON input'}")
         return 2
     finally:
         data = None  # noqa: F841 — drop the token reference promptly
-    print(result.message)
+    _out(result.message)
     return 0 if result.ok else 1
 
 
@@ -106,15 +134,16 @@ def remove_local_data(*, confirmed: bool = False, ask=None, wait: float = 30.0) 
 
     root = paths.root()
     if not root.exists():
-        print("No ZaZa Work Agent data for this user.")
+        _out("No ZaZa Work Agent data for this user.")
         return 0
-    if is_running(paths.lock_path()):
+    was_running = is_running(paths.lock_path())
+    if was_running:
         control.request_stop(paths.stop_request_path())
         deadline = time.time() + wait
         while is_running(paths.lock_path()) and time.time() < deadline:
             time.sleep(0.5)
         if is_running(paths.lock_path()):
-            print("The agent did not stop; nothing was deleted.")
+            _out("The agent did not stop; nothing was deleted.")
             return 1
     unsynced = pending_records()
     if not confirmed:
@@ -122,13 +151,32 @@ def remove_local_data(*, confirmed: bool = False, ask=None, wait: float = 30.0) 
             from .ui import confirm_remove_local_data as ask  # noqa: PLC0415
         if not ask(unsynced):
             control.clear(paths.stop_request_path())
-            print("Nothing was deleted.")
+            if was_running:
+                start_background()  # cancelled: monitoring resumes, as before the question
+            _out("Nothing was deleted.")
             return 1
     from .sync.credentials import delete_credentials  # noqa: PLC0415
 
     delete_credentials()
     shutil.rmtree(root, ignore_errors=False)
-    print(f"Removed ZaZa Work Agent data for this user ({unsynced} unsynced record(s) deleted).")
+    _out(f"Removed ZaZa Work Agent data for this user ({unsynced} unsynced record(s) deleted).")
+    return 0
+
+
+def stop_agents(*, uninstall: bool = False) -> int:
+    """Installer/uninstaller: stop every agent of this installation. Exit 1
+    (and, on uninstall, keep the startup task) if one is still running."""
+    directory = install_dir() or Path(os.getcwd())
+    control.stop_all(directory)
+    left = control.agent_processes()
+    if left:
+        _out(f"{len(left)} {PRODUCT_NAME} process(es) could not be stopped.")
+        return 1
+    if uninstall:
+        autostart.unregister()
+        if autostart.exists():
+            _out("The startup task could not be removed.")
+            return 1
     return 0
 
 
@@ -143,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
-        print(f"{PRODUCT_NAME} {VERSION}")
+        _out(f"{PRODUCT_NAME} {VERSION}")
         return 0
     if args.status:
         from .ui import show_status  # noqa: PLC0415
@@ -160,17 +208,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.remove_local_data:
         return remove_local_data(confirmed=args.yes)
     if args.register_autostart:
-        autostart.register(_exe(), Path(tempfile.gettempdir()))
+        try:
+            autostart.register(_exe(), Path(tempfile.gettempdir()))
+        except (OSError, RuntimeError) as exc:
+            _out(f"Startup task: {exc}")
+            return 1
         return 0
     if args.unregister_autostart:
         autostart.unregister()
-        return 0
+        return 1 if autostart.exists() else 0
     if args.stop_agents or args.uninstall_cleanup:
-        directory = install_dir() or Path(os.getcwd())
-        control.stop_all(directory)
-        if args.uninstall_cleanup:
-            autostart.unregister()
-        return 0
+        return stop_agents(uninstall=args.uninstall_cleanup)
     return run_background()
 
 
