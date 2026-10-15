@@ -46,7 +46,8 @@ foreach ($required in $Psql, $p.BasePython, (Join-Path $sqlDir '01-create-databa
 }
 if ($DryRun) {
     Write-Host "Steps: $($steps -join ' -> ')"
-    Write-Host "Secrets: $($p.Secrets) (existing: $(@(Get-ChildItem -LiteralPath $p.Secrets -File).Name -join ', '))"
+    $existing = @(Get-ChildItem -LiteralPath $p.Secrets -File | ForEach-Object { $_.Name })  # names only, never contents
+    Write-Host "Secrets: $($p.Secrets) (existing files: $(if ($existing.Count) { $existing -join ', ' } else { 'none' }))"
     Write-Host "Database: zaza_employee_management on 127.0.0.1:5432; roles zaza_employee_owner/app/report"
     Write-Host 'Dry run: nothing changed.'
     return
