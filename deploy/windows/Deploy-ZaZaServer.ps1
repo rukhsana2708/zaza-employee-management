@@ -138,10 +138,11 @@ if ($InstallDependencies) {
 # (no double quotes inside native arguments: Windows PowerShell 5.1 does not escape them)
 Push-Location -LiteralPath $release
 try {
-    Invoke-ZaZaNative -FilePath $p.Python -ArgumentList @('-E', '-s', '-B', '-c',
-        'import deskmate.zaza_server.__main__, deskmate.zaza_server.app, deskmate.zaza_server.postgres.migrate, ' +
-        'deskmate.zaza_server.dashboard.routes, deskmate.zaza_server.sheets.exporter, deskmate.zaza_server.http_security; ' +
-        'print(''import check OK'')')
+    # parentheses: in an array literal `,` binds tighter than `+`
+    $code = ('import deskmate.zaza_server.__main__, deskmate.zaza_server.app, deskmate.zaza_server.postgres.migrate, ' +
+             'deskmate.zaza_server.dashboard.routes, deskmate.zaza_server.sheets.exporter, ' +
+             'deskmate.zaza_server.http_security; print(''import check OK'')')
+    Invoke-ZaZaNative -FilePath $p.Python -ArgumentList @('-E', '-s', '-B', '-c', $code)
 } finally { Pop-Location }
 
 # ── 5. activate ─────────────────────────────────────────────────────────────
