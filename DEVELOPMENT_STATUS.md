@@ -59,15 +59,15 @@ The runbook is [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md).
 
 | Environment | Result |
 |---|---|
-| Production venv (Python 3.14.8, server-only packages + pytest/httpx from a scratch folder), new tests | `test_production_server.py` + `test_production_deploy.py`: 131 passed |
-| Production venv, whole `tests/zaza_agent` | 885 passed, 129 skipped, 2 failed |
-| Full development environment (scratch venv, Python 3.14.8, all project dependencies) | 887 passed, 0 failed, 129 skipped |
+| Production venv (Python 3.14.8, server-only packages + pytest/httpx from a scratch folder), new tests | `test_production_server.py` + `test_production_deploy.py`: 132 passed |
+| Production venv, whole `tests/zaza_agent` | 886 passed, 129 skipped, 2 failed |
+| Full development environment (scratch venv, Python 3.14.8, all project dependencies) | 888 passed, 0 failed, 129 skipped |
 | Phase 9 commit `305b763` in the same environment | 756 passed, 129 skipped |
 
 - **The 2 failures in the production venv** are employee-agent tests that
   need `psutil` and `PIL`. Those packages are deliberately absent from the
   server venv.
-- **The 887 includes** the 756 existing tests and 131 new ones.
+- **The 888 includes** the 756 existing tests and 132 new ones.
 - **Skipped tests** are the opt-in PostgreSQL integration tests and the
   live Google test.
 - `ruff check` is clean on all changed Python.

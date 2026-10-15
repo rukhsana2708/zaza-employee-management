@@ -55,10 +55,13 @@ function Git { param([string[]]$GitArgs) Invoke-ZaZaNative -FilePath $Git -Argum
 # ── 1. the commit and its file list ─────────────────────────────────────────
 $resolved = (Git @('rev-parse', '--verify', "$Commit^{commit}")) | Select-Object -First 1
 if ($resolved -ne $Commit) { throw "commit $Commit not found in $Repository" }
-$specs = @(Git @('show', "${Commit}:deploy/windows/server-files.txt") |
+$lines = @(Git @('show', "${Commit}:deploy/windows/server-files.txt") |
            ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+$specs = @($lines | Where-Object { -not $_.StartsWith('!') })
+$excludes = @($lines | Where-Object { $_.StartsWith('!') } | ForEach-Object { $_.Substring(1) })
 if ($specs.Count -eq 0) { throw 'deploy/windows/server-files.txt is empty in that commit' }
-$files = @(Git (@('ls-tree', '-r', '--name-only', $Commit, '--') + $specs))
+$files = @(Git (@('ls-tree', '-r', '--name-only', $Commit, '--') + $specs) |
+           Where-Object { $path = $_; -not @($excludes | Where-Object { $path -like $_ }).Count })
 $bad = @($files | Where-Object { $_ -match $Forbidden })
 if ($bad.Count) { throw "forbidden files selected for deployment: $($bad -join ', ')" }
 foreach ($required in 'deskmate/zaza_server/__main__.py', 'deskmate/zaza/sync/protocol.py',
@@ -86,7 +89,8 @@ $archive = Join-Path $p.Releases ".staging-$Commit.tar"
 if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
-    Git (@('archive', '--format=tar', "--output=$archive", $Commit, '--') + $specs)
+    # the exact file list (exclusions already applied), never a directory
+    Git (@('archive', '--format=tar', "--output=$archive", $Commit, '--') + $files)
     Invoke-ZaZaNative -FilePath $Tar -ArgumentList @('-xf', $archive, '-C', $staging)
     Remove-Item -LiteralPath $archive
 

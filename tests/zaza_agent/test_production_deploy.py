@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import fnmatch
 import hashlib
 import hmac
 import importlib.util
@@ -140,9 +141,17 @@ def test_server_code_imports_only_the_shared_protocol_from_the_agent():
 # ─── the deployed file list ────────────────────────────────────────────────
 
 
-def _pathspecs() -> list[str]:
-    return [line.strip() for line in (DEPLOY / "server-files.txt").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")]
+def _file_list() -> tuple[list[str], list[str]]:
+    """(include paths, ``!`` exclusion wildcards) from server-files.txt."""
+    lines = [line.strip() for line in (DEPLOY / "server-files.txt").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+    return [x for x in lines if not x.startswith("!")], [x[1:] for x in lines if x.startswith("!")]
+
+
+def test_file_list_uses_plain_paths_only():
+    includes, excludes = _file_list()
+    assert includes and excludes
+    assert not [x for x in includes if x.startswith(":") or "*" in x]  # git ls-tree has no pathspec magic
 
 
 def _deployed_files() -> list[str]:
@@ -150,12 +159,14 @@ def _deployed_files() -> list[str]:
     if git is None:
         pytest.skip("git is not available")
     # tracked + new (not ignored) files: what the next commit, and so the next deployment, will contain
+    includes, excludes = _file_list()
     result = subprocess.run([git, "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "--",
-                             *_pathspecs()], capture_output=True,
+                             *includes], capture_output=True,
                             text=True, check=False)
     if result.returncode != 0:
         pytest.skip(f"git ls-files failed: {result.stderr.strip()}")
-    return result.stdout.split()
+    # PowerShell -like semantics: `*` matches any characters, including `/`
+    return [f for f in result.stdout.split() if not any(fnmatch.fnmatchcase(f, x) for x in excludes)]
 
 
 def _deploy_forbidden() -> re.Pattern:
