@@ -289,6 +289,8 @@ def test_service_command_is_loopback_single_worker_and_uses_the_venv():
     assert "Python      = Join-Path $script:Root 'venv\\Scripts\\python.exe'" in module
     assert "Account     = 'NT SERVICE\\ZaZaEmployeeManagement'" in module
     assert "--workers" not in text and "0.0.0.0" not in text
+    # one NSSM argument: Windows PowerShell 5.1 would not escape embedded double quotes
+    assert '--env-file `"' not in text and "--env-file $($p.EnvFile) --backend postgres" in text
     assert "Nssm        = 'C:\\tools\\nssm\\nssm.exe'" in module  # the server's existing NSSM
 
 

@@ -34,7 +34,10 @@ Import-Module (Join-Path $PSScriptRoot 'ZaZaProduction.psm1') -Force
 $p = Get-ZaZaPaths
 $svc = $p.ServiceName
 
-$appParameters = "-E -s -u -m deskmate.zaza_server --env-file `"$($p.EnvFile)`" --backend postgres " +
+# NSSM gets this as ONE argument: no embedded quotes (Windows PowerShell 5.1 would not escape them),
+# so the configuration path must not contain spaces.
+if ($p.EnvFile -match '\s') { throw "the configuration path must not contain spaces: $($p.EnvFile)" }
+$appParameters = "-E -s -u -m deskmate.zaza_server --env-file $($p.EnvFile) --backend postgres " +
                  "serve --host $($p.BindHost) --port $($p.Port)"
 $settings = [ordered]@{
     Application          = $p.Python

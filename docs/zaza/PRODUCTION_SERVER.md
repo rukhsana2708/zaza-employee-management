@@ -160,7 +160,7 @@ PostgreSQL log or on screen.
 ```
 Service   ZaZaEmployeeManagement (NSSM), automatic start, account NT SERVICE\ZaZaEmployeeManagement
 Command   "C:\apps\ZaZaEmployeeManagement\venv\Scripts\python.exe" -E -s -u -m deskmate.zaza_server
-          --env-file "C:\apps\ZaZaEmployeeManagement\config\zaza-server.env" --backend postgres
+          --env-file C:\apps\ZaZaEmployeeManagement\config\zaza-server.env --backend postgres
           serve --host 127.0.0.1 --port 8100
 Directory C:\apps\ZaZaEmployeeManagement\app
 Output    logs\service-stdout.log / service-stderr.log (NSSM online rotation at 10 MiB)

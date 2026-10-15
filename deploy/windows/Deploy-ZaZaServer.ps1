@@ -135,12 +135,13 @@ if ($InstallDependencies) {
 }
 
 # ── 4. import check (the release with the production venv) ──────────────────
+# (no double quotes inside native arguments: Windows PowerShell 5.1 does not escape them)
 Push-Location -LiteralPath $release
 try {
-    Invoke-ZaZaNative -FilePath $p.Python -ArgumentList @('-E', '-s', '-c',
+    Invoke-ZaZaNative -FilePath $p.Python -ArgumentList @('-E', '-s', '-B', '-c',
         'import deskmate.zaza_server.__main__, deskmate.zaza_server.app, deskmate.zaza_server.postgres.migrate, ' +
         'deskmate.zaza_server.dashboard.routes, deskmate.zaza_server.sheets.exporter, deskmate.zaza_server.http_security; ' +
-        'print("import check OK")')
+        'print(''import check OK'')')
 } finally { Pop-Location }
 
 # ── 5. activate ─────────────────────────────────────────────────────────────
