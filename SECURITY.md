@@ -218,6 +218,23 @@ The production VPS already runs other applications. This system must not:
 No deployment happens until Phase 10, and even then it is additive, not
 disruptive to what's already running.
 
+**Phase 10 (IN PROGRESS) — what exists on the production server so far.**
+Phase 10B prepared the following, all additive:
+
+- Python 3.14 in `C:\Program Files\Python314`: not on PATH, no file
+  associations; Python 3.15 is unchanged.
+- `C:\apps\ZaZaEmployeeManagement`, with its own ACLs (§6.6).
+- A server-only virtual environment.
+
+Nothing else changed:
+
+- **ZazaVoice:** its service, configuration and database are untouched.
+- **PostgreSQL:** its configuration and existing roles are untouched; no
+  ZaZa database or role has been created yet.
+- **Caddy, firewall, DNS, scheduled tasks, the GitHub runner and Docker:**
+  untouched.
+- **The ZaZa service:** not registered, so no port is open.
+
 ## 6. Access control (eventual, built out in Phases 3–7)
 
 ### 6.1 Device authentication (Phase 3)
@@ -276,7 +293,10 @@ disruptive to what's already running.
     hex SHA-256 digest, so a raw `zzd_…` token cannot be stored even by
     mistake.
   - Tests scan every table, including `audit_logs`, for the raw token.
-- **Two roles in production:**
+- **Two roles in production** (Phase 10 names: `zaza_employee_owner` and
+  `zaza_employee_app`, plus the read-only `zaza_employee_report`, on the
+  database `zaza_employee_management`; same grants, in
+  `deploy/postgres/02-grant-privileges.sql`, §6.6):
   - `zaza_owner` owns the database and runs `migrate`.
   - `zaza_app` is used by the running API.
 
@@ -379,7 +399,9 @@ disruptive to what's already running.
   loopback bind host (`127.0.0.1`, `localhost`, `::1`). On `0.0.0.0`, LAN or
   public addresses it is not mounted (404 on `/manager`, plus a printed
   notice), so it is never exposed over plain network HTTP. The sync API is
-  unchanged.
+  unchanged. This rule stays in Phase 10: production binds `127.0.0.1:8100`
+  and is reached only through the HTTPS reverse proxy on the same server
+  (§6.6).
 - **Production MUST set `ZAZA_DASHBOARD_COOKIE_SECURE=true` behind HTTPS
   (Phase 10).** The default `false` exists only so the dashboard works on
   `http://127.0.0.1` during development; `serve` prints a warning while it
@@ -417,9 +439,93 @@ disruptive to what's already running.
     old/new values.
   - Never recorded: passwords, tokens or CSRF values. Page views are not
     audited.
-- **Not yet built:** login rate limiting / lockout. Phase 10 puts the
-  dashboard behind the HTTPS reverse proxy, which should add rate limiting
-  on `/manager/login`.
+- **Login rate limiting (Phase 10):** application-level, chosen instead of a
+  fixed IP allowlist because managers sign in from changing addresses.
+  - **What is counted:** failed sign-ins per real client address (default
+    10) and per submitted username (default 20), in a sliding 15-minute
+    window.
+  - **Which address:** the real address comes from the trusted local proxy
+    only. A client cannot reset its count by sending its own
+    `X-Forwarded-For`.
+  - **No account discovery:** unknown usernames are counted exactly like
+    real ones, so the limit says nothing about which accounts exist.
+  - **When a limit is reached:** 429 with `Retry-After`, before any
+    password is checked, so the correct password is refused too while
+    limited. The generic failure message is unchanged.
+  - **Reset:** a successful sign-in clears both counts.
+  - **Memory:** the state is in memory, bounded and self-expiring (one
+    server process).
+  - **Logging:** only the client address is logged when a limit is
+    reached, never the username or password.
+
+  There is no permanent account lockout, so a known username can't be
+  used to lock its owner out for good.
+
+### 6.6 Production server hardening (Phase 10 — IN PROGRESS)
+
+See [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md).
+
+- **Network:**
+  - The server listens on `127.0.0.1:8100` only, and Caddy on the same
+    machine terminates HTTPS. (The Caddy site block, DNS and host name
+    come in Phase 10C.)
+  - No firewall rule is needed: nothing new listens on a public interface.
+- **Forwarded headers:**
+  - `X-Forwarded-For` and `X-Forwarded-Proto` are trusted only from
+    loopback addresses in `ZAZA_TRUSTED_PROXY_IPS`. Any other value is a
+    start-up error, and the headers are ignored from every other peer.
+  - uvicorn's proxy-header handling is off, so the headers are handled in
+    one place (`http_security.py`).
+- **Host header:** with `ZAZA_PUBLIC_HOST` set, unexpected `Host` values get
+  400. Loopback names are accepted only for direct local requests.
+- **Cookies:** `serve` refuses to start with a public host name unless
+  `ZAZA_DASHBOARD_COOKIE_SECURE=true`.
+- **Service identity:** the virtual account
+  `NT SERVICE\ZaZaEmployeeManagement`. It has no password, and its own SID
+  means the secret files can be granted to ZaZa alone. Plain
+  `LocalService` was rejected because it is shared by many Windows
+  services. No Windows user was created.
+- **File permissions:**
+  - `C:\apps\ZaZaEmployeeManagement` does not inherit from `C:\apps`, where
+    `BUILTIN\Users` can read.
+  - Only Administrators and SYSTEM have access. The service account gets
+    read on the code and config, modify on `logs\` and `run\`, and read on
+    single secret files.
+  - `secrets\` and `backup\` block inheritance.
+- **Secrets:**
+  - Database passwords live in files in `secrets\`: 40 random
+    characters, generated by `zaza_db_credentials.py`.
+  - Each process reads only its own role's file. The owner (migration)
+    password is never readable by the service.
+  - Roles are created from **SCRAM-SHA-256 verifiers**, with statement
+    logging off for that session. So a plaintext password never appears in
+    SQL, on a command line, in the PostgreSQL log or on screen.
+  - No real or placeholder secret exists yet.
+- **Database privileges** (`deploy/postgres/02-grant-privileges.sql`):
+  - Explicit per-table grants; nothing on "all tables".
+  - The API role has DELETE only on `work_schedules`, and only INSERT on
+    `audit_logs`.
+  - The Sheets role is SELECT-only on six tables.
+  - All three roles are `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+    NOBYPASSRLS`, with connection limits. A test fails if a migrated table
+    lacks an explicit grant.
+- **Supply chain:**
+  - The server installs only its own dependencies, with exact pins and
+    SHA-256 hashes, wheels only.
+  - No employee-side capture, OCR, audio, UI-automation or input-hook
+    package is present; tests enforce this.
+  - The Python 3.14.8 installer was checked against its PSF Authenticode
+    signature and the SHA-256 published on python.org.
+- **Code deployed:** an exact commit, exported with `git archive` from a
+  server-only allowlist. `.git`, `.env`, secrets, caches and archives can't
+  be included. Each release records its commit and per-file SHA-256.
+- **Logs:**
+  - Bounded: 60 MiB for the server log, plus pruned NSSM rotations and
+    job logs.
+  - Redacted: `Authorization`/`Cookie` values, bearer and session tokens,
+    password/secret fields, database URL credentials, PEM keys, Google
+    tokens and the database password are masked on every line, including
+    tracebacks.
 
 ### 6.4 Reporting interpretation (Phase 5)
 
@@ -474,14 +580,15 @@ part of the Phase 5 scope. They are an open decision for before production
 
 - Device authentication — designed and implemented in Phase 3 (§6.1).
   Production enrollment UX — Phase 9 installer.
-- Server-side rate limiting and TLS termination — Phase 10 deployment
-  (reverse proxy).
+- Server-side rate limiting and TLS termination — Phase 10. Done in 10B:
+  manager login rate limiting in the application (§6.3) and trusted-proxy
+  HTTPS handling (§6.6). TLS termination by Caddy is Phase 10C.
 - Manager account provisioning/auth mechanism — Phase 7.
 - Central (server-side) retention windows: still open; decide before
   Phase 10 production. Local agent retention is defined in Phase 2.
 - Production database and roles creation on the VPS, TLS settings for the
-  database connection, and backup schedule — Phase 10 (needs separate
-  approval; see ARCHITECTURE.md §4.10).
+  database connection, and backup schedule — Phase 10C (scripts prepared
+  in 10B for review: `deploy/postgres/`; see ARCHITECTURE.md §9).
 - Google Sheets service-account credential handling — designed and
   implemented in Phase 6 (§6.5). Production key storage on the VPS and the
   `zaza_report` role — Phase 10.

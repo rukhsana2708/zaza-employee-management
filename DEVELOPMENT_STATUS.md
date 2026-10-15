@@ -1,8 +1,95 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-10 (Phase 9 frozen Windows validation)
+**Last updated:** 2026-10-15 (Phase 10B — production runtime preparation)
 
-## Current phase: Phase 9 — Windows employee installer (validated on Windows, pending your review)
+## Current phase: Phase 10 — Production deployment (IN PROGRESS)
+
+Phase 9 and the Phase 10A read-only server inspection were approved. Phase
+10B prepared the production runtime on the Windows Server 2022 VPS and
+hardened the server for a public reverse proxy. **Production is NOT
+active:**
+
+- The PostgreSQL database and roles are **not created**.
+- Caddy is **not modified**.
+- The ZaZa Windows service is **not registered**.
+- Google Sheets is **not configured**.
+- **No employee traffic** reaches the server.
+- **Phase 11 has not begun.**
+
+The runbook is [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md).
+
+### Phase 10B summary
+
+- **Server prerequisites (outside Git):**
+  - Python 3.14.8 x64 for all users, in `C:\Program Files\Python314`: not
+    on PATH, no associations. Python 3.15 is unchanged.
+  - `C:\apps\ZaZaEmployeeManagement\{app,releases,venv,config,secrets,logs,run,backup,scripts}`:
+    Administrators/SYSTEM only. `secrets` and `backup` block inheritance.
+  - A Python 3.14 venv with **server-only** packages, installed from a
+    hashed lock: 44 packages, none of them employee-side.
+- **Server-only dependencies:** `deploy/windows/requirements-server.txt`
+  plus `requirements-server.lock.txt`. Tests derive the set from the
+  server's imports and forbid employee-side packages.
+- **Exact-commit deployment** (`Deploy-ZaZaServer.ps1`):
+  - `git archive` of `deploy/windows/server-files.txt` (server code + the
+    shared protocol only);
+  - forbidden-file checks, then `DEPLOYED_COMMIT.json` with per-file
+    SHA-256;
+  - an `app` junction switch; rollback with `Rollback-ZaZaServer.ps1`.
+- **Hardening (new code):**
+  - `http_security.py`: forwarded headers only from loopback proxies;
+    https scheme from the proxy; `ZAZA_PUBLIC_HOST` Host validation.
+  - `dashboard/ratelimit.py`: `/manager/login` rate limiting with 429 and
+    `Retry-After`; no username enumeration.
+  - `logs.py`: rotating, redacted logs.
+  - `preflight.py`: `check-config [--production]`.
+  - `--env-file`, a shared non-secret configuration file.
+  - `serve` runs with uvicorn proxy headers off, one worker, and refuses
+    a public host without Secure cookies.
+- **Prepared for Phase 10C, not run:**
+  - `ZaZaService.ps1`: NSSM, virtual account
+    `NT SERVICE\ZaZaEmployeeManagement`, `127.0.0.1:8100`.
+  - `Initialize-ZaZaDatabase.ps1` with `deploy/postgres/*.sql`: three
+    roles, SCRAM verifiers, explicit grants.
+  - `Invoke-ZaZaJobs.ps1`: `recalculate --recent-days 7`, then
+    `sheets-sync` as the read-only role, with a lock, timeout and log.
+  - `Test-ZaZaServer.ps1` and `Install-ZaZaConfig.ps1`.
+
+### Phase 10B test results
+
+| Environment | Result |
+|---|---|
+| Production venv (Python 3.14.8, server-only packages + pytest/httpx from a scratch folder), new tests | `test_production_server.py` + `test_production_deploy.py`: 131 passed |
+| Production venv, whole `tests/zaza_agent` | 885 passed, 129 skipped, 2 failed |
+| Full development environment (scratch venv, Python 3.14.8, all project dependencies) | 887 passed, 0 failed, 129 skipped |
+| Phase 9 commit `305b763` in the same environment | 756 passed, 129 skipped |
+
+- **The 2 failures in the production venv** are employee-agent tests that
+  need `psutil` and `PIL`. Those packages are deliberately absent from the
+  server venv.
+- **The 887 includes** the 756 existing tests and 131 new ones.
+- **Skipped tests** are the opt-in PostgreSQL integration tests and the
+  live Google test.
+- `ruff check` is clean on all changed Python.
+
+### Phase 10 known limitations / risks
+
+- **Single process only:** the login rate limiter is in memory. Running
+  more than one worker would split the counts.
+- **Recalculation window:** data uploaded more than 7 days late needs a
+  manual `recalculate --from/--to` or the optional weekly
+  `-RecentDays 35` run.
+- **Jobs account:** the jobs are planned to run as SYSTEM. A per-task SID
+  would be narrower (Phase 10C decision).
+- **NSSM rotation:** NSSM 2.24 rotates stdout/stderr without a count
+  limit. The job script prunes them; if the jobs are not scheduled, prune
+  them manually.
+- **No live PostgreSQL run yet:** the role and grant SQL has not been run
+  against PostgreSQL 18. It matches the grants rehearsed on PostgreSQL 16
+  in Phases 4–7.
+- **Central retention** windows are still undecided (SECURITY.md §7).
+
+### Phase 9 (approved)
 
 Phase 8 was approved with its review fix. Phase 9 packages the approved ZaZa
 agent as `ZaZaWorkAgentSetup.exe`. **No VPS deployment, pilot or AI.** The
@@ -872,8 +959,8 @@ Phase 1 then implemented the privacy-safe local Windows activity agent:
 - [x] Phase 6 — Google Sheets reporting (approved)
 - [x] Phase 7 — Manager web dashboard (approved; localhost only)
 - [x] Phase 8 — Charts & automatic rule-based analysis (approved)
-- [x] Phase 9 — Windows employee installer (implemented, pending review; unsigned; frozen-exe smoke test pending on a Windows VM)
-- [ ] Phase 10 — Production VPS deployment
+- [x] Phase 9 — Windows employee installer (approved; unsigned)
+- [ ] Phase 10 — Production VPS deployment (**IN PROGRESS**: 10A inspection approved; 10B runtime prepared; 10C activation not started)
 - [ ] Phase 11 — Pilot testing
 - [ ] Phase 12 — Optional AI analysis
 
@@ -896,10 +983,16 @@ None of these are in `deskmate/zaza/` or `tests/zaza_agent/`.
 
 ## Blocking item
 
-**Awaiting your review of Phase 9** before Phase 10 begins. Before approval,
-run `installer\smoke-test.ps1` on a disposable Windows VM where unsigned
-builds may run (see Phase 9 risks). The production VPS, Caddy, DNS and
-PostgreSQL have **not** been touched.
+**Awaiting your review of Phase 10B** before Phase 10C (activation). Phase
+10C also needs these inputs:
+
+1. the PostgreSQL administrative password, entered interactively;
+2. the ZaZa public host name, its DNS record and the Cloudflare choice;
+3. the Google service-account JSON key;
+4. the spreadsheet ID.
+
+Caddy, DNS, the firewall, PostgreSQL's configuration and roles, and
+ZazaVoice have **not** been touched.
 
 ## Explicitly cancelled from any earlier direction
 

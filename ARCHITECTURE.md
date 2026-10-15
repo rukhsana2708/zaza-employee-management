@@ -791,10 +791,16 @@ never on the event loop.
 Nothing else is indexed yet. Phase 5 adds indexes for its summary tables
 when the queries are known.
 
-### 4.10 Production deployment assumptions (Phase 10, needs separate approval)
+### 4.10 Production deployment assumptions (Phase 10 — in progress, see §9)
+
+> Phase 10A inspected the actual production server, and §9 replaces the
+> assumptions below. The database is `zaza_employee_management` on the
+> existing **PostgreSQL 18** (127.0.0.1:5432), with three roles:
+> `zaza_employee_owner`, `zaza_employee_app` and `zaza_employee_report`.
+> It is **not created yet**. The original Phase 4 notes follow.
 
 1. **Database:** create a dedicated database (e.g. `zaza`) on the existing
-   PostgreSQL 16 instance, using two roles:
+   PostgreSQL instance, using two roles:
    - `zaza_owner` owns the schema and runs `migrate`.
    - `zaza_app` runs the API with least privilege. The grants are in
      SECURITY.md §6.2.
@@ -1715,3 +1721,116 @@ is a proxy for work, not proof of productivity.
 No screenshot pipeline, no image storage, no Google Drive integration, no
 audio/video capture, no keylogger, no clipboard reader. These are not
 "disabled" — they do not exist anywhere in this architecture.
+
+## 9. Production runtime (Phase 10 — IN PROGRESS)
+
+**Status:** Phase 10B prepared the runtime on the production Windows
+Server 2022. The parts that do **not** exist yet:
+
+- the PostgreSQL database and roles;
+- any Caddy change (none made);
+- the ZaZa Windows service (not registered);
+- the Google Sheets configuration;
+- employee traffic (none).
+
+Phase 11 has not begun. The operator runbook is
+[docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md).
+
+```
+Internet ──HTTPS──> Caddy (existing, new site block in 10C)
+                      │  X-Forwarded-For / X-Forwarded-Proto
+                      ▼
+            127.0.0.1:8100  ZaZaEmployeeManagement (NSSM service, one process)
+            Python 3.14 venv · NT SERVICE\ZaZaEmployeeManagement
+              ├─ /api/v1/...   sync API (device bearer tokens)
+              └─ /manager/...  dashboard (sessions, CSRF, login rate limit)
+                      │
+                      ▼
+            PostgreSQL 18, 127.0.0.1:5432, database zaza_employee_management
+            scheduled: recalculate --recent-days 7 → sheets-sync (report role)
+```
+
+### 9.1 Runtime layout and deployment
+
+- **Location:** everything lives under `C:\apps\ZaZaEmployeeManagement`
+  (`app`, `releases`, `venv`, `config`, `secrets`, `logs`, `run`,
+  `backup`). Only Administrators and SYSTEM have access; the service
+  account's grants are added at install.
+- **Python:** a separate all-users Python 3.14.8, not on PATH. The
+  existing Python 3.15 stays the default; the `winrt-*` agent packages
+  have no 3.15 wheels.
+- **Release:** an **exact commit** exported with `git archive`. Only the
+  paths in `deploy/windows/server-files.txt` are exported: `deskmate/zaza_server/**`
+  plus the shared `deskmate/zaza/sync/protocol.py`.
+- **Activation:** a release is verified, recorded in `DEPLOYED_COMMIT.json`
+  and activated by switching the `app` junction. Rollback switches it back.
+- **Dependencies:** server-only (`deploy/windows/requirements-server.txt`),
+  installed from a hashed lock. A test derives the set from the server's
+  own imports and fails if an employee-side package (capture, OCR, audio,
+  UI automation, WinRT, pywin32) appears.
+
+### 9.2 Configuration
+
+The service and every CLI command read the non-secret
+`config\zaza-server.env` through the new `--env-file` option. Values
+already in the process environment win, so jobs can switch database role.
+
+- The database password comes from `ZAZA_DB_PASSWORD_FILE`.
+- The pool is 1..3.
+- `check-config [--production]` validates everything without printing
+  secrets. In production it requires:
+  - the PostgreSQL backend;
+  - a password file;
+  - Secure cookies;
+  - a public host name;
+  - loopback-only trusted proxies;
+  - a log file.
+
+### 9.3 Reverse proxy, Host header and login rate limiting (`http_security.py`, `dashboard/ratelimit.py`)
+
+- **TrustedProxyMiddleware:** `X-Forwarded-For` and `X-Forwarded-Proto`
+  are used only when the TCP peer is a loopback address in
+  `ZAZA_TRUSTED_PROXY_IPS`; non-loopback values are a start-up error.
+  - The client address is the right-most forwarded entry that is not the
+    proxy.
+  - uvicorn's own proxy-header handling is disabled
+    (`proxy_headers=False`), so the headers are interpreted in one place.
+- **HostCheckMiddleware** (when `ZAZA_PUBLIC_HOST` is set): any other
+  `Host` gets 400. Loopback names are accepted only for direct,
+  non-forwarded local requests (health checks).
+- **Start-up check:** `serve` refuses a public host name without
+  `ZAZA_DASHBOARD_COOKIE_SECURE=true`.
+- **Login rate limiter:** failed `/manager/login` attempts are counted per
+  real client address (10) and per submitted username (20), in a 15-minute
+  sliding window, all configurable.
+  - Usernames that don't exist are counted too, so the limit reveals
+    nothing about which accounts exist.
+  - At the limit, the answer is 429 with `Retry-After`, before any password
+    check. The generic failure message is kept.
+  - A successful sign-in clears the counts.
+  - The state is in memory and bounded, which is correct for the single
+    worker.
+
+### 9.4 Logging (`logs.py`)
+
+`serve` installs a `RotatingFileHandler` (`ZAZA_LOG_FILE`, 10 MiB × 6 at
+most) and a stderr handler, both behind a redacting formatter. uvicorn logs
+propagate to them (`log_config=None`). NSSM captures stdout/stderr with
+online rotation, and the job script prunes those rotated files.
+
+### 9.5 Database roles and jobs
+
+| Role | Use | Privileges |
+|---|---|---|
+| `zaza_employee_owner` | owns the database and objects; migrations only | owner |
+| `zaza_employee_app` | API, dashboard, attendance | explicit per-table SELECT/INSERT/UPDATE; DELETE only on `work_schedules`; audit insert-only |
+| `zaza_employee_report` | Sheets export (reads only) | SELECT on its six tables |
+
+- **Role scripts:** `deploy/postgres/*.sql` creates the roles with
+  SCRAM-SHA-256 verifiers, so no plaintext password appears in SQL or on a
+  command line. Each role is
+  `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`.
+- **Migration head:** `0004`.
+- **Jobs:** `recalculate --recent-days 7`, then `sheets-sync`, only after a
+  successful recalculation. A run-wide lock file prevents overlap, and each
+  step has a 20-minute timeout. They are prepared but not scheduled.

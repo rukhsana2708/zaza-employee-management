@@ -3,6 +3,8 @@
 Commands:
 
 - ``serve``             run the API (default http://127.0.0.1:8765)
+- ``check-config``      validate the configuration without printing secrets
+  (``--production`` adds the Phase 10 production rules)
 - ``add-employee``      add an employee (needed before registering a device)
 - ``list-employees``
 - ``register-device``   add a device for an employee and print its token ONCE
@@ -41,7 +43,8 @@ Backend: ``--backend sqlite|postgres`` or ``ZAZA_SERVER_BACKEND`` (default
 ``sqlite``). The SQLite development database defaults to
 ``~/.zaza_server_dev/central_dev.db`` (override with ``--db`` or
 ``ZAZA_SERVER_DB``). PostgreSQL settings come from the environment — see
-``deskmate/zaza_server/config.py`` and ``.env.example``.
+``deskmate/zaza_server/config.py`` and ``.env.example`` — optionally loaded
+first from ``--env-file`` (production: ``deploy/windows/zaza-server.env.template``).
 
 ``serve`` never changes the database schema: on PostgreSQL it refuses to
 start until ``migrate`` has been run.
@@ -50,7 +53,6 @@ start until ``migrate`` has been run.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from collections import Counter
@@ -58,7 +60,13 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from .auth import register_device, rotate_token
-from .config import BACKENDS, ConfigError, backend_from_env, database_settings_from_env
+from .config import (
+    BACKENDS,
+    ConfigError,
+    backend_from_env,
+    database_settings_from_env,
+    read_env_file,
+)
 from .repository import RepositoryUnavailable
 
 
@@ -317,7 +325,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=None, help="SQLite development database path")
     parser.add_argument("--backend", choices=BACKENDS, default=None,
                         help="repository backend (default: ZAZA_SERVER_BACKEND or sqlite)")
+    parser.add_argument("--env-file", type=Path, default=None,
+                        help="load ZAZA_* settings from this file (non-secret settings only); "
+                             "variables already set in the environment take precedence")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    chk = sub.add_parser("check-config", help="validate the configuration without printing secrets")
+    chk.add_argument("--production", action="store_true", help="also apply the production rules (Phase 10)")
 
     serve = sub.add_parser("serve", help="run the sync API server")
     serve.add_argument("--host", default="127.0.0.1")
@@ -401,6 +415,18 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.env_file is not None:
+            # variables already set in the process win (one command can use
+            # another database role without editing the shared file)
+            for key, value in read_env_file(args.env_file).items():
+                os.environ.setdefault(key, value)
+        if args.command == "check-config":
+            from .preflight import check_config, print_checks  # noqa: PLC0415
+
+            env = dict(os.environ)
+            if args.backend:
+                env["ZAZA_SERVER_BACKEND"] = args.backend
+            return print_checks(check_config(env, production=args.production))
         backend = args.backend or backend_from_env()
         if args.command in ("migrate", "db-status"):
             return _migrate(show_only=args.command == "db-status")
@@ -469,13 +495,19 @@ def _mount_dashboard(app, repo, host: str, port: int) -> bool:  # noqa: ANN001
     return True
 
 
-def build_server_app(repo, backend: str, host: str, port: int):  # noqa: ANN001, ANN201
+def build_server_app(repo, backend: str, host: str, port: int, http=None):  # noqa: ANN001, ANN201
     """The FastAPI app that ``serve`` runs: the sync API, plus the manager
     dashboard only with the PostgreSQL backend AND a loopback bind host.
-    During Phase 7 the dashboard is never exposed over plain HTTP on a
-    network interface; the sync API keeps its own host rules."""
+    The dashboard is never exposed over plain HTTP on a network interface;
+    in production it is reached only through the HTTPS reverse proxy on
+    this server. The sync API keeps its own host rules.
+
+    ``http`` (Phase 10): trusted-proxy and Host-header settings, see
+    ``http_security.py``; default from the environment."""
+    from . import http_security  # noqa: PLC0415
     from .app import create_app  # noqa: PLC0415
 
+    http = http or http_security.http_settings_from_env()
     app = create_app(repo)
     if backend != "postgres":
         print("Manager dashboard: not available on the SQLite development backend (needs PostgreSQL).")
@@ -483,12 +515,36 @@ def build_server_app(repo, backend: str, host: str, port: int):  # noqa: ANN001,
         print(DASHBOARD_LOCALHOST_ONLY)
     else:
         _mount_dashboard(app, repo, host, port)
+    http_security.install(app, http)
     return app
+
+
+def check_production_settings(http, cookie_secure: bool) -> None:  # noqa: ANN001
+    """A public host name means the server sits behind HTTPS: refuse to
+    start with session cookies that would also be sent over plain HTTP."""
+    if http.public_hosts and not cookie_secure:
+        raise ConfigError("ZAZA_PUBLIC_HOST is set (public HTTPS deployment) but ZAZA_DASHBOARD_COOKIE_SECURE "
+                          "is not true; set ZAZA_DASHBOARD_COOKIE_SECURE=true")
+
+
+def _serve_prepare(backend: str):  # noqa: ANN202
+    """Validate the serve-time settings and configure logging BEFORE the
+    database is opened. Returns the HTTP settings."""
+    from .dashboard.config import dashboard_settings_from_env  # noqa: PLC0415
+    from .http_security import http_settings_from_env  # noqa: PLC0415
+    from .logs import configure_logging  # noqa: PLC0415
+
+    http = http_settings_from_env()
+    check_production_settings(http, dashboard_settings_from_env().cookie_secure)
+    secrets = [database_settings_from_env().password or ""] if backend == "postgres" else []
+    configure_logging(secrets=secrets)
+    return http
 
 
 def _run(args: argparse.Namespace, backend: str) -> int:
     from .backends import open_repository  # noqa: PLC0415
 
+    http = _serve_prepare(backend) if args.command == "serve" else None
     db = args.db or default_db()
     repo = open_repository(backend, sqlite_path=db, actor_type="CLI", actor_id="server-cli")
     where = f"SQLite {db}" if backend == "sqlite" else database_settings_from_env().display()
@@ -496,12 +552,19 @@ def _run(args: argparse.Namespace, backend: str) -> int:
         if args.command == "serve":
             import uvicorn  # noqa: PLC0415
 
-            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
             if args.host not in ("127.0.0.1", "localhost", "::1"):
                 print("WARNING: listening beyond localhost over plain HTTP. Production must sit behind HTTPS.")
             print(f"ZaZa sync API on http://{args.host}:{args.port}  ({backend}: {where})")
-            app = build_server_app(repo, backend, args.host, args.port)
-            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+            if http.public_hosts:
+                print(f"Public host(s): {', '.join(http.public_hosts)}; forwarded headers trusted only from "
+                      f"{', '.join(http.trusted_proxies)}")
+            app = build_server_app(repo, backend, args.host, args.port, http)
+            # One process, one worker (the login rate limiter is in memory).
+            # Proxy headers are handled by http_security, not uvicorn; logging
+            # is already configured (bounded, redacted) and uvicorn's loggers
+            # propagate to it.
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info", log_config=None,
+                        proxy_headers=False, server_header=False, timeout_graceful_shutdown=10)
         elif args.command == "add-employee":
             e = repo.add_employee(args.employee_id, args.name, role=args.role, timezone=args.timezone)
             print(f"Added employee {e.employee_id} ({e.display_name}, {e.role}, {e.timezone}).")

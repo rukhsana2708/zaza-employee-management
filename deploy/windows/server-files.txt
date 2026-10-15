@@ -1,0 +1,21 @@
+# Files deployed to the production server (Phase 10), as git pathspecs.
+#
+# Deploy-ZaZaServer.ps1 reads THIS FILE FROM THE COMMIT BEING DEPLOYED and
+# exports only these tracked paths with `git archive` — never the working
+# tree, so .git, .env files, secrets, caches and untracked files can't be
+# included. The list is the import closure of `deskmate.zaza_server`
+# (checked by tests/zaza_agent/test_production_deploy.py): the server
+# package and the one shared module it imports, the sync wire protocol.
+# The rest of DeskMate and the employee agent are not deployed.
+
+deskmate/__init__.py
+deskmate/zaza/__init__.py
+deskmate/zaza/sync/__init__.py
+deskmate/zaza/sync/protocol.py
+deskmate/zaza_server
+LICENSE
+
+# Never deployed, even inside the paths above:
+:(exclude)*.zip
+:(exclude)**/__pycache__/**
+:(exclude)*.pyc

@@ -5,7 +5,8 @@ to /manager/login, JSON endpoints answer 401. Every POST needs the
 session's CSRF token (and a same-origin Origin header when one is sent);
 GET requests never change data. All responses under /manager carry
 no-store caching and a strict Content-Security-Policy; no external scripts,
-styles or fonts are used.
+styles or fonts are used. Repeated failed sign-ins are answered with 429
+(``ratelimit.py``) before any password is checked.
 
 Routes only parse input and render: the logic is in ``service.py`` and
 ``auth.py``, the SQL in ``queries.py``.
@@ -33,6 +34,7 @@ from .config import DashboardSettings
 from .models import STATUS_LABELS as CURRENT_LABELS
 from .models import CurrentStatus, Selection
 from .queries import DashboardRepository
+from .ratelimit import LoginRateLimiter
 from .security import COOKIE_NAME, COOKIE_PATH, LOGIN_COOKIE_NAME, SECURITY_HEADERS, new_token, same
 from .service import PERIODS, DashboardService, NotFound, parse_hours
 
@@ -73,6 +75,12 @@ def fmt_local(moment: datetime | None, tz: str, fmt: str = "%Y-%m-%d %H:%M") -> 
     return "–" if moment is None else moment.astimezone(ZoneInfo(tz)).strftime(fmt)
 
 
+def too_many_attempts(wait_seconds: int) -> str:
+    """The same message whether or not the username exists."""
+    minutes = max(1, -(-wait_seconds // 60))
+    return f"Too many sign-in attempts. Please wait {minutes} minute{'s' if minutes != 1 else ''} and try again."
+
+
 def fmt_ago(moment: datetime | None, now: datetime) -> str:
     if moment is None:
         return "never"
@@ -106,11 +114,13 @@ def _templates():  # noqa: ANN202
 
 
 def mount_dashboard(app: FastAPI, repo: DashboardRepository, settings: DashboardSettings | None = None,
-                    clock: Callable[[], datetime] | None = None) -> None:
+                    clock: Callable[[], datetime] | None = None, limiter: LoginRateLimiter | None = None) -> None:
     settings = settings or DashboardSettings()
     clock = clock or (lambda: datetime.now(UTC))
     service = DashboardService(repo, settings, clock)
     auth = ManagerAuth(repo, settings, clock)
+    if limiter is None:  # not `or`: an empty limiter has len() == 0
+        limiter = LoginRateLimiter(settings.login_limits())
     env = _templates()
 
     @app.middleware("http")
@@ -122,11 +132,14 @@ def mount_dashboard(app: FastAPI, repo: DashboardRepository, settings: Dashboard
         return response
 
     app.mount("/manager/static", StaticFiles(directory=str(HERE / "static")), name="manager-static")
-    app.include_router(build_router(service, auth, settings, env))
+    app.include_router(build_router(service, auth, settings, env, limiter))
 
 
-def build_router(service: DashboardService, auth: ManagerAuth, settings: DashboardSettings, env) -> APIRouter:  # noqa: ANN001, C901
+def build_router(service: DashboardService, auth: ManagerAuth, settings: DashboardSettings, env,  # noqa: ANN001, C901
+                 limiter: LoginRateLimiter | None = None) -> APIRouter:
     router = APIRouter(prefix="/manager")
+    if limiter is None:
+        limiter = LoginRateLimiter(settings.login_limits())
 
     def render(name: str, ctx: SessionContext | None, status_code: int = 200, **values) -> HTMLResponse:  # noqa: ANN003
         values.setdefault("employees", service.employees() if ctx else [])
@@ -234,9 +247,22 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
         cookie = request.cookies.get(LOGIN_COOKIE_NAME) or ""
         if not same_origin(request) or not cookie or not same(cookie, one(data, "login_token")):
             return login_page(request, "The login form expired. Please try again.", 403)
-        result = await run_in_threadpool(auth.login, one(data, "username"), (data.get("password") or [""])[0])
+        # The real client address: set from X-Forwarded-For by the trusted
+        # proxy middleware only, never from headers a client sends directly.
+        client = request.client.host if request.client else "unknown"
+        username = one(data, "username")
+        # Counted before the password check (atomically), cleared on success.
+        wait, reached = limiter.acquire(client, username)
+        if wait is not None:  # refused before any password is checked
+            response = login_page(request, too_many_attempts(wait), 429)
+            response.headers["Retry-After"] = str(wait)
+            return response
+        result = await run_in_threadpool(auth.login, username, (data.get("password") or [""])[0])
         if result is None:
+            if reached:
+                logger.warning("dashboard: sign-in attempts from %s reached the rate limit", client)
             return login_page(request, LOGIN_FAILED, 401)
+        limiter.success(client, username)
         token, ctx = result
         response = RedirectResponse("/manager", status_code=303)
         response.set_cookie(COOKIE_NAME, token, max_age=settings.session_hours * 3600, path=COOKIE_PATH,

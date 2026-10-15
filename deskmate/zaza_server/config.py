@@ -179,6 +179,37 @@ def database_settings_from_env(env: dict | None = None) -> DatabaseSettings:
     )
 
 
+_ENV_LINE_RE = re.compile(r"^(ZAZA_[A-Z0-9_]+)=(.*)$")
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """``KEY=VALUE`` lines from a ZaZa configuration file (``--env-file``).
+
+    Only ``ZAZA_*`` keys are accepted; blank lines and ``#`` comments are
+    skipped; one pair of surrounding quotes is removed; empty values are
+    ignored (the default applies). Error messages name the line number,
+    never its contents. The file is meant for non-secret settings: the
+    database password belongs in ``ZAZA_DB_PASSWORD_FILE``."""
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ConfigError(f"cannot read the configuration file {path} ({exc.strerror})") from None
+    values: dict[str, str] = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _ENV_LINE_RE.match(line)
+        if match is None:
+            raise ConfigError(f"{path}, line {number}: expected ZAZA_NAME=value")
+        key, value = match.group(1), match.group(2).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if value:
+            values[key] = value
+    return values
+
+
 def backend_from_env(env: dict | None = None) -> str:
     env = os.environ if env is None else env
     backend = (env.get("ZAZA_SERVER_BACKEND") or "sqlite").strip().lower()

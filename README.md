@@ -62,16 +62,17 @@ for the current phase and what's implemented so far. As of this writing:
     and is localhost-only.
   - Phase 8: charts and deterministic, rule-based analysis on the
     dashboard (ARCHITECTURE.md §6.7–6.8). Not AI, and no productivity score.
-- **Implemented, awaiting review:** Phase 9, the Windows employee installer
-  `ZaZaWorkAgentSetup.exe` (ARCHITECTURE.md §2.9). Build with
-  `installer\build.ps1`; the administrator guide is
-  [docs/zaza/ADMIN_INSTALL.md](docs/zaza/ADMIN_INSTALL.md) and the employee
-  notice [docs/zaza/EMPLOYEE_PRIVACY.md](docs/zaza/EMPLOYEE_PRIVACY.md).
-  Builds are unsigned for now.
-
-Everything runs locally only. PostgreSQL has been tested locally, and Sheets
-only against an in-memory fake (a live test is available, opt-in). Nothing
-is deployed to the VPS yet.
+  - Phase 9: the Windows employee installer `ZaZaWorkAgentSetup.exe`
+    (ARCHITECTURE.md §2.9). Build with `installer\build.ps1`; the
+    administrator guide is [docs/zaza/ADMIN_INSTALL.md](docs/zaza/ADMIN_INSTALL.md)
+    and the employee notice [docs/zaza/EMPLOYEE_PRIVACY.md](docs/zaza/EMPLOYEE_PRIVACY.md).
+    Builds are unsigned for now.
+- **In progress:** Phase 10, production deployment (ARCHITECTURE.md §9,
+  runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md)).
+  The runtime is prepared on the production server: Python 3.14,
+  server-only venv, deployment scripts, and reverse-proxy and login
+  hardening. The database, Caddy site, service and Sheets are **not**
+  set up yet, and no employee traffic is accepted.
 
 ## Derived from DeskMate — attribution
 
@@ -102,7 +103,10 @@ deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md
 deskmate/            # upstream DeskMate source, left in place for comparison
                      # (NOT used by, or part of, ZaZa Employee Management)
+deploy/windows/      # Phase 10 production server scripts, server-only requirements
+deploy/postgres/     # Phase 10 database/role SQL (for review)
 docs/                # upstream DeskMate technical docs + UPSTREAM_DESKMATE_README.md
+docs/zaza/           # ZaZa admin guides (installer, privacy notice, production runbook)
 tests/zaza_agent/    # automated tests for the ZaZa agent
 PROJECT_PLAN.md       # scope, phased roadmap, V1 definition
 ARCHITECTURE.md       # system architecture (agent, API, PostgreSQL, Sheets, dashboard)
