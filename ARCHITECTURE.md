@@ -1412,7 +1412,9 @@ Phase 10 binds the application locally behind the HTTPS proxy and sets
 
 **Headers** on every `/manager` response:
 - `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`.
+  `Referrer-Policy: same-origin`, `X-Frame-Options: DENY`. (Not
+  `no-referrer`: with it, browsers send `Origin: null` on the dashboard's own
+  form posts, and the same-origin check refuses them.)
 - `Content-Security-Policy: default-src 'none'; script-src 'self';
   style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self';
   frame-ancestors 'none'; base-uri 'none'`. The templates have no inline

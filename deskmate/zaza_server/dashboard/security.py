@@ -30,7 +30,9 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Pragma": "no-cache",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # same-origin, not no-referrer: under no-referrer browsers send `Origin: null`
+    # on the dashboard's own form posts, which the same-origin check must refuse.
+    "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": CSP,
     "Cross-Origin-Opener-Policy": "same-origin",

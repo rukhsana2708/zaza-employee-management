@@ -410,8 +410,10 @@ Nothing else changed:
   token) and is refused if its `Origin` is foreign. The login form has its
   own double-submit token. GET requests don't change data.
 - **Browser hardening:**
-  - `Cache-Control: no-store`, `nosniff`, `Referrer-Policy: no-referrer`,
-    `X-Frame-Options: DENY`.
+  - `Cache-Control: no-store`, `nosniff`, `Referrer-Policy: same-origin`,
+    `X-Frame-Options: DENY`. Other sites still get no referrer; the
+    dashboard's own form posts carry their real `Origin`, which the
+    same-origin check requires (`Origin: null` is refused).
   - A strict CSP with `script-src 'self'`, no inline scripts or styles, and
     `frame-ancestors 'none'`.
   - Everything is served locally: no CDN, fonts, analytics or tracking.

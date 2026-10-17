@@ -340,7 +340,7 @@ def test_security_headers(path):
     headers = client.get(path).headers
     assert headers["cache-control"] == "no-store"
     assert headers["x-content-type-options"] == "nosniff"
-    assert headers["referrer-policy"] == "no-referrer"
+    assert headers["referrer-policy"] == "same-origin"
     assert headers["x-frame-options"] == "DENY"
     csp = headers["content-security-policy"]
     assert "frame-ancestors 'none'" in csp and "script-src 'self'" in csp and "default-src 'none'" in csp
@@ -400,6 +400,96 @@ def test_login_form_has_its_own_csrf_token():
     client.get("/manager/login")
     response = client.post("/manager/login", data={"username": "manager", "password": PASSWORD})
     assert response.status_code == 403 and COOKIE_NAME not in response.cookies
+
+
+# Browser-style form posts (Phase 10G production bug): under Referrer-Policy
+# no-referrer browsers send `Origin: null` on the dashboard's own forms, so
+# every sign-in failed with "The login form expired". The policy is now
+# same-origin (real Origin sent); `Origin: null` itself stays refused.
+SITE = "https://employees.zazavoice.com"
+
+
+def _browser() -> tuple[Dash, TestClient]:
+    d = standard()
+    d.manager()
+    return d, d.client(DashboardSettings(cookie_secure=True), SITE)
+
+
+def _login_form(client: TestClient) -> str:
+    page = client.get("/manager/login")
+    return re.search(r'name="login_token" value="([^"]+)"', page.text).group(1)
+
+
+def test_login_page_issues_a_matching_form_token_and_same_origin_policy():
+    _, client = _browser()
+    page = client.get("/manager/login")
+    assert page.status_code == 200
+    cookies = [c for c in page.headers.get_list("set-cookie") if c.startswith("zaza_manager_login=")]
+    assert len(cookies) == 1
+    for flag in ("Secure", "HttpOnly", "SameSite=strict", "Path=/manager/login", "Max-Age=1800"):
+        assert flag in cookies[0]
+    hidden = re.findall(r'name="login_token" value="([^"]+)"', page.text)
+    assert hidden == [client.cookies.get("zaza_manager_login")]
+    assert page.headers["referrer-policy"] == "same-origin"
+    assert '<meta name="referrer" content="same-origin">' in page.text
+
+
+@pytest.mark.parametrize(("origin", "status"), [
+    (SITE, 401),                       # what a browser sends now: reaches the password check
+    (None, 401),                       # no Origin header: still allowed (unchanged behaviour)
+    ("null", 403),                     # what browsers sent under no-referrer: still refused
+    ("https://evil.example.com", 403),
+    ("http://employees.zazavoice.com", 403),
+])
+def test_login_post_origin_handling(origin, status):
+    d, client = _browser()
+    token = _login_form(client)
+    headers = {"Origin": origin} if origin else {}
+    response = client.post("/manager/login", headers=headers,
+                           data={"username": "no-such-user", "password": "not-the-password", "login_token": token})
+    assert response.status_code == status
+    if status == 401:
+        assert "expired" not in response.text
+    else:
+        assert "The login form expired" in response.text
+    assert not d.repo.session_rows
+
+
+def test_browser_style_login_and_csrf_protected_logout():
+    d, client = _browser()
+    token = _login_form(client)
+    response = client.post("/manager/login", headers={"Origin": SITE},
+                           data={"username": "manager", "password": PASSWORD, "login_token": token})
+    assert response.status_code == 303 and response.headers["location"] == "/manager"
+    assert client.get("/manager").status_code == 200
+    rules = dict(d.repo.rules)
+    # a valid CSRF token is not enough without the right Origin, and vice versa
+    for origin, form_token in (("null", csrf(client)), ("https://evil.example.com", csrf(client)), (SITE, "forged")):
+        response = client.post("/manager/schedules/date", headers={"Origin": origin},
+                               data=_date_rule_form(form_token))
+        assert response.status_code == 403
+        response = client.post("/manager/logout", headers={"Origin": origin}, data={"csrf_token": form_token})
+        assert response.status_code == 403
+    assert d.repo.rules == rules and client.get("/manager").status_code == 200  # still signed in
+    response = client.post("/manager/schedules/date", headers={"Origin": SITE}, data=_date_rule_form(csrf(client)))
+    assert response.status_code == 303 and len(d.repo.rules) == len(rules) + 1
+    response = client.post("/manager/logout", headers={"Origin": SITE}, data={"csrf_token": csrf(client, "/manager")})
+    assert response.status_code == 303 and response.headers["location"] == "/manager/login"
+    assert client.get("/manager").status_code == 303
+
+
+def test_no_dashboard_response_sends_no_referrer():
+    d, client = _browser()
+    token = _login_form(client)
+    client.post("/manager/login", headers={"Origin": SITE},
+                data={"username": "manager", "password": PASSWORD, "login_token": token})
+    for path in ["/manager/login", *PAGES, "/manager/employees/nobody", "/manager/attendance?period=bogus",
+                 "/manager/api/overview", "/manager/static/dashboard.css", "/manager/static/dashboard.js"]:
+        response = client.get(path)
+        assert response.headers["referrer-policy"] == "same-origin", path
+        assert "no-referrer" not in response.text, path
+        if response.headers.get("content-type", "").startswith("text/html"):
+            assert '<meta name="referrer" content="same-origin">' in response.text, path
 
 
 def test_pages_expose_no_secrets():
