@@ -61,6 +61,7 @@ function Step([string]$name, [string[]]$cliArgs, [hashtable]$environment) {
         $arguments = @('-E', '-s', '-u', '-m', 'deskmate.zaza_server', '--env-file', "`"$($p.EnvFile)`"") + $cliArgs
         $proc = Start-Process -FilePath $p.Python -ArgumentList $arguments -WorkingDirectory $p.App -NoNewWindow `
             -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+        $null = $proc.Handle  # Windows PowerShell 5.1: ensure ExitCode is available after WaitForExit
         if (-not $proc.WaitForExit($TimeoutMinutes * 60 * 1000)) {
             # kill the whole tree (the venv launcher starts the real interpreter as a child)
             & taskkill.exe /PID $proc.Id /T /F | Out-Null

@@ -10,6 +10,7 @@ import fnmatch
 import hashlib
 import hmac
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -301,6 +302,52 @@ def test_jobs_run_sheets_only_after_attendance_and_never_overlap():
     assert "'OpenOrCreate', 'ReadWrite', 'None'" in text and "exit 75" in text
     assert "ZAZA_DB_USER          = 'zaza_employee_report'" in text
     assert "taskkill.exe /PID $proc.Id /T /F" in text
+
+
+def test_jobs_cache_the_process_handle_before_waiting():
+    # Windows PowerShell 5.1: without a cached handle, Start-Process -PassThru leaves
+    # ExitCode $null after WaitForExit(timeout), so every step was logged as failed.
+    lines = _code_lines(DEPLOY / "Invoke-ZaZaJobs.ps1")
+    start = next(i for i, line in enumerate(lines) if "$proc = Start-Process" in line)
+    wait = next(i for i, line in enumerate(lines) if "$proc.WaitForExit($TimeoutMinutes" in line)
+    handle = [i for i, line in enumerate(lines) if line.strip().startswith("$null = $proc.Handle")]
+    assert len(handle) == 1 and start < handle[0] < wait
+    assert "-PassThru" in lines[start + 1] and handle[0] == start + 2
+
+
+# The Step() process pattern of Invoke-ZaZaJobs.ps1, run on harmless cmd.exe children.
+_STEP_PATTERN = r"""
+$ErrorActionPreference = 'Stop'
+$out = Join-Path $env:ZT_DIR 'step.out'
+$proc = Start-Process -FilePath cmd.exe -ArgumentList @('/c', $env:ZT_CMD) -NoNewWindow `
+    -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+$null = $proc.Handle
+if (-not $proc.WaitForExit([int]$env:ZT_WAIT_MS)) {
+    & taskkill.exe /PID $proc.Id /T /F | Out-Null
+    $proc.WaitForExit()
+    'timeout'
+    exit 0
+}
+$proc.WaitForExit()
+if ($proc.ExitCode -ne 0) { "failed [$($proc.ExitCode)]" } else { "ok [$($proc.ExitCode)]" }
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell.exe"),
+                    reason="needs Windows PowerShell 5.1")
+@pytest.mark.parametrize(("cmd", "wait_ms", "expected"), [
+    ("exit 0", 60_000, "ok [0]"),
+    ("exit 3", 60_000, "failed [3]"),
+    ("ping -n 30 127.0.0.1 >nul", 1_000, "timeout"),
+])
+def test_job_step_pattern_reports_child_exit_codes_on_powershell_51(tmp_path, cmd, wait_ms, expected):
+    script = tmp_path / "step.ps1"
+    script.write_text(_STEP_PATTERN, encoding="utf-8")
+    env = {**os.environ, "ZT_DIR": str(tmp_path), "ZT_CMD": cmd, "ZT_WAIT_MS": str(wait_ms)}
+    run = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                          "-File", str(script)], capture_output=True, text=True, timeout=60, env=env)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == expected
 
 
 # ─── configuration template ────────────────────────────────────────────────
