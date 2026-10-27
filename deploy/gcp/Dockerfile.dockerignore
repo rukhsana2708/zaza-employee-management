@@ -1,0 +1,46 @@
+# Build-context policy for deploy/gcp/Dockerfile (BuildKit uses
+# <Dockerfile>.dockerignore next to the Dockerfile). It is an ALLOWLIST:
+# everything is excluded, then only the paths the image needs are let back in.
+# The Dockerfile additionally copies these paths one by one (no `COPY . .`).
+
+# 1. exclude everything (.git, .env files, secrets, credentials, databases,
+#    logs, caches, installer output, screenshots, Claude/session files, ...)
+*
+
+# 2. the central-server import closure (= deploy/windows/server-files.txt)
+!LICENSE
+!deskmate/__init__.py
+!deskmate/zaza/__init__.py
+!deskmate/zaza/sync/__init__.py
+!deskmate/zaza/sync/protocol.py
+!deskmate/zaza_server
+
+# 3. the container's own build inputs
+!deploy/gcp/requirements-server.lock.txt
+!deploy/gcp/entrypoint.sh
+
+# 4. never, even inside the allowed paths
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.zip
+**/.git*
+**/.env
+**/.env.*
+**/*.env
+**/.claude*
+**/secret
+**/secrets
+**/*.json
+**/*.jsonl
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+**/*.output
+**/.pytest_cache
+**/.ruff_cache

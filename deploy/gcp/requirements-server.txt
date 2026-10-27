@@ -1,0 +1,33 @@
+# ZaZa central server - Linux / Cloud Run production dependencies ONLY (Phase 10B).
+#
+# The same server-only set as deploy/windows/requirements-server.txt: what
+# `deskmate/zaza_server/**` and `deskmate/zaza/sync/protocol.py` actually import
+# (checked by tests/zaza_agent/test_gcp_container.py). It deliberately does NOT
+# use the root pyproject dependencies: those are DeskMate / employee-agent
+# packages (screen capture, UI automation, WinRT, pywin32, ...) that the
+# central server never imports.
+#
+# The container installs the exact Linux pins in requirements-server.lock.txt,
+# resolved from this file INSIDE the pinned base image (see lock-requirements.sh).
+
+# Core API
+pydantic>=2.5,<3
+fastapi>=0.110,<1
+uvicorn>=0.27,<1          # plain uvicorn: no [standard] extras (no uvloop/watchfiles/websockets)
+tzdata>=2024.1            # IANA time zones for zoneinfo, independent of the image's OS package
+
+# PostgreSQL (Phase 4) + migrations
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+SQLAlchemy>=2.0,<3
+alembic>=1.13,<2
+
+# Manager dashboard (Phase 7)
+jinja2>=3.1,<4
+argon2-cffi>=23.1,<26
+
+# Google Sheets reporting (Phase 6)
+google-api-python-client>=2.100,<3
+google-auth>=2.23,<3
+google-auth-httplib2>=0.2,<1
+httplib2>=0.22,<1         # imported directly by sheets/client.py
