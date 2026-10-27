@@ -67,12 +67,19 @@ for the current phase and what's implemented so far. As of this writing:
     administrator guide is [docs/zaza/ADMIN_INSTALL.md](docs/zaza/ADMIN_INSTALL.md)
     and the employee notice [docs/zaza/EMPLOYEE_PRIVACY.md](docs/zaza/EMPLOYEE_PRIVACY.md).
     Builds are unsigned for now.
-- **In progress:** Phase 10, production deployment (ARCHITECTURE.md §9,
-  runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md)).
-  The runtime is prepared on the production server: Python 3.14,
-  server-only venv, deployment scripts, and reverse-proxy and login
-  hardening. The database, Caddy site, service and Sheets are **not**
-  set up yet, and no employee traffic is accepted.
+- **Direction change (2026-10-27):** ZaZa becomes a **multi-tenant SaaS on
+  Google Cloud**: project `zaza-employee-monitor`, region `asia-south1`.
+  - Customer data is isolated **database-per-tenant**, with a shared
+    control plane ([docs/zaza/SAAS_TENANCY.md](docs/zaza/SAAS_TENANCY.md)).
+  - **Approved:** Phase 10B, the Cloud Run container of the central server
+    ([deploy/gcp/README.md](deploy/gcp/README.md)).
+  - **Pending review:** Phase 10C, the tenancy foundation. It is local
+    only: no Cloud SQL, no Google Cloud resources, no customer data in the
+    cloud.
+- **Historical:** the earlier single Windows VPS deployment (ARCHITECTURE.md
+  §9, runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md))
+  was abandoned for the SaaS direction. Its files in `deploy/windows/` are
+  kept for reference.
 
 ## Derived from DeskMate — attribution
 
@@ -97,13 +104,15 @@ DeskMate's own (unmodified) documentation, preserved for reference.
 
 ```
 deskmate/zaza_server/ # central sync API (FastAPI) + repositories: in-memory,
-                      # SQLite (development), PostgreSQL (postgres/, Phase 4)
+                      # SQLite (development), PostgreSQL (postgres/, Phase 4);
+                      # tenancy/ = SaaS control plane + tenant routing (Phase 10C)
 deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
                      # project currently runs; see deskmate/zaza/README
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md
 deskmate/            # upstream DeskMate source, left in place for comparison
                      # (NOT used by, or part of, ZaZa Employee Management)
-deploy/windows/      # Phase 10 production server scripts, server-only requirements
+deploy/gcp/          # Phase 10B Cloud Run container of the central server (not deployed)
+deploy/windows/      # earlier Windows VPS deployment scripts (historical reference)
 deploy/postgres/     # Phase 10 database/role SQL (for review)
 docs/                # upstream DeskMate technical docs + UPSTREAM_DESKMATE_README.md
 docs/zaza/           # ZaZa admin guides (installer, privacy notice, production runbook)

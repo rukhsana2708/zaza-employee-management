@@ -73,7 +73,28 @@ def schema_status(conn) -> SchemaStatus:  # noqa: ANN001
     return SchemaStatus(current=current_revision(conn), head=head_revision())
 
 
+# Tables of the SaaS control plane (Phase 10C): never in a tenant database.
+CONTROL_MARKERS = ("zaza_control_version", "organizations", "organization_memberships", "tenant_databases",
+                   "control_audit_logs")
+
+
+def refuse_control_database(conn) -> None:  # noqa: ANN001 — a psycopg connection
+    """The tenant schema must not be installed in the control-plane
+    database: customer activity data never shares a database with it."""
+    from psycopg.rows import tuple_row  # noqa: PLC0415
+
+    cur = conn.cursor(row_factory=tuple_row)
+    for name in CONTROL_MARKERS:
+        if cur.execute("SELECT to_regclass(%s)::text", (name,)).fetchone()[0] is not None:
+            raise RuntimeError(f"refusing to install the tenant schema: this database contains the control-plane "
+                               f"table {name!r}")
+
+
 def upgrade(settings: DatabaseSettings, revision: str = "head") -> None:
+    import psycopg  # noqa: PLC0415
+
+    with psycopg.connect(**settings.connect_kwargs()) as conn:
+        refuse_control_database(conn)
     command.upgrade(alembic_config(settings), revision)
 
 

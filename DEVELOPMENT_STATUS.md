@@ -1,8 +1,78 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-15 (Phase 10B — production runtime preparation)
+**Last updated:** 2026-10-27 (Phase 10C — SaaS tenancy foundation)
 
-## Current phase: Phase 10 — Production deployment (IN PROGRESS)
+## Current phase: Phase 10C — SaaS tenant / organization architecture (pending your review)
+
+**Direction change (2026-10-27):** ZaZa is becoming a commercial
+**multi-tenant SaaS on Google Cloud**: project `zaza-employee-monitor`,
+region `asia-south1`. The single Windows VPS production deployment below is
+abandoned and kept as historical reference; its files in `deploy/windows/`
+are unchanged.
+
+- **Customer-data isolation:** database-per-tenant, with a shared control
+  plane. See [docs/zaza/SAAS_TENANCY.md](docs/zaza/SAAS_TENANCY.md).
+- **Phase 10C is architecture and local foundation only.** Nothing is
+  deployed:
+  - no Google Cloud resources and **no Cloud SQL**;
+  - **no customer data in Google Cloud**;
+  - no billing, no SaaS login, no enrollment.
+- **Approved:** Phase 10A and Phase 10B (the Cloud Run container of the
+  central server, `deploy/gcp/`).
+
+### Phase 10C summary
+
+- **Control plane** (`deskmate/zaza_server/tenancy/`, its own database):
+  - tables: `organizations`, `users` (SaaS logins, not employees),
+    `organization_memberships` (OWNER/ADMIN/MANAGER/VIEWER),
+    `tenant_databases` (organization → server-generated `zaza_t_…` name; no
+    secrets), `control_audit_logs` (append-only);
+  - a separate Alembic chain: head `c0001_control_plane`, version table
+    `zaza_control_version`;
+  - run with `control-migrate`, never at web start-up.
+- **Tenant data plane:** the existing schema 0001–0004, unchanged (a test
+  pins the file hashes), applied once per tenant database. There is no
+  `organization_id` on activity tables.
+- **Trusted resolution:** `TenantResolver` is the only issuer of the
+  immutable `TenantContext`.
+  - Managers: from user + membership.
+  - Devices: from the credential, then verified inside the tenant; a
+    client-claimed organization is never followed.
+  - Jobs: one context per READY tenant (`run_per_tenant`).
+  - Connections: from server configuration + the validated database name
+    only.
+- **Guards:**
+  - the control chain refuses tenant databases, and the tenant runner
+    refuses control databases;
+  - no cross-tenant listing API;
+  - `employees.role` never maps to SaaS roles.
+- **Local proof:** in disposable PostgreSQL 16 in WSL Docker (see
+  `test_database_per_tenant_isolation`):
+  - one control database and tenant databases A and B, each migrated
+    independently to `0004_manager_dashboard_auth`;
+  - `employee-1` and `device-1` exist in both;
+  - records, employees and tokens of A are invisible or unusable in B, and
+    vice versa;
+  - all databases are dropped afterwards.
+- **Tests:**
+  - new: 76 in `test_tenancy.py` and 10 in `test_tenancy_postgres.py`;
+  - default run: 1004 passed, 0 failed, 139 skipped;
+  - PostgreSQL-enabled: 1142 passed, 0 failed, 1 skipped.
+
+### Still open before any public deployment
+
+- The Cloud Run trusted-proxy, HTTPS/origin, dashboard mounting, login rate
+  limiting and production preflight items (`deploy/gcp/README.md`).
+- Cloud SQL and the tenant connection-pool design (Phase 10D).
+- SaaS authentication (it replaces the per-tenant `manager_users`), device
+  enrollment, and Google Sheets with the runtime identity.
+- Billing (not designed yet).
+
+## Earlier: Phase 10 — Windows VPS production deployment (abandoned for the SaaS direction; historical)
+
+> Naming note: the "Phase 10A/10B" in this historical section are the
+> Windows VPS steps. The approved **Phase 10B** of the SaaS direction is
+> the Cloud Run container (`deploy/gcp/`), and Phase 10C is above.
 
 Phase 9 and the Phase 10A read-only server inspection were approved. Phase
 10B prepared the production runtime on the Windows Server 2022 VPS and

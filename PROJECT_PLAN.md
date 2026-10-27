@@ -48,7 +48,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 7 | Manager web dashboard | Server-rendered dashboard on PostgreSQL: Argon2id manager accounts, server-side sessions, CSRF; Overview, Employees, Attendance, Applications, Schedules (audited, from today onwards); employee-local period filters; no charts |
 | 8 | Charts & automatic analysis | Six server-rendered SVG charts (no JS library/CDN) and an Analytics page; deterministic rule-based insights with previous-period comparison and data-quality gating; no AI, no productivity score |
 | 9 | Windows employee installer | `ZaZaWorkAgentSetup.exe` (PyInstaller + Inno Setup): ZaZa-only audited package, DPAPI enrollment, transparent logon task, Status & Privacy window, upgrade/uninstall that preserve unsynced data |
-| 10 | Production VPS deployment | Deploy to the existing VPS, isolated from other services |
+| 10 | Production deployment | *Original plan:* the existing VPS (abandoned 2026-10-27, files kept as reference). *Now:* multi-tenant SaaS on Google Cloud (`zaza-employee-monitor`, `asia-south1`). Done: 10B Cloud Run container of the central server; 10C tenancy foundation (control plane + database-per-tenant, local only). Next: 10D Cloud SQL and the tenant connection strategy; then SaaS authentication, enrollment and the Cloud Run proxy items before public deployment |
 | 11 | Pilot testing | Run with real employees, fix gaps |
 | 12 | Optional AI analysis | Natural-language summaries layered on top of Phase 5/8 output |
 
@@ -92,6 +92,7 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 9 (Windows employee installer — see
-DEVELOPMENT_STATUS.md). Phase 10 (production VPS deployment) does not begin
-until Phase 9 is separately approved.
+Awaiting review/approval of Phase 10C (SaaS tenancy foundation — see
+DEVELOPMENT_STATUS.md and docs/zaza/SAAS_TENANCY.md). Phase 10D (Cloud SQL
+and the tenant connection strategy) does not begin until Phase 10C is
+approved. No Google Cloud resources have been created.

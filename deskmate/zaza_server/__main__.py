@@ -14,6 +14,10 @@ Commands:
 - ``records``           show what has been received (counts + latest)
 - ``migrate``           (PostgreSQL) apply schema migrations up to the latest
 - ``db-status``         (PostgreSQL) show connection target and schema revision
+- ``control-migrate``   (SaaS control plane, Phase 10C) apply the control-plane
+                        migrations to the SEPARATE control database
+                        (``ZAZA_CONTROL_DB_*``); ``--sql`` prints the DDL only
+- ``control-db-status`` (SaaS control plane) show the control schema revision
 
 Attendance (PostgreSQL only, Phase 5):
 
@@ -105,6 +109,40 @@ def _migrate(show_only: bool) -> int:
         print("Nothing to do: the schema is already up to date.")
         return 0
     migrate.upgrade(settings)
+    print(f"Upgraded {before or '(empty)'} -> {head}.")
+    return 0
+
+
+def _control_migrate(show_only: bool, sql_only: bool) -> int:
+    """SaaS control-plane schema (Phase 10C): its own database and migration
+    chain. Operator command only — never run at web start-up."""
+    from .tenancy.control import migrate as control  # noqa: PLC0415
+
+    if sql_only:
+        print(control.render_sql())
+        return 0
+    import psycopg  # noqa: PLC0415
+
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+
+    settings = control_database_settings_from_env()
+    print(f"Control database: {settings.display()}")
+    try:
+        with psycopg.connect(**settings.connect_kwargs()) as conn:
+            before = control.current_revision(conn)
+    except psycopg.Error as exc:
+        print(f"Cannot connect: {settings.scrub(str(exc)).strip()}", file=sys.stderr)
+        return 2
+    head = control.head_revision()
+    print(f"Control schema revision: {before or '(empty database)'}   latest: {head}")
+    if show_only:
+        print("Up to date." if before == head else
+              "Run `python -m deskmate.zaza_server control-migrate` to upgrade.")
+        return 0
+    if before == head:
+        print("Nothing to do: the control schema is already up to date.")
+        return 0
+    control.upgrade(settings)
     print(f"Upgraded {before or '(empty)'} -> {head}.")
     return 0
 
@@ -364,6 +402,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("migrate", help="(PostgreSQL) apply schema migrations")
     sub.add_parser("db-status", help="(PostgreSQL) show schema revision")
+    cm = sub.add_parser("control-migrate", help="(SaaS control plane) apply control-plane migrations "
+                                                "(ZAZA_CONTROL_DB_*; separate database)")
+    cm.add_argument("--sql", action="store_true", help="print the DDL only; no database needed")
+    sub.add_parser("control-db-status", help="(SaaS control plane) show the control schema revision")
 
     sch = sub.add_parser("add-schedule", help="(PostgreSQL) add a schedule rule")
     sch.add_argument("--employee-id", required=True)
@@ -427,6 +469,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.backend:
                 env["ZAZA_SERVER_BACKEND"] = args.backend
             return print_checks(check_config(env, production=args.production))
+        if args.command in ("control-migrate", "control-db-status"):
+            return _control_migrate(show_only=args.command == "control-db-status",
+                                    sql_only=getattr(args, "sql", False))
         backend = args.backend or backend_from_env()
         if args.command in ("migrate", "db-status"):
             return _migrate(show_only=args.command == "db-status")

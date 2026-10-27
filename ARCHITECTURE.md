@@ -1,7 +1,23 @@
 # ZaZa Employee Management System — Architecture
 
 **Status:** Specification (Phase 0). No component below is deployed yet.
-**Last updated:** 2026-10-06
+**Last updated:** 2026-10-06 (direction update 2026-10-27, below)
+
+> **Direction update (Phase 10C, 2026-10-27).** The commercial target is now
+> a **multi-tenant SaaS on Google Cloud**: project `zaza-employee-monitor`,
+> region `asia-south1`, with the central server as a Cloud Run container
+> (`deploy/gcp/`).
+> - Customer data is isolated **database-per-tenant**. A shared control
+>   plane holds organizations, SaaS users, memberships, the tenant-database
+>   directory and the control audit log.
+> - The PostgreSQL schema in §4 (migrations 0001–0004) is unchanged. It is
+>   the **tenant database template**, one database per customer.
+> - Phase 10C is architecture and local foundation only: Cloud SQL has not
+>   been created, and no customer data is in Google Cloud.
+>
+> The single-VPS layout described below (diagram, §9) is the earlier,
+> now-abandoned deployment target, kept for history. See
+> [docs/zaza/SAAS_TENANCY.md](docs/zaza/SAAS_TENANCY.md).
 
 ## 1. System overview
 
