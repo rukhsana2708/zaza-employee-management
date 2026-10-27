@@ -1,11 +1,23 @@
 # ZaZa production database foundation: Cloud Run + Cloud SQL (Phase 10D)
 
-> **Status: code and configuration only. Nothing has been created in Google
-> Cloud.** There is no Cloud SQL instance, no Cloud Run service, no Artifact
-> Registry repository, no secret and no service account yet. The Terraform
-> in `deploy/gcp/terraform/` has been validated offline but **never
-> planned or applied**. Phase 10E creates the real resources, deliberately
-> and after review.
+> Phase 10D designed this; **Core infrastructure created in Phase 10E-B (2026-10-28):**
+> - **Cloud SQL `zaza-prod-pg16`** (PostgreSQL 16, Enterprise, `db-custom-1-3840`,
+>   ZONAL in asia-south1-c, 20 GB SSD with auto-resize to 200 GB). It has
+>   connector enforcement REQUIRED, no authorized networks, deletion
+>   protection, 14 daily backups, 7-day PITR and `max_connections` 100.
+> - **The empty `zaza_control` database.**
+> - **Artifact Registry `zaza`** (immutable tags, empty).
+> - **Service accounts `zaza-run` and `zaza-migrate`**: `cloudsql.client`
+>   only, no keys.
+> - **Three Secret Manager secrets**, each with version 1.
+> - **Database roles `zaza_app`, `zaza_control_app` and `zaza_migrator`.**
+> 
+> Terraform state is in the private, versioned bucket
+> `zaza-employee-monitor-tfstate-e33ac2a6`.
+> 
+> **Still NOT created:** no Cloud Run service or job, no image pushed, no
+> tenant database, no customer, no employee traffic. The control schema is
+> not migrated yet.
 
 Google Cloud project `zaza-employee-monitor`, region `asia-south1`,
 PostgreSQL **16** (the version every local and in-image test runs against).
@@ -170,7 +182,7 @@ exceeds `ZAZA_DB_CONNECTION_BUDGET`. It also requires
 run one instance. Raising `max_instances` requires recomputing the budget,
 and Terraform keeps the two values next to each other.
 
-## 6. Database roles (created in Phase 10E, with SQL)
+## 6. Database roles (created in Phase 10E-B, with SQL)
 
 | Role | Purpose | Attributes | Privileges |
 |---|---|---|---|
@@ -189,6 +201,40 @@ and Terraform keeps the two values next to each other.
 - The local proof creates a real runtime role with exactly these
   attributes. It shows that the role works through the tenant manager, and
   that `CREATE TABLE` and `CREATE DATABASE` are refused.
+
+**How the roles were created (Phase 10E-B).**
+- The administration connection used the Cloud SQL Auth Proxy (a connector,
+  IAM-authorized), never an authorized network.
+- Passwords were generated in memory and written to Secret Manager over
+  stdin.
+- Roles were created with client-computed SCRAM-SHA-256 verifiers, so no
+  plaintext password reached SQL, logs or command lines.
+- The built-in `postgres` password was set for that session only, then
+  replaced with a discarded random value. No standing admin password
+  exists; reset it through the Cloud SQL Admin API when administration is
+  needed.
+
+Role details:
+- **Connection limits** follow the budget (§5): `zaza_app` 60,
+  `zaza_control_app` 10, `zaza_migrator` 10. None of the three is a member
+  of `cloudsqlsuperuser`.
+- **`zaza_control`:**
+  - CONNECT is revoked from PUBLIC;
+  - `zaza_migrator` has CONNECT, TEMP and CREATE on schema `public`;
+  - `zaza_control_app` has CONNECT and USAGE only, and gets SELECT on
+    future control tables through default privileges.
+
+**Right after the first `control-migrate`**, grant the control runtime role
+exactly what `PostgresControlRepository` uses (as `zaza_migrator`, the table
+owner):
+
+```sql
+GRANT INSERT, UPDATE ON organizations, users, organization_memberships, tenant_databases TO zaza_control_app;
+GRANT INSERT ON control_audit_logs TO zaza_control_app;
+```
+
+It gets no DELETE anywhere, and nothing beyond SELECT on
+`zaza_control_version`.
 
 ## 7. Migrations: explicit only
 

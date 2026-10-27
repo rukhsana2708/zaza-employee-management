@@ -1,8 +1,9 @@
-# ZaZa Google Cloud infrastructure (Terraform): definition only
+# ZaZa Google Cloud infrastructure (Terraform)
 
-> **Never applied.** Phase 10D wrote and validated this configuration
-> offline. It has not been planned or applied, and nothing exists in Google
-> Cloud. Phase 10E creates the resources, deliberately and after review.
+> **Core applied in Phase 10E-B (2026-10-28):** 18 resources, using remote
+> state in `gs://zaza-employee-monitor-tfstate-e33ac2a6/zaza/production`.
+> The Cloud Run service and job (`deploy_service = false`) are NOT created.
+> Phase 10D wrote and validated this configuration; Phase 10E-A planned it.
 
 Design and reasoning: [docs/zaza/CLOUD_SQL_PRODUCTION.md](../../../docs/zaza/CLOUD_SQL_PRODUCTION.md).
 

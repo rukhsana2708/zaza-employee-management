@@ -5,15 +5,23 @@ for **Google Cloud Run**. It is preparation only:
 
 - Google Cloud project ID: `zaza-employee-monitor` (project name "ZaZa
   Employee Monitor"). Intended region: `asia-south1`.
-- The image has **NOT been deployed** to Google Cloud. No Google Cloud
-  resource has been created, and nothing here connects to Google Cloud.
+- The image has **NOT been deployed** to Google Cloud: no Cloud Run service
+  or job exists, and no image has been pushed.
+- **Phase 10E-B created the core infrastructure** with `terraform/`:
+  - Cloud SQL `zaza-prod-pg16` (PostgreSQL 16) with the `zaza_control`
+    database;
+  - Artifact Registry `zaza`;
+  - service accounts `zaza-run` and `zaza-migrate`;
+  - the three password secrets, and the database roles.
+
+  See [docs/zaza/CLOUD_SQL_PRODUCTION.md](../../docs/zaza/CLOUD_SQL_PRODUCTION.md).
 - **Cloud SQL support is prepared but not created (Phase 10D).** The
   server reaches Cloud SQL through Cloud Run's Unix socket
   (`ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME`). Passwords come from Secret
   Manager files (`ZAZA_DB_PASSWORD_FILE`, `ZAZA_CONTROL_DB_PASSWORD_FILE`).
   Tenant pools are bounded, and `check-config --cloud-run` validates all of
-  this. The infrastructure definition is in [`terraform/`](terraform/README.md):
-  validated offline, **never applied**. See
+  this. The infrastructure definition is in [`terraform/`](terraform/README.md);
+  its core is applied, and the Cloud Run part is still gated off. See
   [docs/zaza/CLOUD_SQL_PRODUCTION.md](../../docs/zaza/CLOUD_SQL_PRODUCTION.md).
 - Billing and Google Sheets runtime identity (Application Default
   Credentials) are later phases.

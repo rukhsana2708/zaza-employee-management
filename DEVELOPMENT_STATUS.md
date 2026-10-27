@@ -1,8 +1,48 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10D — production Cloud SQL and tenant connection foundation)
+**Last updated:** 2026-10-28 (Phase 10E-B — core Google Cloud infrastructure created)
 
-## Current phase: Phase 10D — production Cloud SQL and tenant connection foundation (pending your review)
+## Current phase: Phase 10E-B — core production infrastructure (pending your review)
+
+Phases 10D and 10E-A (remote Terraform state + reviewed plan) are
+**approved**.
+
+**Core infrastructure created in Phase 10E-B (2026-10-28):**
+- **Cloud SQL `zaza-prod-pg16`** (PostgreSQL 16, Enterprise, `db-custom-1-3840`,
+  ZONAL in asia-south1-c, 20 GB SSD with auto-resize to 200 GB). It has
+  connector enforcement REQUIRED, no authorized networks, deletion
+  protection, 14 daily backups, 7-day PITR and `max_connections` 100.
+- **The empty `zaza_control` database.**
+- **Artifact Registry `zaza`** (immutable tags, empty).
+- **Service accounts `zaza-run` and `zaza-migrate`**: `cloudsql.client`
+  only, no keys.
+- **Three Secret Manager secrets**, each with version 1.
+- **Database roles `zaza_app`, `zaza_control_app` and `zaza_migrator`.**
+
+Terraform state is in the private, versioned bucket
+`zaza-employee-monitor-tfstate-e33ac2a6`.
+
+**Still NOT created:** no Cloud Run service or job, no image pushed, no
+tenant database, no customer, no employee traffic. The control schema is
+not migrated yet.
+
+**Roles and secrets:**
+- `zaza_app` and `zaza_control_app`: LOGIN only, no SUPERUSER, CREATEDB or
+  CREATEROLE.
+- `zaza_migrator`: LOGIN and CREATEDB, no SUPERUSER or CREATEROLE.
+- Passwords exist only in Secret Manager. They were never printed, and no
+  plaintext reached SQL.
+- There is no standing `postgres` admin password.
+
+**Expected baseline cost:** about US$64/month before tax (Cloud SQL). A
+billing budget with alerts is recommended; the Budget API is not enabled on
+the project.
+
+**Next:** push the image by digest, run `control-migrate` as the migrator
+job and apply the control-role grants. The Cloud Run proxy/origin fixes come
+before `deploy_service = true`.
+
+## Earlier: Phase 10D — production Cloud SQL and tenant connection foundation (approved)
 
 Phases 10A, 10B and 10C are **approved**. Phase 10D prepares the code and
 reproducible configuration for Cloud Run + Cloud SQL. **Nothing was created
