@@ -1,11 +1,12 @@
-# ZaZa on Google Cloud (Phase 10D) - infrastructure DEFINITION ONLY.
+# ZaZa on Google Cloud (Phase 10D definition; Phase 10E-A remote state).
 #
-# Nothing in this directory has been applied. Phase 10E runs `terraform plan`
-# and `terraform apply` deliberately, after review (see README.md).
+# The main infrastructure has NOT been applied. Phase 10E-A created only the
+# state bucket below (private: public access prevention enforced, uniform
+# bucket-level access, versioning on, asia-south1) and produced a reviewed
+# plan. `terraform apply` runs deliberately in a later step (see README.md).
 #
-# State: Phase 10E creates a dedicated, versioned GCS bucket for the state and
-# enables the backend below. Never commit *.tfstate files (they can contain
-# sensitive values); .gitignore excludes them.
+# Never commit *.tfstate files or plans (they can contain sensitive values);
+# .gitignore excludes them. The bucket name is not a secret.
 
 terraform {
   required_version = ">= 1.6.0"
@@ -17,10 +18,12 @@ terraform {
     }
   }
 
-  # backend "gcs" {
-  #   bucket = "<state bucket created in Phase 10E>"
-  #   prefix = "zaza/production"
-  # }
+  # Credentials come from the operator's gcloud login at run time — never
+  # from this file.
+  backend "gcs" {
+    bucket = "zaza-employee-monitor-tfstate-e33ac2a6"
+    prefix = "zaza/production"
+  }
 }
 
 provider "google" {
