@@ -4,7 +4,9 @@ Commands:
 
 - ``serve``             run the API (default http://127.0.0.1:8765)
 - ``check-config``      validate the configuration without printing secrets
-  (``--production`` adds the Phase 10 production rules)
+  (``--production`` adds the Phase 10 production rules; ``--cloud-run`` is the
+  separate Cloud Run + Cloud SQL mode, Phase 10D, ``--connect`` also checks
+  the control schema)
 - ``add-employee``      add an employee (needed before registering a device)
 - ``list-employees``
 - ``register-device``   add a device for an employee and print its token ONCE
@@ -18,6 +20,11 @@ Commands:
                         migrations to the SEPARATE control database
                         (``ZAZA_CONTROL_DB_*``); ``--sql`` prints the DDL only
 - ``control-db-status`` (SaaS control plane) show the control schema revision
+- ``tenant-migrate``    (SaaS, Phase 10D) apply the tenant migrations to tenant
+                        databases named by the control plane
+                        (``--organization ID`` or ``--all-ready``), one at a
+                        time; a failure marks that tenant ERROR. Never run by
+                        ``serve``.
 
 Attendance (PostgreSQL only, Phase 5):
 
@@ -111,6 +118,32 @@ def _migrate(show_only: bool) -> int:
     migrate.upgrade(settings)
     print(f"Upgraded {before or '(empty)'} -> {head}.")
     return 0
+
+
+def _tenant_migrate(organizations: list[str] | None, *, continue_on_error: bool) -> int:
+    """SaaS tenant databases (Phase 10D): the tenant migration chain applied
+    to tenant databases named by the CONTROL plane, sequentially. Run as an
+    operator job with the migration identity's ZAZA_DB_* settings — never by
+    the web service. Prints one line per tenant; exit 1 if any failed."""
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+    from .tenancy.control_repository import PostgresControlRepository  # noqa: PLC0415
+    from .tenancy.tenant_migrations import TenantMigrationRunner  # noqa: PLC0415
+
+    control_settings = control_database_settings_from_env()
+    base = database_settings_from_env()
+    control = PostgresControlRepository(control_settings, actor_type="CLI", actor_id="tenant-migrate")
+    try:
+        runner = TenantMigrationRunner(control, base, control_database_name=control_settings.dbname)
+        results = runner.migrate_many(organizations, stop_on_failure=not continue_on_error)
+    finally:
+        control.close()
+    for result in results:
+        print(result.describe())
+    if not results:
+        print("No tenant databases to migrate.")
+    failed = sum(not r.ok for r in results)
+    print(f"{len(results) - failed} migrated/up to date, {failed} failed.")
+    return 1 if failed else 0
 
 
 def _control_migrate(show_only: bool, sql_only: bool) -> int:
@@ -369,7 +402,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     chk = sub.add_parser("check-config", help="validate the configuration without printing secrets")
-    chk.add_argument("--production", action="store_true", help="also apply the production rules (Phase 10)")
+    mode = chk.add_mutually_exclusive_group()
+    mode.add_argument("--production", action="store_true", help="also apply the production rules (Phase 10)")
+    mode.add_argument("--cloud-run", action="store_true",
+                      help="validate the Cloud Run + Cloud SQL configuration instead (Phase 10D)")
+    chk.add_argument("--connect", action="store_true",
+                     help="with --cloud-run: also check the control schema revision (read-only connection)")
 
     serve = sub.add_parser("serve", help="run the sync API server")
     serve.add_argument("--host", default="127.0.0.1")
@@ -406,6 +444,14 @@ def main(argv: list[str] | None = None) -> int:
                                                 "(ZAZA_CONTROL_DB_*; separate database)")
     cm.add_argument("--sql", action="store_true", help="print the DDL only; no database needed")
     sub.add_parser("control-db-status", help="(SaaS control plane) show the control schema revision")
+    tm = sub.add_parser("tenant-migrate", help="(SaaS) apply the tenant migrations to tenant databases listed in "
+                                               "the control plane, one at a time")
+    which = tm.add_mutually_exclusive_group(required=True)
+    which.add_argument("--organization", action="append", metavar="ORGANIZATION_ID",
+                       help="migrate this organization's tenant database (repeatable)")
+    which.add_argument("--all-ready", action="store_true", help="migrate every READY tenant database")
+    tm.add_argument("--continue-on-error", action="store_true",
+                    help="keep going after a failed tenant (default: stop at the first failure)")
 
     sch = sub.add_parser("add-schedule", help="(PostgreSQL) add a schedule rule")
     sch.add_argument("--employee-id", required=True)
@@ -468,10 +514,18 @@ def main(argv: list[str] | None = None) -> int:
             env = dict(os.environ)
             if args.backend:
                 env["ZAZA_SERVER_BACKEND"] = args.backend
+            if args.cloud_run:
+                from .preflight import check_cloud_run_config  # noqa: PLC0415
+
+                return print_checks(check_cloud_run_config(env, connect=args.connect))
+            if args.connect:
+                raise ConfigError("--connect is used with --cloud-run")
             return print_checks(check_config(env, production=args.production))
         if args.command in ("control-migrate", "control-db-status"):
             return _control_migrate(show_only=args.command == "control-db-status",
                                     sql_only=getattr(args, "sql", False))
+        if args.command == "tenant-migrate":
+            return _tenant_migrate(args.organization, continue_on_error=args.continue_on_error)
         backend = args.backend or backend_from_env()
         if args.command in ("migrate", "db-status"):
             return _migrate(show_only=args.command == "db-status")
@@ -572,6 +626,19 @@ def check_production_settings(http, cookie_secure: bool) -> None:  # noqa: ANN00
                           "is not true; set ZAZA_DASHBOARD_COOKIE_SECURE=true")
 
 
+def _log_secrets(backend: str) -> list[str]:
+    """Database passwords the log formatter must redact: the server's own
+    and, when one is configured, the SaaS control-plane database's."""
+    if backend != "postgres":
+        return []
+    secrets = [database_settings_from_env().password or ""]
+    if os.environ.get("ZAZA_CONTROL_DB_NAME") or os.environ.get("ZAZA_CONTROL_DATABASE_URL"):
+        from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+
+        secrets.append(control_database_settings_from_env().password or "")
+    return secrets
+
+
 def _serve_prepare(backend: str):  # noqa: ANN202
     """Validate the serve-time settings and configure logging BEFORE the
     database is opened. Returns the HTTP settings."""
@@ -581,8 +648,7 @@ def _serve_prepare(backend: str):  # noqa: ANN202
 
     http = http_settings_from_env()
     check_production_settings(http, dashboard_settings_from_env().cookie_secure)
-    secrets = [database_settings_from_env().password or ""] if backend == "postgres" else []
-    configure_logging(secrets=secrets)
+    configure_logging(secrets=_log_secrets(backend))
     return http
 
 

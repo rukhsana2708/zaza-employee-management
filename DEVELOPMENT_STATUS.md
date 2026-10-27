@@ -1,8 +1,110 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-27 (Phase 10C — SaaS tenancy foundation)
+**Last updated:** 2026-10-28 (Phase 10D — production Cloud SQL and tenant connection foundation)
 
-## Current phase: Phase 10C — SaaS tenant / organization architecture (pending your review)
+## Current phase: Phase 10D — production Cloud SQL and tenant connection foundation (pending your review)
+
+Phases 10A, 10B and 10C are **approved**. Phase 10D prepares the code and
+reproducible configuration for Cloud Run + Cloud SQL. **Nothing was created
+in Google Cloud:**
+- no Cloud SQL, no Cloud Run, no Artifact Registry;
+- no secrets, no service accounts, no keys;
+- no Terraform plan or apply, no deployment.
+
+Design: [docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md).
+
+### Phase 10D summary
+
+- **Architecture:** one Cloud SQL for PostgreSQL **16** instance in
+  `asia-south1`, holding `zaza_control` plus one server-named `zaza_t_…`
+  database per customer. A placement key can move a large customer to a
+  dedicated instance later; the authorization path is unchanged.
+- **Connection model** (`deskmate/zaza_server/cloudsql.py`, `config.py`):
+  - `ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME` and
+    `ZAZA_CONTROL_CLOUDSQL_INSTANCE_CONNECTION_NAME` give the Unix socket
+    `/cloudsql/PROJECT:REGION:INSTANCE`; the value is strictly validated and
+    cannot be combined with a host or URL;
+  - every host value is validated;
+  - TCP mode is unchanged for local use, tests and the Windows deployment.
+- **Secrets:** `ZAZA_DB_PASSWORD_FILE` and `ZAZA_CONTROL_DB_PASSWORD_FILE`
+  hold Secret Manager files. The log formatter now redacts both database
+  passwords.
+- **Tenant connection manager** (`tenancy/connections.py`):
+  - takes only a `TenantContext` and reuses `PostgresRepository`;
+  - lazy, thread-safe, pool min 0 / max 2 (hard limit 4), at most 8 cached
+    tenant pools per instance (hard limit 64), LRU eviction, 300 s idle
+    eviction plus an optional reaper;
+  - fails fast when all pools are busy;
+  - checks connections before use, verifies `current_database()`, retires
+    only a failing tenant's pool, and closes everything on shutdown.
+  - The control pool stays min 0 / max 2, now also with connection checks.
+- **Connection budget:** `max_instances × (cache × pool + control 2 +
+  server pool)`; the pilot is `3 × 20 = 60 ≤ 70 < max_connections 100`.
+  `check-config --cloud-run` checks it.
+- **Migrations:** `tenant-migrate --organization ID | --all-ready
+  [--continue-on-error]` (`tenancy/tenant_migrations.py`):
+  - sequential, reporting each tenant;
+  - a failure marks that tenant ERROR;
+  - never the control database;
+  - never run by `serve`.
+- **Provisioning boundary** (`tenancy/provisioning.py`): assign name →
+  create database (closed to PUBLIC) → migrate → verify head → grant the
+  runtime role DML → READY; any failure leaves ERROR. Nothing exposes it
+  yet, and nothing calls a Google API.
+- **Roles (designed):**
+  - `zaza_app` and `zaza_control_app`: runtime, no SUPERUSER, CREATEDB or
+    CREATEROLE;
+  - `zaza_migrator`: CREATEDB, used by the migration job only;
+  - `zaza_reporting`: optional, read-only.
+- **`check-config --cloud-run [--connect]`:** a separate mode;
+  `--production` (Windows) is unchanged.
+- **Terraform** (`deploy/gcp/terraform/`):
+  - Artifact Registry, service accounts, secret containers (no values),
+    PostgreSQL 16 with backups (14), PITR (7 days) and deletion protection,
+    connector-only access, `zaza_control`, and the Cloud Run service and
+    migration job (gated off);
+  - validated offline, **never applied**; no state committed.
+- **Local proof** (disposable PostgreSQL 16, WSL Docker): control + tenants
+  A/B provisioned by the real provisioner, with a real runtime role (no
+  CREATEDB/CREATEROLE) working through the real manager:
+  - A reaches only A and B only B;
+  - the same `employee-1` / `device-1` exist in both;
+  - pools are reused; the cache bound evicts and closes;
+  - an unavailable tenant A does not affect B;
+  - DDL is refused to the runtime role;
+  - after `close()` no runtime connections remain;
+  - everything is dropped afterwards.
+- **Container:**
+  - the 10B checks still pass;
+  - the image migrates over a `/cloudsql/<name>` socket via an explicit
+    command;
+  - `check-config --cloud-run --connect` passes inside it;
+  - it serves health 200 with `--network none`, never auto-migrates and
+    never logs the password.
+- **Tests:**
+  - new: 89 in `test_cloud_sql.py`, 41 in `test_tenant_pools.py`, and 3 in
+    `test_tenant_pools_postgres.py`;
+  - default: 1134 passed, 0 failed, 142 skipped;
+  - PostgreSQL-enabled: 1275 passed, 0 failed, 1 skipped (live Google).
+- **Not built (approved product direction, after the production
+  foundation):** Live Team, teams/scopes, CRM clients/projects/tasks,
+  idle-context prompts, Pause/Resume, My Day corrections, messaging,
+  comments, uploads, submissions, AI suggestions. The privacy guarantees
+  are unchanged.
+
+### Next: Phase 10E (not started)
+
+Create the real Google Cloud resources from the Terraform definition
+(state bucket, plan review, apply), then:
+- create the database roles, with passwords generated straight into
+  Secret Manager;
+- push the image by digest and run `control-migrate`;
+- verify backups, PITR and deletion protection.
+
+The Cloud Run proxy/origin items, SaaS login and enrollment remain before
+any customer traffic.
+
+## Earlier: Phase 10C — SaaS tenant / organization architecture (approved)
 
 **Direction change (2026-10-27):** ZaZa is becoming a commercial
 **multi-tenant SaaS on Google Cloud**: project `zaza-employee-monitor`,
@@ -61,9 +163,11 @@ are unchanged.
 
 ### Still open before any public deployment
 
-- The Cloud Run trusted-proxy, HTTPS/origin, dashboard mounting, login rate
-  limiting and production preflight items (`deploy/gcp/README.md`).
-- Cloud SQL and the tenant connection-pool design (Phase 10D).
+- The Cloud Run trusted-proxy, HTTPS/origin, dashboard mounting and login
+  rate limiting items (`deploy/gcp/README.md`). The Cloud Run preflight
+  exists since Phase 10D.
+- Creating Cloud SQL and the other resources (Phase 10E). The connection
+  design is done in Phase 10D.
 - SaaS authentication (it replaces the per-tenant `manager_users`), device
   enrollment, and Google Sheets with the runtime identity.
 - Billing (not designed yet).

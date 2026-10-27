@@ -122,7 +122,10 @@ class PostgresControlRepository:
         self._pool = ConnectionPool(
             "", kwargs={**settings.connect_kwargs(), "autocommit": True, "row_factory": dict_row},
             min_size=0, max_size=min(settings.pool_max, 2), timeout=settings.pool_timeout, max_idle=300,
-            name="zaza-control", open=False,
+            max_lifetime=3600, name="zaza-control", open=False,
+            # a connection dropped meanwhile (database restart, Cloud SQL
+            # maintenance, idle Cloud Run instance) is replaced, not handed out
+            check=ConnectionPool.check_connection,
         )
         try:
             try:

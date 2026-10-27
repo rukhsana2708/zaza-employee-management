@@ -154,7 +154,14 @@ _SQL = {rtype: _build_sql(spec) for rtype, spec in TABLES.items()}
 
 class PostgresRepository:
     """Production repository. ``actor_type``/``actor_id`` label the audit
-    entries written for administrative changes (e.g. ``CLI``/``admin``)."""
+    entries written for administrative changes (e.g. ``CLI``/``admin``).
+
+    The repository owns its connection pool; :meth:`close` releases it.
+    ``pool_name``, ``check_connections`` and ``pool_workers`` let the SaaS
+    tenant connection manager (``tenancy/connections.py``) run many small,
+    short-lived per-tenant repositories: a connection that was dropped while
+    idle is replaced instead of being handed out, and each pool needs only
+    one background worker."""
 
     def __init__(
         self,
@@ -163,6 +170,9 @@ class PostgresRepository:
         actor_type: str = "SYSTEM",
         actor_id: str | None = None,
         require_current_schema: bool = True,
+        pool_name: str = "zaza-db",
+        check_connections: bool = False,
+        pool_workers: int = 3,
     ) -> None:
         self.settings = settings
         self.actor_type = actor_type
@@ -175,8 +185,10 @@ class PostgresRepository:
             timeout=settings.pool_timeout,
             max_idle=300,
             max_lifetime=3600,
-            name="zaza-db",
+            name=pool_name,
             open=False,
+            num_workers=pool_workers,
+            check=ConnectionPool.check_connection if check_connections else None,
         )
         try:
             try:
@@ -198,6 +210,10 @@ class PostgresRepository:
 
     def close(self) -> None:
         self._pool.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._pool.closed
 
     def connection(self):  # noqa: ANN201 — context manager yielding a pooled psycopg connection
         """A pooled connection (autocommit, dict rows) for other server

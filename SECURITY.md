@@ -582,6 +582,31 @@ with a separate control plane. Full design:
   never aggregate customers.
 - The privacy model (§2) is unchanged.
 
+**Phase 10D: production database access** (design:
+[docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md); not
+deployed):
+
+- **Address.** Cloud Run reaches Cloud SQL only through the service's Unix
+  socket. The instance connection name is server configuration, strictly
+  validated, never from a request, the control database or a tenant
+  descriptor. The instance accepts only Cloud SQL connectors (IAM-authorized
+  and encrypted); there are no authorized networks.
+- **Passwords.** They are Secret Manager secrets mounted as files
+  (`ZAZA_DB_PASSWORD_FILE`, `ZAZA_CONTROL_DB_PASSWORD_FILE`), never in the
+  image, source, Terraform variables or state. They are redacted from logs,
+  errors, preflight output and migration reports.
+- **No service-account JSON keys.** Cloud Run uses its runtime identity;
+  `check-config --cloud-run` fails if a key file is configured.
+- **Roles.** The web runtime role has no SUPERUSER, CREATEDB or CREATEROLE,
+  and DML only on tenant tables. Migrations and tenant provisioning use a
+  separate migrator role in a separate job. New tenant databases are
+  closed to PUBLIC.
+- **Tenant connections** take only a resolved `TenantContext`:
+  - they are bounded per instance and across instances (the connection
+    budget);
+  - a failing tenant cannot affect another tenant's pool.
+- **Public health** reveals no database, tenant or Cloud SQL detail.
+
 ## 7. Retention
 
 Raw per-tick agent events are retained only long enough to build the

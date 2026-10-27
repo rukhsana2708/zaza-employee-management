@@ -73,9 +73,15 @@ for the current phase and what's implemented so far. As of this writing:
     control plane ([docs/zaza/SAAS_TENANCY.md](docs/zaza/SAAS_TENANCY.md)).
   - **Approved:** Phase 10B, the Cloud Run container of the central server
     ([deploy/gcp/README.md](deploy/gcp/README.md)).
-  - **Pending review:** Phase 10C, the tenancy foundation. It is local
-    only: no Cloud SQL, no Google Cloud resources, no customer data in the
-    cloud.
+  - **Approved:** Phase 10C, the tenancy foundation (local only).
+  - **Pending review:** Phase 10D, the production Cloud SQL and tenant
+    connection foundation
+    ([docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md)).
+    It covers the Cloud SQL socket, Secret Manager password files, bounded
+    tenant pools, `tenant-migrate`, `check-config --cloud-run` and a
+    Terraform definition.
+  - Code and configuration only: no Cloud SQL, no Google Cloud resources,
+    no customer data in the cloud.
 - **Historical:** the earlier single Windows VPS deployment (ARCHITECTURE.md
   §9, runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md))
   was abandoned for the SaaS direction. Its files in `deploy/windows/` are
@@ -105,7 +111,11 @@ DeskMate's own (unmodified) documentation, preserved for reference.
 ```
 deskmate/zaza_server/ # central sync API (FastAPI) + repositories: in-memory,
                       # SQLite (development), PostgreSQL (postgres/, Phase 4);
-                      # tenancy/ = SaaS control plane + tenant routing (Phase 10C)
+                      # tenancy/ = SaaS control plane + tenant routing (Phase 10C),
+                      # tenant pools / tenant-migrate / provisioning (Phase 10D);
+                      # cloudsql.py = Cloud SQL socket settings (Phase 10D)
+deploy/gcp/           # Cloud Run image (Phase 10B); terraform/ = infrastructure
+                      # definition, never applied (Phase 10D)
 deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
                      # project currently runs; see deskmate/zaza/README
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md

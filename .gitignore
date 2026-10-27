@@ -68,3 +68,12 @@ Thumbs.db
 unsloth_compiled_cache/
 # LoRA / training checkpoints
 checkpoints/
+
+# Terraform (deploy/gcp/terraform): state and plans can contain sensitive
+# values; real variable files stay local. The provider lock file IS committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+.terraform.tfstate.lock.info

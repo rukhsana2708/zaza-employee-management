@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (git-ignored) in Phase 10E. NO SECRETS here:
+# passwords live only in Secret Manager.
+
+project_id        = "zaza-employee-monitor"
+region            = "asia-south1"
+sql_instance_name = "CHOOSE-IN-PHASE-10E"
+
+# Keep false until the image is pushed and every password secret has a version.
+deploy_service = false
+# container_image = "asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:<digest>"
+
+# Connection budget: max_instances x (tenant_pool_cache_max x tenant_pool_max + 2 control + db_pool_max)
+#                    = 3 x (8 x 2 + 2 + 2) = 60 <= db_connection_budget 70 < sql_max_connections 100
+max_instances         = 3
+tenant_pool_max       = 2
+tenant_pool_cache_max = 8
+db_pool_max           = 2
+db_connection_budget  = 70
+sql_max_connections   = 100

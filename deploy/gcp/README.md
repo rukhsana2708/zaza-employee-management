@@ -7,11 +7,16 @@ for **Google Cloud Run**. It is preparation only:
   Employee Monitor"). Intended region: `asia-south1`.
 - The image has **NOT been deployed** to Google Cloud. No Google Cloud
   resource has been created, and nothing here connects to Google Cloud.
-- **PostgreSQL / Cloud SQL is NOT configured yet.** There is no Cloud SQL
-  connector, no database secret and no tenant database. The database design
-  is a later phase.
-- Multi-tenancy, billing and Google Sheets runtime identity (Application
-  Default Credentials) are later phases.
+- **Cloud SQL support is prepared but not created (Phase 10D).** The
+  server reaches Cloud SQL through Cloud Run's Unix socket
+  (`ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME`). Passwords come from Secret
+  Manager files (`ZAZA_DB_PASSWORD_FILE`, `ZAZA_CONTROL_DB_PASSWORD_FILE`).
+  Tenant pools are bounded, and `check-config --cloud-run` validates all of
+  this. The infrastructure definition is in [`terraform/`](terraform/README.md):
+  validated offline, **never applied**. See
+  [docs/zaza/CLOUD_SQL_PRODUCTION.md](../../docs/zaza/CLOUD_SQL_PRODUCTION.md).
+- Billing and Google Sheets runtime identity (Application Default
+  Credentials) are later phases.
 
 The earlier single-server Windows deployment (`deploy/windows/`) is kept
 unchanged as reference material.
@@ -128,6 +133,35 @@ directly. It **never** does any of these at start-up:
 - loads sample or fake data;
 - runs the attendance or Google Sheets jobs (separate scheduled jobs later).
 
+## Cloud SQL (Phase 10D; nothing created yet)
+
+On Cloud Run, the service's Cloud SQL connection mounts
+`/cloudsql/PROJECT:REGION:INSTANCE`. The container is configured with:
+
+```sh
+ZAZA_SERVER_BACKEND=postgres
+ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME=zaza-employee-monitor:asia-south1:<instance>
+ZAZA_DB_USER=zaza_app
+ZAZA_DB_PASSWORD_FILE=/secrets/db-app/password                 # Secret Manager, mounted as a file
+ZAZA_CONTROL_CLOUDSQL_INSTANCE_CONNECTION_NAME=zaza-employee-monitor:asia-south1:<instance>
+ZAZA_CONTROL_DB_NAME=zaza_control
+ZAZA_CONTROL_DB_USER=zaza_control_app
+ZAZA_CONTROL_DB_PASSWORD_FILE=/secrets/db-control/password
+ZAZA_TENANT_POOL_MAX=2  ZAZA_TENANT_POOL_CACHE_MAX=8  ZAZA_TENANT_POOL_IDLE_SECONDS=300
+ZAZA_CLOUD_RUN_MAX_INSTANCES=3  ZAZA_DB_CONNECTION_BUDGET=70
+```
+
+Migrations run only as the separate `zaza-migrate` job (`control-migrate`,
+`migrate`, `tenant-migrate`). The entrypoint still only serves.
+
+**Locally verified in Phase 10D**, with disposable PostgreSQL 16 and its
+socket mounted at `/cloudsql/<name>`:
+- the image migrates over the socket via an explicit command;
+- `check-config --cloud-run --connect` passes;
+- the image serves health 200 with `--network none`, so it needs no network
+  or Google API at start-up;
+- it never auto-migrates or logs the password.
+
 ## Secrets
 
 **Never build a secret into the image.** That covers database passwords,
@@ -167,8 +201,13 @@ These are not changed in Phase 10B; the current behaviour is fail-closed.
 5. **Host check.** `ZAZA_PUBLIC_HOST` must list the Cloud Run service host
    name(s) and any custom domain.
 6. **Production preflight.** `check-config --production` still describes
-   the Windows server: PostgreSQL password file, `ZAZA_LOG_FILE`, loopback
-   proxies. Cloud Run needs its own, separate check mode, not a weakened
-   version of this one.
+   the Windows server and is unchanged. Phase 10D added the separate
+   **`check-config --cloud-run [--connect]`** mode. It requires:
+   - the Cloud SQL socket, password files, a control database and bounded
+     pools;
+   - a connection budget across `ZAZA_CLOUD_RUN_MAX_INSTANCES`;
+   - logs on stdout and no JSON keys.
+
+   It always warns about requirement 1 until the proxy design exists.
 7. **Health checks.** `GET /api/v1/sync/health` is unauthenticated and
    returns no data. It suits a Cloud Run startup/liveness probe.

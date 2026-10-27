@@ -26,6 +26,16 @@ or separate parts (each overrides the matching URL part if both are set):
 ``ZAZA_DB_SSLMODE``         default ``prefer``
 ``ZAZA_DB_SCHEMA``          optional; sets ``search_path`` (default: public)
 
+Cloud Run + Cloud SQL (Phase 10D, see ``cloudsql.py``) — instead of a host:
+
+``ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME``  ``PROJECT:REGION:INSTANCE``; the
+                            database is reached through the service's Cloud
+                            SQL Unix socket ``/cloudsql/PROJECT:REGION:INSTANCE``.
+                            Cannot be combined with ``ZAZA_DB_HOST`` or
+                            ``ZAZA_DATABASE_URL``. The password should come
+                            from ``ZAZA_DB_PASSWORD_FILE`` (a Secret Manager
+                            secret mounted as a file).
+
 Connection pool (kept deliberately small — the VPS is resource-constrained):
 
 ``ZAZA_DB_POOL_MIN``        default 1
@@ -46,6 +56,10 @@ BACKENDS = ("sqlite", "postgres")
 POOL_MAX_LIMIT = 20
 _SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+# A host name / IPv4 / IPv6 address, or an absolute Unix-socket directory.
+# Never a URL, a list of hosts, or anything with spaces or "=".
+_HOSTNAME_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)$")
+_SOCKET_DIR_RE = re.compile(r"^(?:/[A-Za-z0-9._:-]+)+$")
 
 
 class ConfigError(ValueError):
@@ -69,6 +83,10 @@ class DatabaseSettings:
     application_name: str = "zaza-sync"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.host, str) or not (
+                _HOSTNAME_RE.match(self.host)
+                or (_SOCKET_DIR_RE.match(self.host) and ".." not in self.host.split("/"))):
+            raise ConfigError("database host must be a host name, an IP address or an absolute socket directory")
         if not 1 <= self.port <= 65535:
             raise ConfigError("database port must be 1..65535")
         if self.sslmode not in _SSL_MODES:
@@ -79,6 +97,10 @@ class DatabaseSettings:
             raise ConfigError(f"pool sizes must satisfy 0 <= min <= max <= {POOL_MAX_LIMIT}, max >= 1")
         if self.pool_timeout <= 0 or self.connect_timeout <= 0 or self.statement_timeout_ms <= 0:
             raise ConfigError("timeouts must be positive")
+
+    @property
+    def uses_unix_socket(self) -> bool:
+        return self.host.startswith("/")
 
     # ─── connection forms ──────────────────────────────────────────────────
     def pg_options(self) -> str:
@@ -121,6 +143,11 @@ class DatabaseSettings:
         """Safe, loggable description: no password, ever."""
         user = f"{self.user}:***@" if self.password else (f"{self.user}@" if self.user else "")
         schema = f" schema={self.schema}" if self.schema else ""
+        if self.uses_unix_socket:
+            from .cloudsql import is_cloudsql_socket  # noqa: PLC0415
+
+            kind = "Cloud SQL socket" if is_cloudsql_socket(self.host) else "Unix socket"
+            return f"postgresql://{user}[{self.host}]/{self.dbname} ({kind}{schema})"
         return f"postgresql://{user}{self.host}:{self.port}/{self.dbname} (sslmode={self.sslmode}{schema})"
 
     def scrub(self, text: str) -> str:
@@ -169,6 +196,16 @@ def database_settings_from_env(env: dict | None = None) -> DatabaseSettings:
         except OSError as exc:
             raise ConfigError(f"cannot read ZAZA_DB_PASSWORD_FILE ({exc.strerror})") from None
     merged = {k: v for k, v in {**parts, **{k: v for k, v in overrides.items() if v}}.items() if v is not None}
+    if instance := (env.get("ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME") or "").strip():
+        from .cloudsql import CloudSqlConfigError, socket_directory  # noqa: PLC0415
+
+        if env.get("ZAZA_DATABASE_URL") or env.get("ZAZA_DB_HOST"):
+            raise ConfigError("ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME cannot be combined with ZAZA_DB_HOST or "
+                              "ZAZA_DATABASE_URL: the Cloud SQL socket is the only database address")
+        try:
+            merged["host"] = socket_directory(instance)
+        except CloudSqlConfigError as exc:
+            raise ConfigError(f"ZAZA_CLOUDSQL_INSTANCE_CONNECTION_NAME: {exc}") from None
     return DatabaseSettings(
         **merged,
         pool_min=_int_env(env, "ZAZA_DB_POOL_MIN", 1),

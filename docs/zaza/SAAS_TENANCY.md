@@ -12,6 +12,13 @@ Google Cloud (project `zaza-employee-monitor`, region `asia-south1`).
 Code is in `deskmate/zaza_server/tenancy/`, tests in
 `tests/zaza_agent/test_tenancy.py` and `test_tenancy_postgres.py`.
 
+**Phase 10D** added the production connectivity on top of this design (§10,
+§12, §16): Cloud SQL socket configuration, the bounded tenant connection
+manager, `tenant-migrate`, the provisioning boundary, `check-config
+--cloud-run` and the Terraform definition. Details are in
+[CLOUD_SQL_PRODUCTION.md](CLOUD_SQL_PRODUCTION.md). Still nothing is created
+in Google Cloud.
+
 ---
 
 ## 1. Control plane vs. tenant data plane
@@ -227,6 +234,12 @@ Failures leave the tenant in `PROVISIONING` or `ERROR`, which the resolver
 never routes to. The local proof runs exactly this sequence against
 disposable PostgreSQL.
 
+**Phase 10D:** the sequence is code: `tenancy/provisioning.py`
+(`TenantProvisioner`, `PostgresDatabaseCreator`). It also closes the new
+database to PUBLIC and grants only the runtime role CONNECT plus DML. It is
+not exposed by any CLI or HTTP route; Phase 10E/10F runs it with the
+privileged migrator identity.
+
 ## 11. Control-plane migrations
 
 - **A separate Alembic chain:** `deskmate/zaza_server/tenancy/control/migrations/`.
@@ -262,6 +275,13 @@ disposable PostgreSQL.
   - a failed tenant is marked `ERROR` and is not routed to; it does not
     block the others.
 - No tenant migration is ever run at web start-up.
+- **Phase 10D:** `python -m deskmate.zaza_server tenant-migrate
+  --organization ID | --all-ready [--continue-on-error]` implements this
+  (`tenancy/tenant_migrations.py`):
+  - names come from the control directory only;
+  - tenants run sequentially and each is reported;
+  - a failure marks that tenant `ERROR`;
+  - the control database is refused.
 
 ## 13. Reporting and scheduled jobs are per tenant
 
@@ -311,9 +331,17 @@ If ZaZa staff ever need to look inside a customer's data, access must be:
 It is never silent and never a standing permission. Support impersonation
 is **not** implemented.
 
-## 16. Future Cloud SQL connection strategy (Phase 10D)
+## 16. Cloud SQL connection strategy (Phase 10D)
 
-Not built yet. Requirements recorded here:
+**Implemented in Phase 10D** (`tenancy/connections.py`, `cloudsql.py`; see
+[CLOUD_SQL_PRODUCTION.md](CLOUD_SQL_PRODUCTION.md) §2–§6):
+- lazy, bounded LRU cache of tenant pools (min 0, max 2; 8 pools per
+  instance; idle close after 300 s, all configurable within hard limits);
+- the Cloud SQL Unix socket and Secret Manager password files;
+- a connection budget checked by `check-config --cloud-run`;
+- runtime / migrator / reporting roles.
+
+Per-tenant roles remain a later option. The original requirements:
 
 - **Connection pools:**
   - created **lazily**, on first use of a tenant;

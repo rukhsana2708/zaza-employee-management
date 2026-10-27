@@ -48,7 +48,7 @@ Sheets is used only for summarized, text-based reporting — never for images.
 | 7 | Manager web dashboard | Server-rendered dashboard on PostgreSQL: Argon2id manager accounts, server-side sessions, CSRF; Overview, Employees, Attendance, Applications, Schedules (audited, from today onwards); employee-local period filters; no charts |
 | 8 | Charts & automatic analysis | Six server-rendered SVG charts (no JS library/CDN) and an Analytics page; deterministic rule-based insights with previous-period comparison and data-quality gating; no AI, no productivity score |
 | 9 | Windows employee installer | `ZaZaWorkAgentSetup.exe` (PyInstaller + Inno Setup): ZaZa-only audited package, DPAPI enrollment, transparent logon task, Status & Privacy window, upgrade/uninstall that preserve unsynced data |
-| 10 | Production deployment | *Original plan:* the existing VPS (abandoned 2026-10-27, files kept as reference). *Now:* multi-tenant SaaS on Google Cloud (`zaza-employee-monitor`, `asia-south1`). Done: 10B Cloud Run container of the central server; 10C tenancy foundation (control plane + database-per-tenant, local only). Next: 10D Cloud SQL and the tenant connection strategy; then SaaS authentication, enrollment and the Cloud Run proxy items before public deployment |
+| 10 | Production deployment | *Original plan:* the existing VPS (abandoned 2026-10-27, files kept as reference). *Now:* multi-tenant SaaS on Google Cloud (`zaza-employee-monitor`, `asia-south1`). Done: 10B Cloud Run container of the central server; 10C tenancy foundation (control plane + database-per-tenant, local only); 10D production Cloud SQL connectivity (socket, secret files, bounded tenant pools, connection budget, tenant-migrate, provisioning boundary, Cloud Run preflight, Terraform definition — nothing created). Next: 10E creates the real Google Cloud resources; then SaaS authentication, enrollment and the Cloud Run proxy items before public deployment |
 | 11 | Pilot testing | Run with real employees, fix gaps |
 | 12 | Optional AI analysis | Natural-language summaries layered on top of Phase 5/8 output |
 
@@ -92,7 +92,20 @@ activity presence is a proxy for work, not proof of it.
 
 ## 8. Next step
 
-Awaiting review/approval of Phase 10C (SaaS tenancy foundation — see
-DEVELOPMENT_STATUS.md and docs/zaza/SAAS_TENANCY.md). Phase 10D (Cloud SQL
-and the tenant connection strategy) does not begin until Phase 10C is
-approved. No Google Cloud resources have been created.
+Awaiting review/approval of Phase 10D (production Cloud SQL and tenant
+connection foundation — see DEVELOPMENT_STATUS.md and
+docs/zaza/CLOUD_SQL_PRODUCTION.md). Phase 10E (creating the real Google
+Cloud resources from `deploy/gcp/terraform/`) does not begin until Phase 10D
+is approved. No Google Cloud resources have been created.
+
+**Product layer after the production foundation (approved direction, not
+built):**
+- Live Team;
+- teams and manager scopes;
+- CRM clients, projects and tasks;
+- idle-context prompts, employee Pause/Resume and My Day corrections;
+- messaging and task comments;
+- document uploads and work submissions;
+- AI task suggestions.
+
+All of them will be built inside tenant databases, on top of Phase 10D/10E.

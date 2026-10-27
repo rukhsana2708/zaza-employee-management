@@ -5,7 +5,9 @@ today, per-tenant tomorrow) activity database, with ``ZAZA_CONTROL_`` names
 that mirror the existing ``ZAZA_DB_`` ones:
 
 ``ZAZA_CONTROL_DATABASE_URL`` or ``ZAZA_CONTROL_DB_HOST`` / ``_PORT`` /
-``_NAME`` / ``_USER`` / ``_PASSWORD_FILE`` / ``_SSLMODE`` / ``_SCHEMA``.
+``_NAME`` / ``_USER`` / ``_PASSWORD_FILE`` / ``_SSLMODE`` / ``_SCHEMA``, or on
+Cloud Run ``ZAZA_CONTROL_CLOUDSQL_INSTANCE_CONNECTION_NAME`` (the Cloud SQL
+Unix socket, Phase 10D) instead of a host.
 
 A database name is required explicitly (no default), and it may not be a
 tenant database name or the activity database configured in ``ZAZA_DB_NAME``.
@@ -20,7 +22,8 @@ from . import domain
 
 _PREFIX = "ZAZA_CONTROL_"
 _KEYS = ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_PASSWORD_FILE",
-         "DB_SSLMODE", "DB_SCHEMA", "DB_CONNECT_TIMEOUT", "DB_STATEMENT_TIMEOUT_MS")
+         "DB_SSLMODE", "DB_SCHEMA", "DB_CONNECT_TIMEOUT", "DB_STATEMENT_TIMEOUT_MS",
+         "CLOUDSQL_INSTANCE_CONNECTION_NAME")
 
 
 def control_database_settings_from_env(env: dict | None = None) -> DatabaseSettings:

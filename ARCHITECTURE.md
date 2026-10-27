@@ -14,6 +14,20 @@
 >   the **tenant database template**, one database per customer.
 > - Phase 10C is architecture and local foundation only: Cloud SQL has not
 >   been created, and no customer data is in Google Cloud.
+> - **Phase 10D (2026-10-28):** production connectivity, code and
+>   configuration only. It covers:
+>   - Cloud Run reaching **one Cloud SQL for PostgreSQL 16 instance**
+>     (`zaza_control` plus one `zaza_t_…` database per customer) through the
+>     Cloud SQL Unix socket;
+>   - passwords from Secret Manager files;
+>   - a bounded, lazy tenant connection manager and a connection budget
+>     across instances;
+>   - explicit `tenant-migrate`, a provisioning boundary and
+>     `check-config --cloud-run`;
+>   - a Terraform definition that has **never been applied**.
+>
+>   See [docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md).
+>   The real resources are created in Phase 10E.
 >
 > The single-VPS layout described below (diagram, §9) is the earlier,
 > now-abandoned deployment target, kept for history. See
