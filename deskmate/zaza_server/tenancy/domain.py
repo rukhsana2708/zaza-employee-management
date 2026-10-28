@@ -237,8 +237,27 @@ C0001_AUDIT_ACTIONS = frozenset({
 C0002_AUDIT_ACTIONS = frozenset({
     "user.password_set", "user.sessions_revoked", "device_route.create", "device_route.revoke",
 })
-AUDIT_ACTIONS = C0001_AUDIT_ACTIONS | C0002_AUDIT_ACTIONS
-AUDIT_ENTITY_TYPES = frozenset({"organization", "user", "membership", "tenant_database", "device_route"})
+# Phase 10G-A (c0003): one-time device enrollment. Never the code, its hash
+# or a token in the details.
+C0003_AUDIT_ACTIONS = frozenset({
+    "enrollment.code_create", "enrollment.code_revoke", "enrollment.complete", "enrollment.fail",
+    "enrollment.reconcile",
+})
+AUDIT_ACTIONS = C0001_AUDIT_ACTIONS | C0002_AUDIT_ACTIONS | C0003_AUDIT_ACTIONS
+AUDIT_ENTITY_TYPES = frozenset({"organization", "user", "membership", "tenant_database", "device_route",
+                                "enrollment"})
+
+# The device/employee identifier grammar of the sync protocol
+# (deskmate.zaza.sync.protocol.Identifier) and of device_credential_routes.
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def identifier(value: object, what: str = "identifier") -> str:
+    """A device or employee id: 1-128 characters of ``A-Za-z0-9._:-``. No
+    spaces, control characters, slashes, quotes or anything else."""
+    if not isinstance(value, str) or not IDENTIFIER_RE.match(value):
+        raise TenancyError(f"{what} must be 1-128 characters of letters, digits, '.', '_', ':' or '-'")
+    return value
 ACTOR_TYPES = frozenset({"USER", "PLATFORM", "SYSTEM", "CLI"})
 _ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 

@@ -6,7 +6,8 @@ identity. Nothing here is reachable from the web service or an HTTP request.
 
     organization (ACTIVE, in the control plane)
       -> assign a server-generated tenant database name   (status PROVISIONING)
-      -> create that PostgreSQL database                   (DatabaseCreator)
+      -> create that PostgreSQL database (if absent)       (DatabaseCreator)
+      -> close it to PUBLIC, CONNECT for the runtime role  (every attempt)
       -> apply the tenant migrations                       (TenantMigrationRunner)
       -> verify the schema head
       -> grant the runtime role its table privileges       (DatabaseCreator)
@@ -48,6 +49,7 @@ def runtime_role_name(value: object) -> str:
 class DatabaseCreator(Protocol):
     def database_exists(self, database_name: str) -> bool: ...
     def create_database(self, database_name: str) -> None: ...
+    def restrict_access(self, database_name: str) -> None: ...
     def grant_runtime_access(self, database_name: str) -> None: ...
 
 
@@ -81,6 +83,15 @@ class PostgresDatabaseCreator:
         db = sql.Identifier(domain.tenant_database_name(database_name))
         with self._connect() as conn:
             conn.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8' TEMPLATE template0").format(db))
+
+    def restrict_access(self, database_name: str) -> None:
+        """Close the database to PUBLIC and open it to the runtime role only.
+        Idempotent: provisioning runs it on EVERY attempt, so a crash between
+        CREATE DATABASE and these grants is repaired by a retry."""
+        from psycopg import sql  # noqa: PLC0415
+
+        db = sql.Identifier(domain.tenant_database_name(database_name))
+        with self._connect() as conn:
             conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(db))
             if self.runtime_role:
                 conn.execute(sql.SQL("GRANT CONNECT, TEMPORARY ON DATABASE {} TO {}").format(
@@ -144,6 +155,7 @@ class TenantProvisioner:
         try:
             if not self.creator.database_exists(name):
                 self.creator.create_database(name)
+            self.creator.restrict_access(name)  # every attempt (idempotent)
             migrated = self.migrator.migrate(org_id)
             if not migrated.ok:
                 raise TenancyError(migrated.error or "tenant migration failed")

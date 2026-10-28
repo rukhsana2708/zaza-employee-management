@@ -18,6 +18,12 @@ JSON endpoints under ``/app`` (the browser UI comes later):
 - ``GET  /app/orgs/{slug}/employees``  needs ``employees.view_all``. Reads
   ONLY the resolved tenant's repository.
 
+- ``POST /api/v1/enroll``  (Phase 10G-A; only when the runtime has an
+  enrollment service) JSON ``{enrollment_code, device_id, device_name?}``,
+  at most 4 KiB, unknown fields refused. Returns the device token ONCE.
+  The organization, tenant and employee come from the server-side
+  enrollment record — never from the request.
+
 No route takes an organization id, a database name or a host. No SQL lives
 here (SaasAuthService, the control repository and the tenant repositories
 own it).
@@ -47,6 +53,8 @@ from .saas_auth import (
 )
 
 LOGIN_FAILED = "invalid email or password"
+ENROLL_PATH = "/api/v1/enroll"
+MAX_ENROLL_BYTES = 4096
 MAX_FORM_BYTES = 8 * 1024
 
 
@@ -89,6 +97,9 @@ def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — S
         if org_id is None:
             raise TenantAccessDenied()
         return runtime.resolver.for_member(ctx.user_id, org_id)
+
+    if getattr(runtime, "enrollment", None) is not None:
+        _install_enrollment(app, runtime.enrollment)
 
     @app.get(LOGIN_PATH)
     def login_form():  # noqa: ANN202
@@ -186,3 +197,41 @@ def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — S
             rows = repo.list_employees()
         return _json(200, {"employees": [{"employee_id": e.employee_id, "display_name": e.display_name,
                                           "is_active": e.is_active} for e in rows]})
+
+
+def _install_enrollment(app: FastAPI, enrollment) -> None:  # noqa: ANN001 — EnrollmentService
+    from pydantic import BaseModel, ConfigDict, Field, ValidationError  # noqa: PLC0415
+    from starlette.concurrency import run_in_threadpool  # noqa: PLC0415
+
+    from .enrollment import EnrollmentRateLimited, EnrollmentRefused  # noqa: PLC0415
+
+    class EnrollRequest(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        enrollment_code: str = Field(min_length=1, max_length=64)
+        device_id: str = Field(min_length=1, max_length=128)
+        device_name: str | None = Field(default=None, max_length=200)
+
+    @app.post(ENROLL_PATH)
+    async def enroll(request: Request):  # noqa: ANN202
+        declared = request.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > MAX_ENROLL_BYTES):
+            return _error(413, "request too large")
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_ENROLL_BYTES:
+                return _error(413, "request too large")
+        try:
+            data = EnrollRequest.model_validate_json(body)
+        except ValidationError:
+            return _error(422, "invalid enrollment request")
+        try:
+            enrolled = await run_in_threadpool(enrollment.enroll, data.enrollment_code, data.device_id,
+                                               data.device_name)
+        except EnrollmentRateLimited as exc:
+            return _error(429, "too many enrollment attempts; try again later", {"Retry-After": str(exc.retry_after)})
+        except EnrollmentRefused as exc:
+            return _error(exc.status_code, exc.error)
+        # the token is in this response ONLY: never logged, never stored
+        return _json(200, {"device_id": enrolled.device_id, "employee_id": enrolled.employee_id,
+                           "device_token": enrolled.token, "api_version": "v1"})

@@ -90,8 +90,9 @@ class SaasRuntime:
     shutdown. No module-level singletons."""
 
     def __init__(self, *, control, resolver: TenantResolver, manager: TenantRepositoryManager,  # noqa: ANN001
-                 routes, auth) -> None:  # noqa: ANN001 — PostgresDeviceRoutes-like, SaasAuthService
+                 routes, auth, enrollment=None) -> None:  # noqa: ANN001 — routes, SaasAuthService, EnrollmentService
         self.control = control
+        self.enrollment = enrollment
         self.resolver = resolver
         self.manager = manager
         self.routes = routes
@@ -113,9 +114,13 @@ class SaasRuntime:
         try:
             manager = TenantRepositoryManager(database_settings_from_env(env), tenant_pool_limits_from_env(env))
             manager.start_reaper()
-            return cls(control=control, resolver=TenantResolver(control), manager=manager,
-                       routes=PostgresDeviceRoutes(control),
-                       auth=SaasAuthService(PostgresAuthStore(control), saas_auth_settings_from_env(env)))
+            from .enrollment import EnrollmentService, PostgresEnrollmentStore, enrollment_settings_from_env  # noqa: PLC0415
+
+            resolver, store = TenantResolver(control), PostgresAuthStore(control)
+            return cls(control=control, resolver=resolver, manager=manager, routes=PostgresDeviceRoutes(control),
+                       auth=SaasAuthService(store, saas_auth_settings_from_env(env)),
+                       enrollment=EnrollmentService(PostgresEnrollmentStore(control), resolver, manager, store,
+                                                    enrollment_settings_from_env(env)))
         except BaseException:
             control.close()
             raise

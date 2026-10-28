@@ -418,6 +418,109 @@ def _saas_users(args: argparse.Namespace) -> int:
         control.close()
 
 
+_SAAS_OPERATOR_COMMANDS = ("saas-org-create", "saas-org-status", "tenant-provision", "saas-membership-add",
+                           "enrollment-code-create", "enrollment-code-list", "enrollment-code-revoke",
+                           "enrollment-reconcile")
+
+
+def _saas_operator(args: argparse.Namespace) -> int:  # noqa: C901
+    """Trusted operator path (the migration job's identity in production):
+    organizations, tenant provisioning, memberships, enrollment codes. No
+    tenant database name is ever taken from the operator."""
+    from .tenancy import domain  # noqa: PLC0415
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+    from .tenancy.connections import TenantRepositoryManager  # noqa: PLC0415
+    from .tenancy.control_repository import PostgresControlRepository  # noqa: PLC0415
+    from .tenancy.domain import TenancyError  # noqa: PLC0415
+    from .tenancy.enrollment import EnrollmentService, PostgresEnrollmentStore  # noqa: PLC0415
+    from .tenancy.resolver import TenantAccessDenied, TenantResolver  # noqa: PLC0415
+    from .tenancy.saas_auth import PostgresAuthStore  # noqa: PLC0415
+
+    control_settings = control_database_settings_from_env()
+    control = PostgresControlRepository(control_settings, actor_type="CLI", actor_id="saas-operator")
+    manager = None
+    try:
+        def org_by_slug(slug: str):  # noqa: ANN202
+            org_id = control.find_organization_id_by_slug(domain.normalize_slug(slug))
+            if org_id is None:
+                raise TenancyError("no organization with that slug")
+            return control.get_organization(org_id)
+
+        if args.command == "saas-org-create":
+            org = control.create_organization(args.slug, args.name, default_timezone=args.timezone)
+            print(f"Created organization {org.slug} ({org.organization_id}), ACTIVE, no tenant database yet.")
+        elif args.command == "saas-org-status":
+            org = org_by_slug(args.slug)
+            tdb = control.get_tenant_database(org.organization_id)
+            print(f"{org.slug} ({org.organization_id}): {org.status.value}; tenant database: "
+                  + (f"{tdb.database_name} {tdb.status.value} at {tdb.schema_revision or '(none)'}" if tdb
+                     else "not assigned"))
+        elif args.command == "tenant-provision":
+            from .tenancy.provisioning import PostgresDatabaseCreator, TenantProvisioner  # noqa: PLC0415
+            from .tenancy.tenant_migrations import TenantMigrationRunner  # noqa: PLC0415
+
+            org = org_by_slug(args.slug)
+            base = database_settings_from_env()
+            role = os.environ.get("ZAZA_TENANT_RUNTIME_ROLE") or "zaza_app"
+            runner = TenantMigrationRunner(control, base, control_database_name=control_settings.dbname)
+            result = TenantProvisioner(control, PostgresDatabaseCreator(base, runtime_role=role), runner).provision(
+                org.organization_id, args.region)
+            print(f"{org.slug}: {result.status.value if result.status else '-'} "
+                  f"{result.database_name or ''} {result.schema_revision or ''} {result.error or ''}".rstrip())
+            return 0 if result.ok else 1
+        elif args.command == "saas-membership-add":
+            user = control.find_user_by_email(args.email)
+            if user is None:
+                raise TenancyError("no SaaS user with that email (saas-user-create --no-password first)")
+            org = org_by_slug(args.slug)
+            m = control.add_membership(org.organization_id, user.user_id, args.role)
+            print(f"{user.email} is {m.role.value} of {org.slug}.")
+        else:
+            store = PostgresEnrollmentStore(control)
+            resolver = TenantResolver(control)
+            if args.command == "enrollment-code-create":
+                if not 1 <= args.hours <= 720:
+                    raise TenancyError("--hours must be 1..720")
+                org = org_by_slug(args.slug)
+                employee_id = domain.identifier(args.employee_id, "employee id")
+                manager = TenantRepositoryManager(database_settings_from_env())
+                try:
+                    with manager.repository(resolver.for_job(org.organization_id)) as repo:
+                        employee = repo.get_employee(employee_id)
+                except TenantAccessDenied:
+                    raise TenancyError("the organization is not ACTIVE or its tenant database is not READY") from None
+                if employee is None or not employee.is_active:
+                    raise TenancyError("no ACTIVE employee with that id in this organization")
+                info, code = store.create_code(org.organization_id, employee_id, ttl_hours=args.hours,
+                                               device_display_name=args.device_name,
+                                               allow_existing_device=args.reenroll)
+                print(f"Enrollment {info.enrollment_id} for {employee_id} in {org.slug}, expires "
+                      f"{info.expires_at.isoformat()}.")
+                print("ENROLLMENT CODE (shown once, never stored, never shown again):")
+                print(f"  {code}")
+            elif args.command == "enrollment-code-list":
+                org_id = org_by_slug(args.slug).organization_id if args.slug else None
+                for c in store.list_codes(org_id):
+                    print(f"{c.enrollment_id}  org={c.organization_id}  employee={c.employee_id:<20} {c.status:<9} "
+                          f"expires={c.expires_at.isoformat()}  claimed={c.claimed_at or '-'}  "
+                          f"completed={c.completed_at or '-'}  device={c.device_id or '-'}  {c.failure_reason or ''}")
+            elif args.command == "enrollment-code-revoke":
+                print("revoked" if store.revoke_code(args.enrollment_id) else "not revoked (not an unused code)")
+            elif args.command == "enrollment-reconcile":
+                manager = TenantRepositoryManager(database_settings_from_env())
+                r = EnrollmentService(store, resolver, manager, PostgresAuthStore(control)).reconcile()
+                print(f"expired {r.expired_codes} code(s); interrupted enrollments {r.interrupted}; tokens revoked "
+                      f"{r.tokens_revoked}; tenant unreachable {r.tenant_unreachable}")
+        return 0
+    except (TenancyError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if manager is not None:
+            manager.close()
+        control.close()
+
+
 def _serve_saas(args: argparse.Namespace, backend: str) -> int:
     """``serve`` in SaaS mode: the multi-tenant app (control plane + routed
     tenant databases). Never the legacy dashboard; never migrations."""
@@ -604,6 +707,32 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=f"(SaaS) {helptext}")
         p.add_argument("--email", required=True)
     sub.add_parser("saas-auth-cleanup", help="(SaaS) delete ended sessions and old login counters")
+    oc = sub.add_parser("saas-org-create", help="(SaaS) create an organization (no tenant database yet)")
+    oc.add_argument("--slug", required=True)
+    oc.add_argument("--name", required=True)
+    oc.add_argument("--timezone", default="UTC")
+    for name in ("saas-org-status", "tenant-provision"):
+        p = sub.add_parser(name, help="(SaaS) organization + tenant database status" if name == "saas-org-status"
+                           else "(SaaS) create/migrate/secure the organization's tenant database -> READY")
+        p.add_argument("--slug", required=True)
+        if name == "tenant-provision":
+            p.add_argument("--region", default="asia-south1")
+    ma = sub.add_parser("saas-membership-add", help="(SaaS) give a SaaS user a role in an organization")
+    ma.add_argument("--email", required=True)
+    ma.add_argument("--slug", required=True)
+    ma.add_argument("--role", required=True, choices=("OWNER", "ADMIN", "MANAGER", "VIEWER"))
+    ec = sub.add_parser("enrollment-code-create", help="(SaaS) one-time device enrollment code; printed ONCE")
+    ec.add_argument("--slug", required=True)
+    ec.add_argument("--employee-id", required=True)
+    ec.add_argument("--device-name", default=None)
+    ec.add_argument("--hours", type=int, default=72, help="lifetime in hours (1..720)")
+    ec.add_argument("--reenroll", action="store_true",
+                    help="allow an ADDITIONAL token for an existing ACTIVE device of this employee")
+    el = sub.add_parser("enrollment-code-list", help="(SaaS) enrollment codes (metadata only, never the code)")
+    el.add_argument("--slug", default=None)
+    er = sub.add_parser("enrollment-code-revoke", help="(SaaS) revoke an unused enrollment code")
+    er.add_argument("--enrollment-id", required=True)
+    sub.add_parser("enrollment-reconcile", help="(SaaS) expire old codes; finish interrupted enrollments")
 
     args = parser.parse_args(argv)
     try:
@@ -632,6 +761,8 @@ def main(argv: list[str] | None = None) -> int:
             return _tenant_migrate(args.organization, continue_on_error=args.continue_on_error)
         if args.command in _SAAS_USER_COMMANDS:
             return _saas_users(args)
+        if args.command in _SAAS_OPERATOR_COMMANDS:
+            return _saas_operator(args)
         if args.command == "serve" and tenancy_mode_from_env() == "saas":
             return _serve_saas(args, args.backend or backend_from_env())
         backend = args.backend or backend_from_env()

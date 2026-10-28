@@ -28,7 +28,7 @@ from psycopg import sql  # noqa: E402
 PW = "pg test passphrase 9"  # test-only value
 CONTROL_TABLES = {"organizations", "users", "organization_memberships", "tenant_databases", "control_audit_logs",
                   "zaza_control_version", "user_password_credentials", "user_sessions", "login_attempt_counters",
-                  "device_credential_routes"}
+                  "device_credential_routes", "device_enrollment_codes"}
 FORBIDDEN = {"employees", "devices", "device_tokens", "activity_periods", "work_sessions", "idle_periods",
              "application_usage_daily", "daily_summaries", "weekly_summaries", "monthly_summaries", "audit_logs",
              "manager_users", "manager_sessions", "tasks", "messages", "attachments", "alembic_version"}
@@ -139,7 +139,7 @@ def test_c0002_head_and_control_data_boundary(saas):
     from deskmate.zaza_server.tenancy.control import migrate as control_migrate
 
     with psycopg.connect(**saas.control_settings.connect_kwargs()) as conn:
-        assert control_migrate.schema_status(conn).current == "c0002_saas_auth_routing"
+        assert control_migrate.schema_status(conn).current == control_migrate.head_revision()
     tables = {r[0] for r in _exec(saas.control_settings,
                                   "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")}
     assert tables == CONTROL_TABLES and not tables & FORBIDDEN

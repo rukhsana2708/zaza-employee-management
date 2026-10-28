@@ -657,6 +657,29 @@ deployed):
 - **There is no self-signup.** Identities are created only through
   operator commands, with hidden password prompts.
 
+**Phase 10G-A: one-time device enrollment** (code only; see
+[docs/zaza/ENROLLMENT.md](docs/zaza/ENROLLMENT.md)):
+
+- **Codes:** 160 random bits, shown once. The control database stores only
+  a domain-separated hash. Codes expire, are single-use and are revocable,
+  and a database trigger forbids reactivation. Listings never show the code
+  or its hash.
+- **Server-side authority:** the code's record decides the organization and
+  the employee. The tenant must be READY, the organization ACTIVE and the
+  employee active. No organization, tenant, database or employee field from
+  the client is accepted.
+- **A token becomes routable only when the enrollment completes:** the
+  route and the COMPLETED state are written in one control transaction.
+  Interruptions leave at most an unroutable token, which is revoked by
+  compensation or by `enrollment-reconcile`. Raw tokens and codes are never
+  stored or logged.
+- **Concurrent use** of one code yields exactly one credential.
+- **Rate limits:** shared per-code and global enrollment limits; no client
+  IPs.
+- **Edge:** the login and the enrollment endpoint must sit behind an
+  external load balancer with Cloud Armor before public traffic, and the
+  run.app URL must not stay a bypass.
+
 ## 7. Retention
 
 Raw per-tick agent events are retained only long enough to build the

@@ -143,6 +143,12 @@ class TenantResolver:
                 raise TenantAccessDenied("invalid credentials")
         return self._context(routed, ContextKind.DEVICE)
 
+    def for_enrollment(self, organization_id: object) -> TenantContext:
+        """The DEVICE context for a device enrollment. ``organization_id``
+        comes from the server-side enrollment record (claimed by its code),
+        never from the request. ACTIVE organization, READY tenant."""
+        return self._context(organization_id, ContextKind.DEVICE)
+
     # ─── per-tenant jobs ──────────────────────────────────────────────────
     def for_job(self, organization_id: object) -> TenantContext:
         return self._context(organization_id, ContextKind.JOB)

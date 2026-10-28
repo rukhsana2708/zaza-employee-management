@@ -376,6 +376,16 @@ class PostgresRepository:
                             old={"status": "ACTIVE"}, new={"status": "REVOKED", "device_id": device_id})
         return len(rows)
 
+    def revoke_token(self, token_id: str) -> bool:
+        with self._conn() as conn, conn.transaction():
+            row = conn.execute(
+                "UPDATE device_tokens SET status = 'REVOKED', revoked_at = now() "
+                "WHERE token_id = %s::uuid AND status = 'ACTIVE' RETURNING device_id", (token_id,)).fetchone()
+            if row:
+                self._audit(conn, "device_token.revoke", "device_token", token_id,
+                            old={"status": "ACTIVE"}, new={"status": "REVOKED", "device_id": row["device_id"]})
+        return row is not None
+
     def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
         stale = f"now() - interval '{_LAST_SEEN_RESOLUTION}'"
         with self._conn() as conn, conn.transaction():

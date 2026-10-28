@@ -466,12 +466,15 @@ def test_tenant_migrations_are_unchanged_and_still_four():
 
 
 CONTROL_C0001_SHA256 = "41dab6c2b8ac6bb6f7791d3bf8b7ba3a4d2cc420b773f64421d6e77b3c477273"  # applied in production
+CONTROL_C0002_SHA256 = "4ba4804eba87305da252d7a47fc420635cdb65766918c39d1c8de5cef9a111a3"  # applied in production (10F-C)
 
 
 def test_c0001_is_unchanged_and_revision_ids_fit_the_version_column():
     versions = TENANCY / "control" / "migrations" / "versions"
     data = (versions / "c0001_control_plane.py").read_bytes().replace(b"\r\n", b"\n")
     assert hashlib.sha256(data).hexdigest() == CONTROL_C0001_SHA256, "c0001 was modified"
+    data2 = (versions / "c0002_saas_auth_routing.py").read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(data2).hexdigest() == CONTROL_C0002_SHA256, "c0002 was modified"
     for path in versions.glob("c*.py"):
         rev = re.search(r'^revision = "([^"]+)"', path.read_text(encoding="utf-8"), re.MULTILINE).group(1)
         assert len(rev) <= 32, f"{rev}: alembic version_num is VARCHAR(32)"
@@ -483,7 +486,7 @@ def test_control_and_tenant_chains_are_separate():
 
     assert control.MIGRATIONS_DIR != tenant.MIGRATIONS_DIR
     assert control.VERSION_TABLE == "zaza_control_version" != tenant.VERSION_TABLE
-    assert control.head_revision() == "c0002_saas_auth_routing"
+    assert control.head_revision() == "c0003_device_enrollment"
     assert tenant.head_revision() == "0004_manager_dashboard_auth"
     control_revs = {p.stem for p in (control.MIGRATIONS_DIR / "versions").glob("*.py")}
     assert all(r.startswith("c") for r in control_revs)
@@ -503,7 +506,12 @@ def test_control_schema_constraints_match_the_domain():
     c2 = (TENANCY / "control" / "migrations" / "versions" / "c0002_saas_auth_routing.py").read_text(encoding="utf-8")
     exec(compile(re.search(r"^NEW_ACTIONS = \(.*?\)\n", c2, re.MULTILINE | re.DOTALL).group(0), "c0002", "exec"), ns)
     assert set(ns["NEW_ACTIONS"]) == domain.C0002_AUDIT_ACTIONS
-    assert domain.AUDIT_ACTIONS == domain.C0001_AUDIT_ACTIONS | domain.C0002_AUDIT_ACTIONS
+    c3 = (TENANCY / "control" / "migrations" / "versions" / "c0003_device_enrollment.py").read_text(encoding="utf-8")
+    ns3: dict = {}
+    exec(compile(re.search(r"^NEW_ACTIONS = \(.*?\)\n", c3, re.MULTILINE | re.DOTALL).group(0), "c0003", "exec"), ns3)
+    assert set(ns3["NEW_ACTIONS"]) == domain.C0003_AUDIT_ACTIONS
+    assert domain.AUDIT_ACTIONS == (domain.C0001_AUDIT_ACTIONS | domain.C0002_AUDIT_ACTIONS
+                                    | domain.C0003_AUDIT_ACTIONS)
     assert "'OWNER', 'ADMIN', 'MANAGER', 'VIEWER'" in text and "'EMPLOYEE'" not in text
     columns = re.findall(r"^\s{8}([a-z_]+)\s+(?:uuid|text|jsonb|timestamptz)\b", text, re.MULTILINE)
     assert columns and not [c for c in columns if re.search(r"password|secret|token|key|credential|host|url", c)]

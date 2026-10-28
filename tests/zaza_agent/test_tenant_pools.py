@@ -579,6 +579,7 @@ class FakeCreator:
     def __init__(self) -> None:
         self.databases: set[str] = set()
         self.granted: list[str] = []
+        self.restricted: list[str] = []
         self.fail_create = False
 
     def database_exists(self, name: str) -> bool:
@@ -589,6 +590,9 @@ class FakeCreator:
         if self.fail_create:
             raise RuntimeError("permission denied to create database")
         self.databases.add(name)
+
+    def restrict_access(self, name: str) -> None:
+        self.restricted.append(name)
 
     def grant_runtime_access(self, name: str) -> None:
         self.granted.append(name)

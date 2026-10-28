@@ -42,11 +42,14 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def issue_token(repo: CentralRepository, device_id: str) -> IssuedToken:
+def issue_token(repo: CentralRepository, device_id: str, *, token_id: str | None = None) -> IssuedToken:
+    """``token_id``: chosen in advance by enrollment (recorded in the control
+    plane BEFORE the tenant write, so an interrupted enrollment can find and
+    revoke exactly this token). Default: a new random id."""
     if repo.get_device(device_id) is None:
         raise KeyError(device_id)
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
-    token_id = str(uuid.uuid4())
+    token_id = str(uuid.UUID(token_id)) if token_id else str(uuid.uuid4())
     repo.add_token(token_id, device_id, hash_token(token))
     return IssuedToken(token_id=token_id, token=token)
 

@@ -1,8 +1,46 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10F-C — production SaaS auth schema, image and privileges)
+**Last updated:** 2026-10-28 (Phase 10G-A — tenant provisioning and device enrollment foundation)
 
-## Current phase: Phase 10F-C — production SaaS auth schema and privileges (pending your review)
+## Current phase: Phase 10G-A — tenant provisioning and one-time device enrollment (pending your review)
+
+Phase 10F-C is **approved**. 10G-A is **code and tests only**:
+- production is unchanged: control schema c0002, the same image and job,
+  no web service;
+- 0 organizations, users, tenants, enrollment codes and routes.
+
+Design: [docs/zaza/ENROLLMENT.md](docs/zaza/ENROLLMENT.md).
+
+- **Control migration `c0003_device_enrollment`** (additive; c0001 and
+  c0002 are pinned by hash):
+  - `device_enrollment_codes` holds only a domain-separated hash of each
+    code, never the code. A database trigger forbids reactivating a used,
+    revoked, expired or failed code;
+  - enrollment rate-limit buckets;
+  - `enrollment.*` audit actions.
+- **One-time enrollment codes:** 160 random bits (`ZZE-XXXX-…`), shown once,
+  expiring, single-use and revocable. The code's server-side record
+  decides the organization and employee; nothing the client sends does.
+- **The enrollment saga** (claim → tenant device + token → completion):
+  - the route is inserted in the same control transaction that marks the
+    code COMPLETED, so an interruption leaves at most an unroutable token;
+  - compensation revokes that token immediately, and `enrollment-reconcile`
+    finishes anything left;
+  - concurrent use of one code yields exactly one credential.
+- **`POST /api/v1/enroll`** (SaaS app only; not deployed): strict JSON, 4 KiB
+  limit, shared per-code and global rate limits, token returned once.
+- **Provisioning** is now repairable on retry: a separate idempotent
+  `restrict_access` step runs on every attempt.
+- **Operator commands:**
+  - organizations, provisioning, membership: `saas-org-create`,
+    `saas-org-status`, `tenant-provision`, `saas-membership-add`;
+  - enrollment codes: `enrollment-code-create`, `-list`, `-revoke`;
+  - `enrollment-reconcile`.
+- **Before public traffic:** an external Application Load Balancer and
+  Cloud Armor in front of `/app/login` and `/api/v1/enroll`, with Cloud Run
+  ingress limited to internal and cloud load balancing (ENROLLMENT.md §8).
+
+## Earlier: Phase 10F-C — production SaaS auth schema and privileges (approved)
 
 Phase 10F-B is **approved**. In production, 10F-C did the following:
 - **Image:** built the reviewed commit `1f63fb2` on Cloud Build as

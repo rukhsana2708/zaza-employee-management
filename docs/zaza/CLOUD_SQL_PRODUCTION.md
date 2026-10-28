@@ -10,6 +10,7 @@
 | 10E-C | build identity `zaza-build` and the private build-source bucket; production image `zaza-server@sha256:318a9d19d385…` (commit `7b7c223`, deployed by digest); migration job `zaza-migrate`; control schema migrated to `c0001_control_plane`; control runtime grants applied; legacy Cloud Build builder role removed |
 | 10F-A | **code only**: Cloud Run HTTP security foundation (§10a); no infrastructure change |
 | 10F-B | **code only**: SaaS authentication + credential-derived tenant routing (control migration `c0002_saas_auth_routing`) |
+| 10G-A | **code only**: tenant provisioning commands + one-time device enrollment (control migration `c0003_device_enrollment` written, **not applied**); see [ENROLLMENT.md](ENROLLMENT.md) |
 | 10F-C | image `sha256:b7ffd93a82c1…` (commit `1f63fb2`) built as `zaza-build` and set on `zaza-migrate`; **production control schema migrated to c0002**; runtime grants applied and verified; auth/routing tables empty; no web service, user, tenant or route |
 
 **Not created:** no Cloud Run web service, no public application URL, no
