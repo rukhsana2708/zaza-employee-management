@@ -2,10 +2,14 @@
 
 > **Status:**
 > - Phase 10F-B wrote the code.
-> - **Phase 10F-C applied c0002 in production.** The control schema is
->   `c0002_saas_auth_routing`, the runtime grants in §9 are applied and
->   verified, and the migration job runs image `sha256:b7ffd93a82c1…` (commit
->   `1f63fb2`).
+> - **Phase 10F-C applied c0002 in production.** The runtime grants in §9
+>   are applied and verified.
+> - **Phase 10G-B then applied c0003** (device enrollment; see
+>   [ENROLLMENT.md](ENROLLMENT.md)). The production control schema is now
+>   `c0003_device_enrollment`, and the migration job runs image
+>   `sha256:b7ad3a892306…` (commit `778488c`). c0003 added INSERT on
+>   `device_credential_routes` for the runtime, used only when an
+>   enrollment completes (ENROLLMENT.md §7).
 > - **No production SaaS user, organization, membership, tenant, device
 >   route or token exists.** All four auth/routing tables are empty.
 > - The Cloud Run web service is NOT deployed.

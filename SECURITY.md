@@ -657,7 +657,9 @@ deployed):
 - **There is no self-signup.** Identities are created only through
   operator commands, with hidden password prompts.
 
-**Phase 10G-A: one-time device enrollment** (code only; see
+**Phase 10G-A: one-time device enrollment** (control schema c0003 and its
+runtime grants deployed to production in Phase 10G-B; the enrollment tables
+are empty, and there is no web service yet; see
 [docs/zaza/ENROLLMENT.md](docs/zaza/ENROLLMENT.md)):
 
 - **Codes:** 160 random bits, shown once. The control database stores only

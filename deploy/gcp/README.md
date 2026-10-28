@@ -10,13 +10,15 @@ for **Google Cloud Run**, and holds its infrastructure definition
 | Exists | Does NOT exist yet |
 |---|---|
 | Cloud SQL `zaza-prod-pg16` (PostgreSQL 16) with the `zaza_control` database | the `zaza-server` web service: it has **NOT been deployed**, and no public application URL exists |
-| control schema **`c0002_saas_auth_routing`** (10F-C), runtime grants applied | any organization, SaaS user, membership or tenant (`zaza_t_*`) database |
+| control schema **`c0003_device_enrollment`** (10G-B), runtime grants applied; the enrollment tables are empty | any organization, SaaS user, membership or tenant (`zaza_t_*`) database |
 | Artifact Registry `zaza` with the production image (by digest, see "Production build and migration job") | any enrollment code, device route or issued device token |
 | the `zaza-migrate` Cloud Run **job** (explicit migrations / operator commands; no HTTP endpoint) | edge protection (load balancer + Cloud Armor), needed before public traffic |
 | service accounts `zaza-run`, `zaza-migrate`, `zaza-build`; three password secrets; database roles | employee or customer traffic |
 
-The code in this repository may be AHEAD of production. Phase 10G-A adds
-control migration `c0003_device_enrollment`, which is NOT applied yet. See
+Production runs the image of commit `778488c` (by digest, on the
+`zaza-migrate` job only), and its control schema is at the head,
+`c0003_device_enrollment`. The code in this repository may be AHEAD of
+production. See
 [docs/zaza/CLOUD_SQL_PRODUCTION.md](../../docs/zaza/CLOUD_SQL_PRODUCTION.md)
 (status table) and [docs/zaza/ENROLLMENT.md](../../docs/zaza/ENROLLMENT.md).
 
@@ -166,7 +168,7 @@ cannot (and should not) read.
 
 The image gets one immutable tag (the commit SHA). Deployments reference
 the **digest**. Current production image (migration job):
-`asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:b7ffd93a82c1ed61a5c3c9c8bb7487af03b7023f6d48953be21fcc13f665022f` (commit `1f63fb2`, Phase 10F-C).
+`asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:b7ad3a8923069c63a62cb6ee6839419c3c13fa7c540e7dcf6a480810537a3bc8` (commit `778488c`, Cloud Build `efe5ed6f-0a5e-4489-8f01-1cbc01779695`, Phase 10G-B).
 
 The **`zaza-migrate` job** runs explicit commands with the migrator identity:
 

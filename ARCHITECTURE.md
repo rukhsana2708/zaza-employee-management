@@ -37,8 +37,8 @@
 >   still single-database; credential-derived tenant routing is a later
 >   phase (CLOUD_SQL_PRODUCTION.md §10a).
 > - **Phase 10F-B:** SaaS authentication and credential-derived tenant
->   routing (code only; control migration c0002 not yet applied in
->   production):
+>   routing (control migration c0002, applied in production in 10F-C; the
+>   enrollment migration c0003 followed in 10G-B):
 >   - `create_saas_app(runtime)` routes device credentials through the
 >     control plane to their tenant, then authenticates inside that tenant;
 >   - SaaS users sign in to control-plane sessions and reach organizations

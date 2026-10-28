@@ -1,10 +1,16 @@
 # Tenant provisioning and one-time device enrollment (Phase 10G-A)
 
-> **Status: code and tests only.**
-> - Control migration `c0003_device_enrollment` is **not applied in
->   production**; production is at `c0002_saas_auth_routing`.
-> - No organization, SaaS user, tenant, enrollment code, device route or
->   token exists in production, and the web service is not deployed.
+> **Status:**
+> - Phase 10G-A (code, with the durable-reconciliation repair) is
+>   approved.
+> - **Phase 10G-B applied control migration `c0003_device_enrollment` in
+>   production**, with the §7 runtime grants. The migration job runs image
+>   `sha256:b7ad3a892306…` (commit `778488c`).
+> - The database-enforced status model was verified live, and
+>   `enrollment-reconcile` ran once (nothing to do).
+> - **The enrollment tables are empty.** No organization, SaaS user,
+>   tenant, enrollment code, device route or token exists in production.
+> - The web service is not deployed, and the edge (§8) doesn't exist yet.
 
 Code:
 - `deskmate/zaza_server/tenancy/enrollment.py`: codes, store, saga service;
@@ -224,9 +230,17 @@ alone still authenticates nothing. Tests use the same `employee-1` and
 `device-1` in tenants A and B: code A enrolls only in A, code B only in B,
 and each token syncs only in its own tenant.
 
-## 7. Production privileges (to apply with c0003, NOT applied)
+## 7. Production privileges (applied in Phase 10G-B)
 
-As `zaza_migrator`, the table owner, after `control-migrate` to c0003:
+These grants were applied as `zaza_migrator`, the table owner, after
+`control-migrate` to c0003. They were verified in production:
+- the runtime's exact statements are permitted (in rolled-back
+  transactions);
+- 20 forbidden operations are refused;
+- `zaza_control_app` has these table privileges and UPDATE on exactly
+  these 7 columns, and nothing more.
+
+The grants:
 
 ```sql
 GRANT SELECT ON device_enrollment_codes TO zaza_control_app;

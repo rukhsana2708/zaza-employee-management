@@ -1,13 +1,66 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10G-A — tenant provisioning and device enrollment foundation)
+**Last updated:** 2026-10-28 (Phase 10G-B — enrollment control schema deployed to production)
 
-## Current phase: Phase 10G-A — tenant provisioning and one-time device enrollment (pending your review)
+## Current phase: Phase 10G-B — production enrollment control schema (pending your review)
 
-Phase 10F-C is **approved**. 10G-A is **code and tests only**:
-- production is unchanged: control schema c0002, the same image and job,
-  no web service;
-- 0 organizations, users, tenants, enrollment codes and routes.
+Phase 10G-A and its durable-reconciliation repair (`778488c`) are
+**approved**. 10G-B deployed the reviewed foundation to production. It
+changed only the image, the migration job, the control schema and the
+grants.
+
+- **Image:** commit `778488cfd848bb6064231c787541b3454fbb417b`.
+  - Built on Cloud Build as `zaza-build` (build
+    `efe5ed6f-0a5e-4489-8f01-1cbc01779695`), using the private
+    build-source staging directory.
+  - Pushed as `asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:b7ad3a8923069c63a62cb6ee6839419c3c13fa7c540e7dcf6a480810537a3bc8`
+    (tag: the full Git SHA).
+  - Verified: linux/amd64, uid 10001, `/app` byte-identical to the commit
+    (89 files), container checks 26/26.
+  - It contains c0003 and the CLEANUP_PENDING repair, and no secrets,
+    state or capture dependencies.
+  - Before production was touched, the enrollment suites (47/47,
+    including all 13 PostgreSQL tests) ran against **the image's own
+    code** on a disposable PostgreSQL 16.
+- **Migration job:** `zaza-migrate` now runs that digest. The Terraform
+  plan was 0 add, 1 change (the job image only), 0 destroy, and the
+  follow-up plan shows no changes.
+- **Control schema:** `control-migrate` through the job,
+  `c0002_saas_auth_routing → c0003_device_enrollment`. Checked against the
+  live database:
+  - the 16 c0003 constraints, the indexes, and the identity and
+    terminal-state triggers, with the trigger body identical to the
+    reviewed migration;
+  - the audit and rate-limit vocabularies;
+  - the status model is enforced **by the database itself**: of all 42
+    transitions, exactly the 7 reviewed ones are allowed
+    (ISSUED→CLAIMED/REVOKED/EXPIRED, CLAIMED→COMPLETED/CLEANUP_PENDING/
+    FAILED, CLEANUP_PENDING→FAILED), and the trigger refuses the other 35.
+- **c0003 runtime grants applied** (as `zaza_migrator`, the owner).
+  `zaza_control_app` gets SELECT on `device_enrollment_codes`, UPDATE on
+  exactly the 7 saga columns, and INSERT on `device_credential_routes`.
+  - The runtime's exact SQL was proven permitted, rolled back.
+  - 20 forbidden operations were proven refused: creating or deleting
+    codes, deleting or updating routes, TRUNCATE/ALTER/DROP, CREATE
+    TABLE/DATABASE/ROLE, and authority columns such as `code_hash`,
+    `organization_id`, `employee_id`, `expires_at` and `revoked_at`.
+  - `zaza_migrator` keeps LOGIN and CREATEDB only.
+- **Operator path:** `enrollment-reconcile` ran once in production through
+  the job: everything 0, exit 0. `check-config --cloud-run --connect`
+  (with the web service's settings as execution-only overrides) reports
+  "Configuration OK", control schema c0003.
+- **Enrollment tables EMPTY; still nothing customer-facing:**
+  - 0 organizations, users, memberships, tenant directory rows,
+    `zaza_t_*` databases, enrollment codes, device routes, sessions and
+    credentials;
+  - no web service and no public URL;
+  - the load balancer and Cloud Armor (ENROLLMENT.md §8) remain a later
+    deployment phase.
+
+## Earlier: Phase 10G-A — tenant provisioning and one-time device enrollment (approved)
+
+Phase 10F-C is **approved**. 10G-A was **code and tests only**; production
+was deployed in 10G-B (above).
 
 Design: [docs/zaza/ENROLLMENT.md](docs/zaza/ENROLLMENT.md).
 
