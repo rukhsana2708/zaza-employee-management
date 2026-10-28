@@ -607,6 +607,30 @@ deployed):
   - a failing tenant cannot affect another tenant's pool.
 - **Public health** reveals no database, tenant or Cloud SQL detail.
 
+**Phase 10F-A: Cloud Run HTTP trust model** (code only; no web service is
+deployed):
+
+- `ZAZA_HTTP_DEPLOYMENT_MODE` is explicit (`loopback-proxy` default,
+  `local`, `cloud-run`) and never inferred from a request.
+- **In `cloud-run` mode:**
+  - the external scheme is https by deployment;
+  - every forwarded header (`X-Forwarded-For/Proto/Host`, `Forwarded`) is
+    ignored, so clients cannot choose the scheme, host or address;
+  - the client address is "unverified" and no security decision uses it.
+    IP-based controls belong to a future load balancer and Cloud Armor
+    layer.
+- **Host** is validated against `ZAZA_PUBLIC_HOST` (400 otherwise). Cloud
+  Run mode will not start without it, or without Secure cookies.
+- **Same-origin** has one rule, against the external origin: exactly one
+  Origin, equal to `https://<host>`. `http`, `null`, other hosts or ports,
+  paths and multiple values are refused. CSRF and login double-submit
+  tokens are unchanged.
+- **The legacy manager dashboard is never served in Cloud Run mode.** Its
+  per-database accounts are not the SaaS identity model.
+- **The in-memory login limiter is per process**, not global on Cloud Run.
+  The SaaS login must use shared rate-limit state or an edge control.
+- **The Windows loopback-proxy behaviour is unchanged.**
+
 ## 7. Retention
 
 Raw per-tick agent events are retained only long enough to build the

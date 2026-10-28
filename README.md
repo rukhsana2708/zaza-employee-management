@@ -115,7 +115,7 @@ deskmate/zaza_server/ # central sync API (FastAPI) + repositories: in-memory,
                       # tenant pools / tenant-migrate / provisioning (Phase 10D);
                       # cloudsql.py = Cloud SQL socket settings (Phase 10D)
 deploy/gcp/           # Cloud Run image (Phase 10B); terraform/ = infrastructure
-                      # definition, never applied (Phase 10D)
+                      # definition (Phase 10D), applied in 10E
 deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
                      # project currently runs; see deskmate/zaza/README
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md

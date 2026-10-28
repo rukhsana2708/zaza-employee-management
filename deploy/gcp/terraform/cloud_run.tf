@@ -8,7 +8,16 @@
 # The web service NEVER migrates: its entrypoint only runs `serve`. Schema
 # changes run as the separate job below, with the migrator identity.
 
+# Project number for the service's deterministic run.app host name (read-only).
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
 locals {
+  # Host names the web service answers to (Host-header validation). Default:
+  # https://<service>-<project number>.<region>.run.app
+  public_host = var.public_host != "" ? var.public_host : "${var.service_name}-${data.google_project.this.number}.${var.region}.run.app"
+
   deploy_service = var.deploy_service ? 1 : 0
   deploy_job     = var.deploy_migration_job ? 1 : 0
 
@@ -33,7 +42,8 @@ locals {
     ZAZA_CLOUD_RUN_MAX_INSTANCES  = tostring(var.max_instances)
     ZAZA_DB_CONNECTION_BUDGET     = tostring(var.db_connection_budget)
     ZAZA_DASHBOARD_COOKIE_SECURE  = "true"
-    ZAZA_PUBLIC_HOST              = var.public_host
+    ZAZA_HTTP_DEPLOYMENT_MODE     = "cloud-run"
+    ZAZA_PUBLIC_HOST              = local.public_host
   })
 
   job_env = merge(local.common_env, {

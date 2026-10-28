@@ -1,10 +1,46 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10E-C — secure build, migration job, control schema)
+**Last updated:** 2026-10-28 (Phase 10F-A — Cloud Run web security foundation)
 
-## Current phase: Phase 10E-C — secure build pipeline, production image, migration job, control schema (pending your review)
+## Current phase: Phase 10F-A — Cloud Run HTTP security foundation (pending your review)
 
-Phases 10D, 10E-A and 10E-B are **approved**.
+Phases 10D, 10E-A, 10E-B and 10E-C are **approved**. 10F-A is **code only**.
+The web service is NOT deployed (`deploy_service = false`); there is no
+public URL, no tenant and no employee traffic. The one live change was
+deleting the accidental `zaza-employee-monitor_cloudbuild` bucket from 10E-C.
+
+**Summary:**
+- **Explicit `ZAZA_HTTP_DEPLOYMENT_MODE`:**
+  - `loopback-proxy` (default; Windows/Caddy, unchanged);
+  - `local` (no forwarded headers trusted);
+  - `cloud-run`.
+- **Cloud Run mode:**
+  - the external scheme is https by deployment;
+  - every `X-Forwarded-*` / `Forwarded` header is ignored;
+  - the client address is "unverified" and used for nothing
+    security-relevant;
+  - Host is validated against `ZAZA_PUBLIC_HOST` (Terraform: the run.app
+    host); `serve` refuses Cloud Run mode without it or without Secure
+    cookies.
+- **One external-origin abstraction** (`http_security.external_request` /
+  `same_origin`), used by the dashboard login and forms. CSRF tokens are
+  unchanged.
+- **The legacy manager dashboard is never mounted in Cloud Run mode**
+  (explicit `dashboard_policy`); the SaaS auth phase replaces it.
+- **Login rate limiting:** `RateLimiter` boundary; the in-memory limiter is
+  documented as per process; the SaaS login needs shared state.
+- **`check-config --cloud-run`** now requires the cloud-run HTTP mode, the
+  public host (missing = deployment blocker) and the disabled dashboard.
+- **Architecture guard:** the sync API is still single-database (one
+  repository); tests forbid any client-supplied organization, tenant,
+  database or slug routing. Tenant routing will be credential-derived:
+  device credential → TenantResolver → TenantContext →
+  TenantRepositoryManager.
+
+**Next:** SaaS authentication and credential-derived tenant routing for the
+sync API, before `deploy_service = true`.
+
+## Earlier: Phase 10E-C — secure build pipeline, production image, migration job, control schema (approved)
 
 **Phase 10E-C (2026-10-28): secure build, migration job, control schema:**
 - **Build identity `zaza-build`** (Terraform `build.tf`):
@@ -80,7 +116,7 @@ the project.
 ## Earlier: Phase 10D — production Cloud SQL and tenant connection foundation (approved)
 
 Phases 10A, 10B and 10C are **approved**. Phase 10D prepares the code and
-reproducible configuration for Cloud Run + Cloud SQL. **Nothing was created
+reproducible configuration for Cloud Run + Cloud SQL. **In 10D, nothing was created
 in Google Cloud:**
 - no Cloud SQL, no Cloud Run, no Artifact Registry;
 - no secrets, no service accounts, no keys;
@@ -138,7 +174,7 @@ Design: [docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md).
     PostgreSQL 16 with backups (14), PITR (7 days) and deletion protection,
     connector-only access, `zaza_control`, and the Cloud Run service and
     migration job (gated off);
-  - validated offline, **never applied**; no state committed.
+  - validated offline in 10D (applied later, in 10E); no state committed.
 - **Local proof** (disposable PostgreSQL 16, WSL Docker): control + tenants
   A/B provisioned by the real provisioner, with a real runtime role (no
   CREATEDB/CREATEROLE) working through the real manager:

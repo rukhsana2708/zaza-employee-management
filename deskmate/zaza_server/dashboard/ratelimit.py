@@ -15,6 +15,13 @@ so a burst of parallel requests can't get past the limit together; a
 successful sign-in clears both counts. State is bounded: entries expire with the window and the
 total number of tracked keys is capped (oldest dropped first). Passwords
 are never stored or logged here.
+
+Scope (Phase 10F-A): this limiter is per PROCESS. It is effective for the
+legacy single-server deployment (one process behind Caddy). It is NOT a
+global limit across Cloud Run instances, and the legacy manager login is
+not served on Cloud Run at all. The future SaaS login must use a limiter
+with shared state (a database- or edge-backed implementation of
+:class:`RateLimiter`) or an edge control such as Cloud Armor.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -33,6 +41,19 @@ class LoginLimits:
     max_failures_per_username: int = 20
     window_seconds: int = 900
     max_tracked_keys: int = 10_000
+
+
+class RateLimiter(Protocol):
+    """The boundary a login route depends on. ``client`` is an opaque key
+    from ``http_security.external_request(...).client`` (the constant
+    "unverified" where the platform hides the client), ``username`` the
+    submitted name. Implementations: :class:`LoginRateLimiter` (in memory,
+    per process); a shared-state implementation for the SaaS login later."""
+
+    def acquire(self, client: str, username: str) -> tuple[int | None, bool]: ...
+    def retry_after(self, client: str, username: str) -> int | None: ...
+    def failure(self, client: str, username: str) -> bool: ...
+    def success(self, client: str, username: str) -> None: ...
 
 
 def _username_key(username: str) -> str:

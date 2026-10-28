@@ -4,7 +4,8 @@ ZaZa Employee Monitor is becoming a commercial multi-tenant SaaS, hosted on
 Google Cloud (project `zaza-employee-monitor`, region `asia-south1`).
 
 **Status:** this phase is the **architecture and local foundation only**.
-- No Google Cloud resource exists, and Cloud SQL has not been created.
+- (At the time of 10C, no Google Cloud resource existed. Since 10E, the core
+  infrastructure and the control database exist; see CLOUD_SQL_PRODUCTION.md.)
 - No customer data is in Google Cloud.
 - The running sync API and dashboard still serve one organization per
   database. The tenancy code is not wired into request handling yet.
@@ -16,8 +17,8 @@ Code is in `deskmate/zaza_server/tenancy/`, tests in
 §12, §16): Cloud SQL socket configuration, the bounded tenant connection
 manager, `tenant-migrate`, the provisioning boundary, `check-config
 --cloud-run` and the Terraform definition. Details are in
-[CLOUD_SQL_PRODUCTION.md](CLOUD_SQL_PRODUCTION.md). Still nothing is created
-in Google Cloud.
+[CLOUD_SQL_PRODUCTION.md](CLOUD_SQL_PRODUCTION.md). The infrastructure itself
+was created later, in 10E.
 
 ---
 

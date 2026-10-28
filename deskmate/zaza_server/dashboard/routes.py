@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from .. import http_security
 from ..attendance.labels import FLAG_NOTES, QUALITY_LABELS, STATUS_LABELS, STATUS_NOTES
 from .analysis import Analysis
 from .auth import LOGIN_FAILED, ManagerAuth, SessionContext
@@ -34,7 +35,7 @@ from .config import DashboardSettings
 from .models import STATUS_LABELS as CURRENT_LABELS
 from .models import CurrentStatus, Selection
 from .queries import DashboardRepository
-from .ratelimit import LoginRateLimiter
+from .ratelimit import LoginRateLimiter, RateLimiter
 from .security import COOKIE_NAME, COOKIE_PATH, LOGIN_COOKIE_NAME, SECURITY_HEADERS, new_token, same
 from .service import PERIODS, DashboardService, NotFound, parse_hours
 
@@ -114,7 +115,7 @@ def _templates():  # noqa: ANN202
 
 
 def mount_dashboard(app: FastAPI, repo: DashboardRepository, settings: DashboardSettings | None = None,
-                    clock: Callable[[], datetime] | None = None, limiter: LoginRateLimiter | None = None) -> None:
+                    clock: Callable[[], datetime] | None = None, limiter: RateLimiter | None = None) -> None:
     settings = settings or DashboardSettings()
     clock = clock or (lambda: datetime.now(UTC))
     service = DashboardService(repo, settings, clock)
@@ -136,7 +137,7 @@ def mount_dashboard(app: FastAPI, repo: DashboardRepository, settings: Dashboard
 
 
 def build_router(service: DashboardService, auth: ManagerAuth, settings: DashboardSettings, env,  # noqa: ANN001, C901
-                 limiter: LoginRateLimiter | None = None) -> APIRouter:
+                 limiter: RateLimiter | None = None) -> APIRouter:
     router = APIRouter(prefix="/manager")
     if limiter is None:
         limiter = LoginRateLimiter(settings.login_limits())
@@ -157,8 +158,9 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
         return response
 
     def same_origin(request: Request) -> bool:
-        origin = request.headers.get("origin")
-        return origin is None or origin == f"{request.url.scheme}://{request.url.netloc}"
+        # one rule for every deployment mode: the EXTERNAL origin
+        # (http_security.external_request), never a reconstruction here
+        return http_security.same_origin(request)
 
     async def form(request: Request) -> dict[str, list[str]]:
         if not request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
@@ -249,7 +251,9 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
             return login_page(request, "The login form expired. Please try again.", 403)
         # The real client address: set from X-Forwarded-For by the trusted
         # proxy middleware only, never from headers a client sends directly.
-        client = request.client.host if request.client else "unknown"
+        # Where the platform hides the client (Cloud Run), this is the fixed
+        # key "unverified": the per-username limit still applies.
+        client = http_security.external_request(request).client
         username = one(data, "username")
         # Counted before the password check (atomically), cleared on success.
         wait, reached = limiter.acquire(client, username)

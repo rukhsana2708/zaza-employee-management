@@ -211,43 +211,37 @@ identity, which a later phase designs. The build context policy and the
 tests refuse secret-looking files, but the rule is: secrets do not go into
 the repository or the image.
 
-## Requirements for the Cloud Run deployment phase
+## Cloud Run web service: status of the requirements
 
-These are not changed in Phase 10B; the current behaviour is fail-closed.
+Phase 10F-A resolved the HTTP items in code; the web service is still NOT
+deployed (`deploy_service = false`). See
+[docs/zaza/CLOUD_SQL_PRODUCTION.md](../../docs/zaza/CLOUD_SQL_PRODUCTION.md) §10a.
 
-1. **Trusted proxy.** `http_security.py` trusts `X-Forwarded-For` and
-   `X-Forwarded-Proto` only from **loopback** addresses, which was correct
-   for Caddy on the same server. Cloud Run's front end connects from a
-   non-loopback address, so these headers are ignored: requests look like
-   `http` from the front end's address. Non-loopback values in
-   `ZAZA_TRUSTED_PROXY_IPS` are refused, and that must not simply be
-   loosened. A Cloud Run mode needs its own design, for example:
-   - trust the front end only when running on Cloud Run;
-   - take the client address from Cloud Run's documented
-     `X-Forwarded-For` semantics;
-   - force the `https` scheme, because Cloud Run accepts only HTTPS at the
-     front.
-2. **Dashboard origin checks.** The dashboard's same-origin check compares
-   `Origin` with the request's own scheme and host. Behind Cloud Run that
-   scheme is `http`, so `https://` form posts would be refused. That is
-   fail-closed, and it needs requirement 1 to work.
-3. **Dashboard mounting.** The dashboard is mounted only with PostgreSQL and
-   a loopback bind host. On `0.0.0.0` it is not mounted, and only the sync
-   API is served. Mounting it on Cloud Run needs requirements 1 and 2, plus
-   the Cloud SQL design.
-4. **Login rate limiting.** The login rate limiter is in memory, which
-   assumes a single process. Cloud Run scales to several instances, so a
-   shared store or `max-instances=1` must be chosen.
-5. **Host check.** `ZAZA_PUBLIC_HOST` must list the Cloud Run service host
-   name(s) and any custom domain.
-6. **Production preflight.** `check-config --production` still describes
-   the Windows server and is unchanged. Phase 10D added the separate
-   **`check-config --cloud-run [--connect]`** mode. It requires:
-   - the Cloud SQL socket, password files, a control database and bounded
-     pools;
-   - a connection budget across `ZAZA_CLOUD_RUN_MAX_INSTANCES`;
-   - logs on stdout and no JSON keys.
+1. **Trusted proxy: done (10F-A).** `ZAZA_HTTP_DEPLOYMENT_MODE=cloud-run`
+   (set by Terraform for the service) is a separate mode:
+   - the external scheme is https by deployment;
+   - `X-Forwarded-*` and `Forwarded` are never trusted;
+   - the client address is unverified.
 
-   It always warns about requirement 1 until the proxy design exists.
+   The loopback-proxy mode for Caddy on Windows is unchanged, and
+   non-loopback `ZAZA_TRUSTED_PROXY_IPS` are still refused (and refused
+   outright in cloud-run mode).
+2. **Dashboard origin checks: done (10F-A).** One central rule
+   (`http_security.same_origin`) compares Origin with the EXTERNAL
+   `https://host`. CSRF tokens and the login double-submit token are
+   unchanged.
+3. **Dashboard mounting: decided (10F-A).** The legacy dashboard is NEVER
+   mounted in Cloud Run mode; the SaaS dashboard and SaaS authentication
+   replace it. Local and loopback-proxy keep the old rule.
+4. **Login rate limiting: boundary defined (10F-A).** The in-memory limiter
+   is per process. The SaaS login must use shared state or an edge control
+   (`RateLimiter` boundary in `dashboard/ratelimit.py`).
+5. **Host check: done.** Terraform sets `ZAZA_PUBLIC_HOST` to the service's
+   deterministic run.app host, and `serve` refuses Cloud Run mode without
+   it.
+6. **Production preflight: done.** `check-config --cloud-run [--connect]`
+   also requires the cloud-run HTTP mode, the public host and a disabled
+   legacy dashboard. `check-config --production` (Windows) is unchanged,
+   except that it now fails if the mode is not loopback-proxy.
 7. **Health checks.** `GET /api/v1/sync/health` is unauthenticated and
    returns no data. It suits a Cloud Run startup/liveness probe.

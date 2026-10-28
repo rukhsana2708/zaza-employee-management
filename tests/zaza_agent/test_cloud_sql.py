@@ -179,6 +179,7 @@ def _cloud_run_env(tmp_path, **overrides):
         "ZAZA_TENANT_POOL_MAX": "2", "ZAZA_TENANT_POOL_CACHE_MAX": "8", "ZAZA_TENANT_POOL_IDLE_SECONDS": "300",
         "ZAZA_CLOUD_RUN_MAX_INSTANCES": "3", "ZAZA_DB_CONNECTION_BUDGET": "70",
         "ZAZA_DASHBOARD_COOKIE_SECURE": "true", "ZAZA_PUBLIC_HOST": "zaza.example.com",
+        "ZAZA_HTTP_DEPLOYMENT_MODE": "cloud-run",
     }
     env.update(overrides)
     return {k: v for k, v in env.items() if v is not None}
@@ -193,7 +194,7 @@ def test_cloud_run_preflight_accepts_a_complete_configuration(tmp_path):
     assert [c for c in checks if c.status == FAIL] == []
     named = _by_name(checks)
     assert named["connection budget"].status == OK and "= 60 of 70" in named["connection budget"].detail
-    assert named["front-end proxy"].status == WARN  # honest: not implemented yet
+    assert named["http deployment mode"].status == OK and named["legacy dashboard"].status == OK
     assert all(FAKE_PASSWORD not in c.detail for c in checks)
 
 

@@ -595,8 +595,9 @@ def _mount_dashboard(app, repo, host: str, port: int) -> bool:  # noqa: ANN001
 
 
 def build_server_app(repo, backend: str, host: str, port: int, http=None):  # noqa: ANN001, ANN201
-    """The FastAPI app that ``serve`` runs: the sync API, plus the manager
-    dashboard only with the PostgreSQL backend AND a loopback bind host.
+    """The FastAPI app that ``serve`` runs: the sync API, plus the legacy
+    manager dashboard where :func:`dashboard_policy` allows it (never in
+    Cloud Run mode; otherwise PostgreSQL backend AND a loopback bind host).
     The dashboard is never exposed over plain HTTP on a network interface;
     in production it is reached only through the HTTPS reverse proxy on
     this server. The sync API keeps its own host rules.
@@ -608,19 +609,46 @@ def build_server_app(repo, backend: str, host: str, port: int, http=None):  # no
 
     http = http or http_security.http_settings_from_env()
     app = create_app(repo)
-    if backend != "postgres":
-        print("Manager dashboard: not available on the SQLite development backend (needs PostgreSQL).")
-    elif not is_loopback(host):
-        print(DASHBOARD_LOCALHOST_ONLY)
-    else:
+    mount, reason = dashboard_policy(backend, host, http)
+    if mount:
         _mount_dashboard(app, repo, host, port)
+    else:
+        print(reason)
     http_security.install(app, http)
     return app
 
 
+DASHBOARD_CLOUD_RUN_DISABLED = (
+    "Manager dashboard: disabled in Cloud Run mode. The legacy dashboard signs in with per-database manager "
+    "accounts; the SaaS dashboard (control-plane users and memberships, tenant routing) replaces it first.")
+
+
+def dashboard_policy(backend: str, host: str, http) -> tuple[bool, str]:  # noqa: ANN001
+    """Whether ``serve`` mounts the LEGACY manager dashboard, and why not.
+    An explicit deployment decision, not a side effect of the bind address:
+
+    - cloud-run: never (pending SaaS authentication), whatever the backend;
+    - local / loopback-proxy: PostgreSQL backend AND a loopback bind host
+      (the Phase 7/10 rule; production reaches it through Caddy)."""
+    if not http.legacy_dashboard_allowed:
+        return False, DASHBOARD_CLOUD_RUN_DISABLED
+    if backend != "postgres":
+        return False, "Manager dashboard: not available on the SQLite development backend (needs PostgreSQL)."
+    if not is_loopback(host):
+        return False, DASHBOARD_LOCALHOST_ONLY
+    return True, ""
+
+
 def check_production_settings(http, cookie_secure: bool) -> None:  # noqa: ANN001
     """A public host name means the server sits behind HTTPS: refuse to
-    start with session cookies that would also be sent over plain HTTP."""
+    start with session cookies that would also be sent over plain HTTP.
+    Cloud Run mode additionally requires the public host name(s): without
+    them there would be no Host validation at all."""
+    if http.cloud_run and not http.public_hosts:
+        raise ConfigError("ZAZA_HTTP_DEPLOYMENT_MODE=cloud-run needs ZAZA_PUBLIC_HOST (the service's run.app host "
+                          "and any custom domain): Host headers are validated against it")
+    if http.cloud_run and not cookie_secure:
+        raise ConfigError("ZAZA_HTTP_DEPLOYMENT_MODE=cloud-run needs ZAZA_DASHBOARD_COOKIE_SECURE=true")
     if http.public_hosts and not cookie_secure:
         raise ConfigError("ZAZA_PUBLIC_HOST is set (public HTTPS deployment) but ZAZA_DASHBOARD_COOKIE_SECURE "
                           "is not true; set ZAZA_DASHBOARD_COOKIE_SECURE=true")
@@ -663,12 +691,18 @@ def _run(args: argparse.Namespace, backend: str) -> int:
         if args.command == "serve":
             import uvicorn  # noqa: PLC0415
 
-            if args.host not in ("127.0.0.1", "localhost", "::1"):
-                print("WARNING: listening beyond localhost over plain HTTP. Production must sit behind HTTPS.")
-            print(f"ZaZa sync API on http://{args.host}:{args.port}  ({backend}: {where})")
-            if http.public_hosts:
-                print(f"Public host(s): {', '.join(http.public_hosts)}; forwarded headers trusted only from "
-                      f"{', '.join(http.trusted_proxies)}")
+            if http.cloud_run:
+                print(f"Cloud Run mode: public HTTPS is terminated by Cloud Run for {', '.join(http.public_hosts)}; "
+                      f"the container listens internally on {args.host}:{args.port} ({backend}: {where}).")
+                print("Forwarded headers are not trusted; the external scheme is https by deployment; client "
+                      "addresses are unverified.")
+            else:
+                if args.host not in ("127.0.0.1", "localhost", "::1"):
+                    print("WARNING: listening beyond localhost over plain HTTP. Production must sit behind HTTPS.")
+                print(f"ZaZa sync API on http://{args.host}:{args.port}  ({backend}: {where})")
+                if http.public_hosts:
+                    print(f"Public host(s): {', '.join(http.public_hosts)}; forwarded headers trusted only from "
+                          f"{', '.join(http.trusted_proxies) if http.mode.value == 'loopback-proxy' else 'nobody'}")
             app = build_server_app(repo, backend, args.host, args.port, http)
             # One process, one worker (the login rate limiter is in memory).
             # Proxy headers are handled by http_security, not uvicorn; logging

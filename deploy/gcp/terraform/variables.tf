@@ -173,7 +173,7 @@ variable "db_connection_budget" {
 }
 
 variable "public_host" {
-  description = "ZAZA_PUBLIC_HOST (the service's run.app host or custom domain). Empty until known."
+  description = "ZAZA_PUBLIC_HOST override (comma-separated host names). Empty: the service's deterministic run.app host."
   type        = string
   default     = ""
 }

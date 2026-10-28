@@ -1,48 +1,17 @@
 # ZaZa production database foundation: Cloud Run + Cloud SQL (Phase 10D)
 
-> Phase 10D designed this; **Core infrastructure created in Phase 10E-B (2026-10-28):**
-> - **Cloud SQL `zaza-prod-pg16`** (PostgreSQL 16, Enterprise, `db-custom-1-3840`,
->   ZONAL in asia-south1-c, 20 GB SSD with auto-resize to 200 GB). It has
->   connector enforcement REQUIRED, no authorized networks, deletion
->   protection, 14 daily backups, 7-day PITR and `max_connections` 100.
-> - **The empty `zaza_control` database.**
-> - **Artifact Registry `zaza`** (immutable tags, empty).
-> - **Service accounts `zaza-run` and `zaza-migrate`**: `cloudsql.client`
->   only, no keys.
-> - **Three Secret Manager secrets**, each with version 1.
-> - **Database roles `zaza_app`, `zaza_control_app` and `zaza_migrator`.**
-> 
-> Terraform state is in the private, versioned bucket
-> `zaza-employee-monitor-tfstate-e33ac2a6`.
-> 
-> **Phase 10E-C (2026-10-28): secure build, migration job, control schema:**
-> - **Build identity `zaza-build`** (Terraform `build.tf`):
->   - project-level `roles/logging.logWriter`;
->   - `artifactregistry.writer` on the `zaza` repository only;
->   - `storage.objectViewer` on the private build-source bucket only;
->   - no keys, no secrets, no Cloud SQL, no Terraform-state access.
-> - **Legacy build account hardened:** `roles/cloudbuild.builds.builder` was
->   removed from the legacy Cloud Build service account. There were no
->   triggers, and no build ever used that account.
-> - **Production image:** built on Cloud Build as `zaza-build` from a
->   `git archive` of commit `7b7c223` (tag = full SHA), linux/amd64, uid 10001.
->   `/app` is byte-identical to the commit. It is deployed **by digest**:
->   `asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:318a9d19d385303fa11be95cb2e887d67643c1cde2fba8813756a7a544505482`.
-> - **Migration job `zaza-migrate`** (`deploy_migration_job = true`):
->   - identity `zaza-migrate`;
->   - the Cloud SQL socket and the migrator secret only;
->   - no HTTP endpoint, no IAM bindings;
->   - default arguments `control-db-status`.
-> - **Control schema:** `control-migrate` ran through the job (`(empty) →
->   c0001_control_plane`). The runtime grants for `zaza_control_app` are
->   applied (INSERT/UPDATE on 4 tables, INSERT on the audit log, SELECT; no
->   DELETE). They were verified positively and negatively, and every test
->   write was rolled back.
-> - **Preflight:** `check-config --cloud-run --connect` passed inside the job.
->   The control schema is current; the warnings for the public host and the
->   front-end proxy are expected.
-> - **Still NOT created:** no web service, no public URL, no tenant database
->   (`zaza_t_*` = 0), no customer, no employee traffic.
+## Status (2026-10-28)
+
+| Phase | What exists in Google Cloud (project `zaza-employee-monitor`, `asia-south1`) |
+|---|---|
+| 10D | design and code only (this document); the Terraform was written and validated offline |
+| 10E-A | private, versioned Terraform state bucket `zaza-employee-monitor-tfstate-e33ac2a6`; reviewed plan |
+| 10E-B | **core infrastructure applied**: Cloud SQL `zaza-prod-pg16` (PostgreSQL 16, Enterprise, `db-custom-1-3840`, ZONAL, 20 GB SSD with auto-resize to 200 GB, connector enforcement REQUIRED, no authorized networks, deletion protection, 14 backups, 7-day PITR, `max_connections` 100); the `zaza_control` database; Artifact Registry `zaza`; service accounts `zaza-run` and `zaza-migrate`; three password secrets (version 1); database roles `zaza_app`, `zaza_control_app`, `zaza_migrator` |
+| 10E-C | build identity `zaza-build` and the private build-source bucket; production image `zaza-server@sha256:318a9d19d385…` (commit `7b7c223`, deployed by digest); migration job `zaza-migrate`; control schema migrated to `c0001_control_plane`; control runtime grants applied; legacy Cloud Build builder role removed |
+| 10F-A | **code only**: Cloud Run HTTP security foundation (§10a); no infrastructure change |
+
+**Not created:** no Cloud Run web service, no public application URL, no
+tenant database (`zaza_t_*` = 0), no customer, no employee traffic.
 
 Google Cloud project `zaza-employee-monitor`, region `asia-south1`,
 PostgreSQL **16** (the version every local and in-image test runs against).
@@ -332,8 +301,9 @@ is unchanged.
 | budget | `ZAZA_CLOUD_RUN_MAX_INSTANCES` (1..100) and `ZAZA_DB_CONNECTION_BUDGET` required; total within budget |
 | logs | stdout/stderr; `ZAZA_LOG_FILE` warns (temporary disk) |
 | credentials | `ZAZA_GOOGLE_SERVICE_ACCOUNT_FILE` refused |
-| cookies / host | Secure cookies required; `ZAZA_PUBLIC_HOST` warns until known |
-| proxy | always warns: Cloud Run front-end proxy support is a later phase (fail-closed today) |
+| http mode | `ZAZA_HTTP_DEPLOYMENT_MODE=cloud-run` required (10F-A) |
+| cookies / host | Secure cookies required; `ZAZA_PUBLIC_HOST` missing = FAIL (deployment blocker; `serve` refuses Cloud Run mode without it) |
+| legacy dashboard | must be disabled (it is, by policy, in Cloud Run mode) |
 | `--connect` | read-only check that the control schema is at head |
 
 It never prints secret contents. It reads password files only to check
@@ -352,6 +322,61 @@ that they are non-empty.
   public route. Tenant availability is reported per request (503 for that
   tenant), never as a list.
 
+## 10a. Cloud Run HTTP trust model (Phase 10F-A)
+
+`ZAZA_HTTP_DEPLOYMENT_MODE` is an explicit server setting, never inferred
+from a request:
+
+| Mode | Used by | Forwarded headers | External scheme | Client address |
+|---|---|---|---|---|
+| `loopback-proxy` (default) | Windows/VPS behind Caddy (unchanged) | trusted only from loopback peers | from the trusted proxy | the real client (via the trusted proxy) |
+| `local` | development | never trusted | the TCP scheme | the TCP peer |
+| `cloud-run` | the future web service | **never trusted** (`X-Forwarded-For/Proto/Host`, `Forwarded`) | **https**, by deployment definition (wss for websockets) | **unverified**: the key `unverified`, never a header value |
+
+- **Scheme.** Cloud Run serves the application only over HTTPS and
+  terminates TLS in front of the container, so the external scheme is
+  https by definition. A client cannot downgrade it, because
+  `X-Forwarded-Proto` is ignored. The container itself listens on
+  `0.0.0.0:$PORT` inside the platform; that hop is not public HTTPS, and
+  `serve` says so.
+- **Host.** Host is validated against `ZAZA_PUBLIC_HOST`, exactly as in the
+  other modes:
+  - case-insensitive, trailing dot and port ignored; anything else is
+    400;
+  - Terraform fills it with the service's deterministic run.app host
+    (`zaza-server-<project number>.asia-south1.run.app`), plus any custom
+    domain later;
+  - `serve` refuses Cloud Run mode without it.
+- **Origin.** `http_security.external_request()` is the one place that
+  derives the external scheme, host and origin, and `same_origin()` is the
+  one same-origin rule:
+  - no Origin header: allowed (the CSRF tokens still apply);
+  - otherwise exactly one Origin, equal to the external `https://host`;
+  - `http://…`, `null`, other hosts or ports, paths, credentials and
+    several values are refused.
+- **Client IP.** No authentication, authorization or rate-limit decision
+  depends on `X-Forwarded-For` in Cloud Run mode. Source-IP controls belong
+  to a future edge layer (Google load balancer plus Cloud Armor).
+- **Legacy dashboard.** Never mounted in Cloud Run mode. It signs in with
+  per-database `manager_users` and `manager_sessions`, while the SaaS
+  identity model (control-plane users and memberships plus tenant routing)
+  replaces it. Mounting it now would ship the wrong authentication model.
+  Local and loopback-proxy keep the Phase 7/10 rule (PostgreSQL and a
+  loopback bind).
+- **Login rate limiting.** The in-memory limiter is per process: fine for
+  the single legacy server, NOT global across Cloud Run instances.
+  `dashboard/ratelimit.py` defines the `RateLimiter` boundary. The SaaS
+  login must use shared state (database- or edge-backed); no Redis was
+  added.
+- **uvicorn** `proxy_headers` stays off; forwarded headers are interpreted
+  only in `http_security.py`.
+- **Still a single-database API.** `create_app()` takes ONE repository, and
+  device authentication runs against it. No organization header or
+  parameter, database name or slug routing exists, and tests forbid them.
+  The SaaS path will be: authenticated device credential → TenantResolver →
+  TenantContext → TenantRepositoryManager → that tenant's repository → sync
+  service.
+
 ## 11. Backups and point-in-time recovery
 
 Terraform (`deploy/gcp/terraform/cloudsql.tf`) sets:
@@ -364,8 +389,9 @@ Terraform (`deploy/gcp/terraform/cloudsql.tf`) sets:
 - maintenance window Sunday 21:00 UTC (stable track), and Query Insights
   without client addresses or application tags.
 
-No restore is performed in 10D. **Phase 10E must verify, after creating
-the instance:**
+No restore is performed in 10D. **Phase 10E-B verified these on the live
+instance after creating it** (a restore drill is still due before the
+employee pilot):
 
 - backups are enabled and the first backup succeeded;
 - PITR is on and the retention matches;
@@ -393,18 +419,19 @@ now: nothing needs it yet.
 
 ## 13. Infrastructure as code (`deploy/gcp/terraform/`)
 
-The Terraform is a definition only. It was checked offline with
-`terraform fmt -check`, `init -backend=false` and `validate` (Terraform
-1.9.8, google provider 7.46.2, lock file committed). It has **never been
-planned or applied**.
+Phase 10D checked it offline (`terraform fmt -check`, `init
+-backend=false`, `validate`; Terraform 1.9.8, google provider 7.46.2, lock
+file committed). It has since been applied in stages from remote state
+(10E-A/B/C, see Status); the web service is still gated off.
 
 | File | Defines |
 |---|---|
-| `versions.tf` | Terraform/provider constraints, default labels, commented GCS backend |
+| `versions.tf` | Terraform/provider constraints, default labels, the GCS backend |
 | `variables.tf` | project `zaza-employee-monitor`, region `asia-south1`, sizes and budget; **no secrets**; no default instance name |
 | `main.tf` | required APIs, Artifact Registry `zaza` (immutable tags), service accounts `zaza-run` / `zaza-migrate`, `roles/cloudsql.client`, secret containers + per-secret accessor bindings |
 | `cloudsql.tf` | PostgreSQL 16 instance, backups/PITR/deletion protection, connector-only access, `max_connections`, the `zaza_control` database |
-| `cloud_run.tf` | service (Cloud SQL socket volume, password secrets as files, max instances, health probes) and the `zaza-migrate` job; both gated by `deploy_service = false` |
+| `cloud_run.tf` | web service (Cloud Run HTTP mode, run.app host, Cloud SQL socket, password secrets as files, max instances, probes; `deploy_service = false`) and the `zaza-migrate` job (`deploy_migration_job`) |
+| `build.tf` | `zaza-build` identity and the private build-source bucket (10E-C) |
 | `outputs.tf` | non-secret identifiers |
 | `terraform.tfvars.example` | example inputs (copy to the git-ignored `terraform.tfvars`) |
 
@@ -415,11 +442,11 @@ Deliberately **not** in Terraform:
   enters state);
 - secret versions;
 - service-account keys;
-- load balancers, Cloud Armor, DNS and Cloud Storage.
+- load balancers, Cloud Armor and DNS (the only Terraform bucket is the private build-source bucket).
 
 `.gitignore` excludes `*.tfstate*`, `*.tfplan`, `*.tfvars` and `.terraform/`.
 
-**What Phase 10E does, in order:**
+**What Phase 10E did, in order (done):**
 
 1. Create a versioned state bucket and enable the GCS backend.
 2. Choose `sql_instance_name`.
@@ -429,12 +456,13 @@ Deliberately **not** in Terraform:
    password directly into its Secret Manager secret.
 5. Build the image, push it, and record its digest.
 6. Run the migration job with `control-migrate`.
-7. Set `container_image` and `deploy_service = true`, then plan and apply.
+7. Set `container_image` and `deploy_migration_job = true` (NOT `deploy_service`), then plan and apply.
 8. Verify backups, PITR and deletion protection, `check-config --cloud-run
    --connect`, and health.
 
-Cloud Run proxy/HTTPS-origin support, SaaS login and enrollment remain
-separate phases before any customer traffic.
+The Cloud Run HTTP foundation followed in 10F-A (§10a). SaaS login,
+credential-derived tenant routing and enrollment remain separate phases
+before any customer traffic.
 
 ## 14. Product roadmap after the production foundation (NOT built)
 

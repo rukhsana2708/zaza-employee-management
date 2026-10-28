@@ -24,9 +24,18 @@
 >     across instances;
 >   - explicit `tenant-migrate`, a provisioning boundary and
 >     `check-config --cloud-run`;
->   - a Terraform definition that has **never been applied**.
+>   - a Terraform definition, applied in Phase 10E (core infrastructure,
+>     migration job; the web service is still gated off).
 >
 >   See [docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md).
+> - **Phase 10F-A:** an explicit Cloud Run HTTP mode (`ZAZA_HTTP_DEPLOYMENT_MODE`):
+>   - external https by deployment; forwarded headers never trusted;
+>   - strict Host validation and one external-origin rule;
+>   - the legacy dashboard is never mounted on Cloud Run.
+>
+>   The loopback-proxy (Windows/Caddy) path is unchanged, and the sync API is
+>   still single-database; credential-derived tenant routing is a later
+>   phase (CLOUD_SQL_PRODUCTION.md §10a).
 >   The real resources are created in Phase 10E.
 >
 > The single-VPS layout described below (diagram, §9) is the earlier,

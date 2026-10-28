@@ -111,6 +111,9 @@ def check_config(env: dict | None = None, *, production: bool = False) -> list[C
                 "ZAZA_PUBLIC_HOST is not set" + (" (required before activation)" if production
                                                   else " (no Host check: local development)"))
         add(OK, "trusted proxies", ", ".join(http.trusted_proxies))
+        if production and http.mode.value != "loopback-proxy":
+            add(FAIL, "http deployment mode", f"{http.mode.value} (the Windows server runs behind Caddy: "
+                "loopback-proxy; use check-config --cloud-run for Cloud Run)")
     except ConfigError as exc:
         add(FAIL, "http", str(exc))
 
@@ -285,11 +288,16 @@ def check_cloud_run_config(env: dict | None = None, *, connect: bool = False) ->
         from .http_security import http_settings_from_env  # noqa: PLC0415
 
         http = http_settings_from_env(env)
-        add(OK if http.public_hosts else WARN, "public host",
+        add(OK if http.cloud_run else FAIL, "http deployment mode",
+            "cloud-run: external https by deployment, forwarded headers never trusted, client address unverified"
+            if http.cloud_run else f"{http.mode.value} (Cloud Run needs ZAZA_HTTP_DEPLOYMENT_MODE=cloud-run)")
+        add(OK if http.public_hosts else FAIL, "public host",
             ", ".join(http.public_hosts) if http.public_hosts else
-            "ZAZA_PUBLIC_HOST is not set (set the service / custom domain host before going live)")
-        add(WARN, "front-end proxy", "Cloud Run front-end proxy support is a later phase: forwarded headers "
-            "are ignored (fail-closed) and the dashboard is not mounted on 0.0.0.0")
+            "ZAZA_PUBLIC_HOST is not set: deployment blocker for the web service (set the service's run.app "
+            "host, and later the custom domain); serve refuses Cloud Run mode without it")
+        add(OK if not http.legacy_dashboard_allowed else FAIL, "legacy dashboard",
+            "not served in Cloud Run mode (pending SaaS authentication)" if not http.legacy_dashboard_allowed
+            else "would be eligible to mount; Cloud Run mode is required")
     except ConfigError as exc:
         add(FAIL, "http", str(exc))
 
