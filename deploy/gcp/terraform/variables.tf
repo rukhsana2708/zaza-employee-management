@@ -102,8 +102,14 @@ variable "deletion_protection" {
 
 # ─── Cloud Run ───────────────────────────────────────────────────────────────
 
+variable "deploy_migration_job" {
+  description = "Create ONLY the zaza-migrate Cloud Run job (no HTTP endpoint). Needs container_image."
+  type        = bool
+  default     = false
+}
+
 variable "deploy_service" {
-  description = "Create the Cloud Run service and migration job. Stays false until the image is pushed and the password secrets have versions (Phase 10E)."
+  description = "Create the zaza-server Cloud Run WEB service. Stays false until the Cloud Run proxy/origin/dashboard work is done."
   type        = bool
   default     = false
 }
@@ -115,7 +121,7 @@ variable "service_name" {
 }
 
 variable "container_image" {
-  description = "Image reference by digest, e.g. asia-south1-docker.pkg.dev/<project>/zaza/zaza-server@sha256:... (required when deploy_service is true)."
+  description = "Image reference by digest, e.g. asia-south1-docker.pkg.dev/<project>/zaza/zaza-server@sha256:... (required when deploy_service or deploy_migration_job is true)."
   type        = string
   default     = ""
 

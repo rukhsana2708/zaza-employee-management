@@ -26,6 +26,7 @@ resource "google_project_service" "required" {
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
     "iam.googleapis.com",
+    "cloudbuild.googleapis.com",
   ])
 
   service            = each.value

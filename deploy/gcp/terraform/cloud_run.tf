@@ -1,12 +1,16 @@
-# The Cloud Run web service and the explicit migration job. Both are created
-# only when var.deploy_service is true (Phase 10E, after the image is pushed
-# and the password secrets have a version).
+# The Cloud Run web service and the explicit migration job, gated
+# INDEPENDENTLY (Phase 10E-C):
+#   deploy_migration_job = true  -> only the zaza-migrate job (no HTTP endpoint)
+#   deploy_service       = true  -> the zaza-server web service (+ public
+#                                   invoker only if allow_unauthenticated)
+# The job can exist long before the web service is safe to expose.
 #
 # The web service NEVER migrates: its entrypoint only runs `serve`. Schema
 # changes run as the separate job below, with the migrator identity.
 
 locals {
-  deploy = var.deploy_service ? 1 : 0
+  deploy_service = var.deploy_service ? 1 : 0
+  deploy_job     = var.deploy_migration_job ? 1 : 0
 
   # Non-secret settings shared by the service and the job.
   common_env = {
@@ -43,7 +47,7 @@ locals {
 }
 
 resource "google_cloud_run_v2_service" "server" {
-  count               = local.deploy
+  count               = local.deploy_service
   name                = var.service_name
   location            = var.region
   ingress             = "INGRESS_TRAFFIC_ALL"
@@ -161,7 +165,7 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
 # e.g. control-migrate | tenant-migrate --all-ready | db-status.
 # Default arguments only report status.
 resource "google_cloud_run_v2_job" "migrate" {
-  count               = local.deploy
+  count               = local.deploy_job
   name                = "zaza-migrate"
   location            = var.region
   deletion_protection = var.deletion_protection
@@ -221,6 +225,12 @@ resource "google_cloud_run_v2_job" "migrate" {
           }
         }
       }
+    }
+  }
+  lifecycle {
+    precondition {
+      condition     = var.container_image != ""
+      error_message = "Set container_image (by digest) before deploy_migration_job = true."
     }
   }
 }

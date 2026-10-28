@@ -30,3 +30,15 @@ output "password_secrets" {
 output "service_uri" {
   value = var.deploy_service ? google_cloud_run_v2_service.server[0].uri : null
 }
+
+output "build_service_account" {
+  value = google_service_account.build.email
+}
+
+output "build_source_bucket" {
+  value = google_storage_bucket.build_source.name
+}
+
+output "migration_job" {
+  value = var.deploy_migration_job ? google_cloud_run_v2_job.migrate[0].name : null
+}

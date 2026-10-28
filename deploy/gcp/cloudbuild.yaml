@@ -1,0 +1,43 @@
+# ZaZa server image build on Cloud Build (Phase 10E-C).
+#
+# Run as the dedicated service account zaza-build (never the legacy default
+# Cloud Build account), from a `git archive` of an exact pushed commit:
+#
+#   gcloud builds submit gs://<project>-build-source/source/<sha>.tar.gz \
+#     --region=asia-south1 --config=deploy/gcp/cloudbuild.yaml \
+#     --service-account=projects/<project>/serviceAccounts/zaza-build@<project>.iam.gserviceaccount.com \
+#     --substitutions=_GIT_SHA=<sha>
+#
+# The build uses deploy/gcp/Dockerfile with its allowlisted build context
+# (deploy/gcp/Dockerfile.dockerignore, BuildKit). It pushes ONE immutable tag
+# (the full commit SHA); deployments reference the resulting @sha256 digest.
+# No secrets, credentials or substitutions with secret values are used.
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --platform=linux/amd64
+      - --file=deploy/gcp/Dockerfile
+      - --tag=${_IMAGE}:${_GIT_SHA}
+      - --label=org.opencontainers.image.revision=${_GIT_SHA}
+      - --label=org.opencontainers.image.source=https://github.com/rukhsana2708/zaza-employee-management
+      - --label=org.opencontainers.image.title=zaza-server
+      - .
+
+images:
+  - ${_IMAGE}:${_GIT_SHA}
+
+substitutions:
+  _IMAGE: asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server
+  _GIT_SHA: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY   # required with a user-specified service account
+  dynamicSubstitutions: true
+  substitutionOption: MUST_MATCH
+
+timeout: 1200s

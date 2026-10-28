@@ -319,7 +319,7 @@ def _tf(*, comments: bool = True) -> str:
 
 def test_terraform_files_exist_and_no_state_is_committed():
     assert {p.name for p in TF.glob("*.tf")} == {"versions.tf", "variables.tf", "main.tf", "cloudsql.tf",
-                                                  "cloud_run.tf", "outputs.tf"}
+                                                  "cloud_run.tf", "outputs.tf", "build.tf"}
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for pattern in (".terraform/", "*.tfstate", "*.tfstate.*", "*.tfvars", "*.tfplan"):
         assert pattern in gitignore.splitlines()
@@ -351,7 +351,7 @@ def test_terraform_contains_no_secrets_keys_or_tenant_databases():
     tf = _tf(comments=False) + (TF / "terraform.tfvars.example").read_text(encoding="utf-8")
     for forbidden in ("google_service_account_key", "google_sql_user", "google_secret_manager_secret_version",
                       "password =", "password  =", "private_key", "BEGIN ", "zaza_t_", "credentials",
-                      "google_storage_bucket", "google_compute_global_address", "google_dns",
+                      "google_compute_global_address", "google_dns",
                       "google_compute_security_policy"):
         assert forbidden not in tf, forbidden
     # tenant databases are application lifecycle: only the control database is a Terraform resource
@@ -361,7 +361,12 @@ def test_terraform_contains_no_secrets_keys_or_tenant_databases():
 def test_terraform_cloud_run_is_gated_and_never_migrates():
     run = (TF / "cloud_run.tf").read_text(encoding="utf-8")
     assert re.search(r'variable "deploy_service" \{[^}]*default\s+= false', _tf(), re.DOTALL)
-    assert run.count("count               = local.deploy") == 2
+    assert re.search(r'variable "deploy_migration_job" \{[^}]*default\s+= false', _tf(), re.DOTALL)
+    assert run.count("count               = local.deploy_service") == 1  # web service: its own gate
+    assert run.count("count               = local.deploy_job") == 1      # migration job: its own gate
+    assert "deploy_service = var.deploy_service ? 1 : 0" in run and "deploy_job     = var.deploy_migration_job ? 1 : 0" in run
+    public = run.split('resource "google_cloud_run_v2_service_iam_member" "public"')[1].split("resource ")[0]
+    assert "var.deploy_service && var.allow_unauthenticated" in public  # the job never makes anything public
     service = run.split('resource "google_cloud_run_v2_service" "server"')[1].split("resource ")[0]
     assert "command" not in service and "args" not in service  # the image entrypoint: serve only
     assert "max_instance_count = var.max_instances" in service and "min_instance_count = 0" in service
@@ -399,3 +404,40 @@ def test_new_modules_have_no_google_cloud_api_calls():
         imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
             a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         assert not [m for m in imported if m.startswith(("google", "googleapiclient", "requests", "httpx"))], path
+
+
+def test_terraform_buckets_are_private_and_only_the_build_source_bucket():
+    tf = _tf(comments=False)
+    assert tf.count('resource "google_storage_bucket" ') == 1
+    bucket = tf.split('resource "google_storage_bucket" "build_source"')[1].split("resource ")[0]
+    for line in ("uniform_bucket_level_access = true", 'public_access_prevention    = "enforced"',
+                 "force_destroy               = false", "location                    = var.region"):
+        assert line in bucket
+    assert "allUsers" not in tf.replace('member   = "allUsers"', "") and "allAuthenticatedUsers" not in tf
+
+
+def test_build_identity_is_dedicated_and_least_privilege():
+    build = (TF / "build.tf").read_text(encoding="utf-8")
+    assert 'account_id   = "zaza-build"' in build
+    roles = re.findall(r'role\s+= "(roles/[^"]+)"', build)
+    assert sorted(roles) == ["roles/artifactregistry.writer", "roles/logging.logWriter", "roles/storage.objectViewer"]
+    # Artifact Registry and Storage roles are scoped to ONE repository / ONE bucket, not the project
+    assert 'resource "google_artifact_registry_repository_iam_member" "build_writer"' in build
+    assert 'resource "google_storage_bucket_iam_member" "build_source_reader"' in build
+    assert build.count("google_project_iam_member") == 1  # only the log writer is project-level
+    everything = _tf(comments=False)
+    for forbidden in ("roles/cloudbuild.builds.builder", "roles/owner", "roles/editor", "roles/storage.admin",
+                      "roles/cloudsql.admin", "roles/iam.serviceAccountAdmin", "roles/resourcemanager.projectIamAdmin"):
+        assert forbidden not in everything
+    accessors = re.findall(r'resource "google_secret_manager_secret_iam_member"[^}]*?member\s+= "serviceAccount:\$\{google_service_account\.(\w+)', everything, re.DOTALL)
+    assert sorted(set(accessors)) == ["migrator", "runtime"]  # the build identity never reads database secrets
+
+
+def test_cloud_build_config_is_pinned_and_secret_free():
+    cfg = (ROOT / "deploy" / "gcp" / "cloudbuild.yaml").read_text(encoding="utf-8")
+    assert "--file=deploy/gcp/Dockerfile" in cfg and "DOCKER_BUILDKIT=1" in cfg and "--platform=linux/amd64" in cfg
+    assert "logging: CLOUD_LOGGING_ONLY" in cfg and "${_IMAGE}:${_GIT_SHA}" in cfg
+    assert "latest" not in cfg and "secretEnv" not in cfg and "availableSecrets" not in cfg
+    assert not re.search(r"(?i)password|private_key|token=", cfg)
+    ignore = (ROOT / "deploy" / "gcp" / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+    assert "!deploy/gcp/cloudbuild.yaml" not in ignore  # not part of the image's build context
