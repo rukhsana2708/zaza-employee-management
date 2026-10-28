@@ -163,8 +163,8 @@ source in Google's default `<project>_cloudbuild` bucket, which `zaza-build`
 cannot (and should not) read.
 
 The image gets one immutable tag (the commit SHA). Deployments reference
-the **digest**. Current production image:
-`asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:318a9d19d385303fa11be95cb2e887d67643c1cde2fba8813756a7a544505482` (commit `7b7c223`).
+the **digest**. Current production image (migration job):
+`asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:b7ffd93a82c1ed61a5c3c9c8bb7487af03b7023f6d48953be21fcc13f665022f` (commit `1f63fb2`, Phase 10F-C).
 
 The **`zaza-migrate` job** runs explicit commands with the migrator identity:
 

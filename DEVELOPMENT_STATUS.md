@@ -1,10 +1,48 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10F-B — SaaS authentication and credential-derived tenant routing)
+**Last updated:** 2026-10-28 (Phase 10F-C — production SaaS auth schema, image and privileges)
 
-## Current phase: Phase 10F-B — SaaS authentication and tenant sync routing (pending your review)
+## Current phase: Phase 10F-C — production SaaS auth schema and privileges (pending your review)
 
-Phase 10F-A is **approved**. 10F-B is **code and tests only**:
+Phase 10F-B is **approved**. In production, 10F-C did the following:
+- **Image:** built the reviewed commit `1f63fb2` on Cloud Build as
+  `zaza-build` (build `289ca24a-fda6-45da-960b-6c7229b65be4`) and pushed it
+  by digest: `asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:b7ffd93a82c1ed61a5c3c9c8bb7487af03b7023f6d48953be21fcc13f665022f`. `/app` is byte-identical to the commit; it
+  is linux/amd64, uid 10001, and passes 26/26 container checks.
+- **Migration job:** `zaza-migrate` was updated to that digest. The
+  Terraform change was the job image only, and the follow-up plan shows no
+  changes.
+- **Control schema:** migrated through the job, `c0001_control_plane →
+  c0002_saas_auth_routing`. The four new tables exist with all 21
+  constraints, the indexes and the triggers, and they are EMPTY.
+- **Runtime grants (as `zaza_migrator`, the owner):** `zaza_control_app`
+  gets SELECT/INSERT/UPDATE on `user_password_credentials`,
+  SELECT/INSERT/UPDATE/DELETE on `user_sessions` and
+  `login_attempt_counters`, and SELECT only on `device_credential_routes`.
+  They are verified positively and negatively (60/60 checks); every test
+  write was rolled back or deleted.
+- **Preflight:** `check-config --cloud-run --connect` returns
+  "Configuration OK" with no warnings (control schema current at c0002).
+- **Still nothing customer-facing:** no web service, no public URL, no SaaS
+  user, organization, membership, tenant database, device route, enrollment
+  or traffic. Every production auth and routing table has 0 rows.
+
+**Before ANY public login traffic, add edge protection (deployment blocker).**
+The shared global login bucket protects expensive Argon2 work across all
+instances. But if the login endpoint were public without edge filtering, an
+attacker could deliberately exhaust that bucket and temporarily block new
+sign-ins for everyone. Before customer traffic:
+- put Cloud Armor (or an equivalent reviewed edge control) with rate-based
+  rules in front of `/app/login`;
+- tune `ZAZA_SAAS_LOGIN_MAX_ATTEMPTS_GLOBAL` and the per-identity limit from
+  pilot measurements.
+
+This doesn't block the current private phase, because no web service
+exists.
+
+## Earlier: Phase 10F-B — SaaS authentication and tenant sync routing (approved)
+
+10F-B was **code and tests only**:
 - the production control schema is still `c0001`; c0002 is NOT applied;
 - no image was pushed and no web service exists;
 - no tenant, SaaS user, device route or token exists in production.

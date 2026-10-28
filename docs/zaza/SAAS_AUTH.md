@@ -1,12 +1,14 @@
 # SaaS authentication and credential-derived tenant routing (Phase 10F-B)
 
-> **Status: code and tests only.**
-> - Control migration `c0002_saas_auth_routing` is **not applied in
->   production**; the production control schema is still at `c0001`.
-> - No production SaaS user, organization, tenant, device route or token
->   exists.
-> - The Cloud Run web service is not deployed, and the production image was
->   not rebuilt or pushed.
+> **Status:**
+> - Phase 10F-B wrote the code.
+> - **Phase 10F-C applied c0002 in production.** The control schema is
+>   `c0002_saas_auth_routing`, the runtime grants in §9 are applied and
+>   verified, and the migration job runs image `sha256:b7ffd93a82c1…` (commit
+>   `1f63fb2`).
+> - **No production SaaS user, organization, membership, tenant, device
+>   route or token exists.** All four auth/routing tables are empty.
+> - The Cloud Run web service is NOT deployed.
 
 Code: `deskmate/zaza_server/tenancy/`:
 - `saas_auth.py`: passwords, sessions, the shared limiter, permissions;
@@ -206,7 +208,7 @@ saas-auth-cleanup                                     (ended sessions, old count
 - In production these run as the `zaza-migrate` job. Its `ZAZA_CONTROL_*`
   settings use the migrator role, which owns the control tables.
 
-## 9. Production steps still to do (next phase, after review)
+## 9. Production steps (done in Phase 10F-C)
 
 1. Build and push a new image by digest, and update the migration job's
    image.
@@ -227,6 +229,21 @@ saas-auth-cleanup                                     (ended sessions, old count
    - SELECT on the new tables already follows from the 10E-B default
      privileges; the statements above make it explicit.
 4. Re-run the privilege verification, positive and negative, as in 10E-C.
+
+## 9a. Edge protection before public login
+
+**Before ANY public login traffic, add edge protection (deployment blocker).**
+The shared global login bucket protects expensive Argon2 work across all
+instances. But if the login endpoint were public without edge filtering, an
+attacker could deliberately exhaust that bucket and temporarily block new
+sign-ins for everyone. Before customer traffic:
+- put Cloud Armor (or an equivalent reviewed edge control) with rate-based
+  rules in front of `/app/login`;
+- tune `ZAZA_SAAS_LOGIN_MAX_ATTEMPTS_GLOBAL` and the per-identity limit from
+  pilot measurements.
+
+This doesn't block the current private phase, because no web service
+exists.
 
 ## 10. Reliability evidence
 
