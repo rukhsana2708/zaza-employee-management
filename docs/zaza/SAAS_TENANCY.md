@@ -363,6 +363,13 @@ Per-tenant roles remain a later option. The original requirements:
 
 ## 17. Future enrollment (not implemented)
 
+Phase 10F-B implemented the parts enrollment will build on: the device
+credential route (`device_credential_routes`, domain-separated hash →
+organization; a route is not authentication), the route lifecycle
+(create, revoke, rotate) and the credential-routed SaaS sync API. See
+[SAAS_AUTH.md](SAAS_AUTH.md). The enrollment endpoint itself is still
+future work.
+
 ```
 organization ADMIN creates a one-time enrollment code (short-lived, single use, stored hashed)
       → the employee's installer/agent submits the code once

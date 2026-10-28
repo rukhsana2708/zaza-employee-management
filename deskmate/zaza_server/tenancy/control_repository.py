@@ -102,6 +102,13 @@ _CONSTRAINT_MESSAGES = {
     "organization_memberships_user_fk": "unknown user",
     "tenant_databases_org_fk": "unknown organization",
     "control_audit_logs_org_fk": "unknown organization",
+    # c0002
+    "user_password_credentials_user_fk": "unknown user",
+    "user_password_credentials_argon2id": "only Argon2id password hashes are stored",
+    "user_sessions_user_fk": "unknown user",
+    "device_credential_routes_pkey": "this credential is already routed",
+    "device_credential_routes_org_fk": "unknown organization",
+    "device_credential_routes_device_id_format": "invalid device id",
 }
 
 
@@ -159,6 +166,19 @@ class PostgresControlRepository:
                 name = getattr(exc.diag, "constraint_name", None)
                 raise TenancyError(_CONSTRAINT_MESSAGES.get(name or "", "the change violates a control-plane "
                                                                         "rule")) from None
+
+    # Public hooks for the other control-plane stores of this package
+    # (saas_auth, device_routes): same pool, same constraint mapping, same
+    # audit writer, one transaction for a change and its audit row.
+    def transaction(self):  # noqa: ANN201 — context manager yielding a cursor
+        return self._tx()
+
+    def connection(self):  # noqa: ANN201 — a pooled autocommit connection
+        return self._pool.connection()
+
+    def write_audit(self, cur, action: str, entity_type: str, entity_id: object,  # noqa: ANN001
+                    organization_id: uuid.UUID | None, details: dict | None = None) -> None:
+        self._audit(cur, action, entity_type, entity_id, organization_id, details)
 
     def _audit(self, cur, action: str, entity_type: str, entity_id: object,  # noqa: ANN001
                organization_id: uuid.UUID | None, details: dict | None = None) -> None:
@@ -243,6 +263,10 @@ class PostgresControlRepository:
 
     def get_user(self, user_id: uuid.UUID) -> User | None:
         row = self._one("SELECT * FROM users WHERE user_id = %s", (domain.user_id(user_id),))
+        return self._user(row) if row else None
+
+    def find_user_by_email(self, email: str) -> User | None:
+        row = self._one("SELECT * FROM users WHERE email_normalized = %s", (domain.normalize_email(email),))
         return self._user(row) if row else None
 
     def set_user_status(self, user_id: uuid.UUID, status: str) -> User:

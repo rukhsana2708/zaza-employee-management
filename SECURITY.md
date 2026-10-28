@@ -631,6 +631,32 @@ deployed):
   The SaaS login must use shared rate-limit state or an edge control.
 - **The Windows loopback-proxy behaviour is unchanged.**
 
+**Phase 10F-B: SaaS authentication and credential-derived tenant routing**
+(code only; see [docs/zaza/SAAS_AUTH.md](docs/zaza/SAAS_AUTH.md)):
+
+- **SaaS logins:**
+  - control-plane `users` with Argon2id password hashes;
+  - server-side sessions whose token is stored only as SHA-256; Secure,
+    HttpOnly, SameSite=Strict cookies;
+  - CSRF and double-submit tokens plus the central same-origin rule;
+  - generic errors and a dummy hash check for unknown emails.
+- **A SHARED login rate limit** lives in the control database: per login
+  identity digest plus a global burst bucket, with atomic counters across
+  instances. It never uses client IPs.
+- **A session authorizes no organization by itself.** Each organization is
+  resolved through an ACTIVE membership, an ACTIVE organization and a READY
+  tenant, and permissions are explicit per role. OWNER is not a platform
+  admin, and `employees.role` grants nothing in the SaaS.
+- **Device credentials are routed, not trusted:**
+  - the control plane maps a domain-separated hash of the token to an
+    organization (never the raw token, never the tenant's hash);
+  - the token is then verified inside that tenant database, whose
+    repository stays leased for the request;
+  - a stale or forged route authenticates nothing, and no client-supplied
+    organization, slug or database name is ever used.
+- **There is no self-signup.** Identities are created only through
+  operator commands, with hidden password prompts.
+
 ## 7. Retention
 
 Raw per-tick agent events are retained only long enough to build the

@@ -48,14 +48,15 @@ class TenantAccessDenied(Exception):
 
 
 class DeviceCredentialRouter(Protocol):
-    """Server-side lookup: which organization issued this device credential?
+    """Server-side lookup: which organization must verify this credential?
 
-    Future implementation (enrollment phase): a control-plane index keyed by
-    the credential's SHA-256 hash (or a non-secret routing prefix of the
-    token), written when the device is enrolled. It returns ``None`` for an
-    unknown credential. It must never take the organization from the request."""
+    Keyed by ``device_routes.routing_hash(token)`` (a domain-separated
+    SHA-256, not the tenant's token hash); see ``device_routes.py``
+    (Phase 10F-B). Returns ``None`` for an unknown or revoked route. It never
+    takes the organization from the request, and a route proves nothing:
+    the tenant database still authenticates the credential."""
 
-    def organization_for_credential(self, token_hash: str) -> uuid.UUID | None: ...
+    def organization_for_credential(self, route_hash: str) -> uuid.UUID | None: ...
 
 
 @dataclass(frozen=True)
@@ -112,11 +113,25 @@ class TenantResolver:
         authentication there (token hash + X-ZaZa-Device-Id + status); it
         raises on failure. A client-claimed organization that differs from
         the credential's is refused — never followed."""
-        from ..auth import hash_token  # noqa: PLC0415
-
-        if not isinstance(token, str) or not token.strip() or not isinstance(device_id, str) or not device_id:
+        if not isinstance(device_id, str) or not device_id:
             raise TenantAccessDenied("invalid credentials")
-        routed = router.organization_for_credential(hash_token(token.strip()))
+        context = self.for_device_route(router, token, claimed_organization_id=claimed_organization_id)
+        device = authenticate_in_tenant(context, token, device_id)
+        if device is None:
+            raise TenantAccessDenied("invalid credentials")
+        return DeviceTenant(context=context, device=device)
+
+    def for_device_route(self, router: DeviceCredentialRouter, token: str, *,
+                         claimed_organization_id: object = None) -> TenantContext:
+        """The DEVICE context the credential ROUTES to — NOT an
+        authentication: the caller must still verify the credential inside
+        that tenant database (``SaasDeviceAuthenticator`` does, while holding
+        that tenant's repository). A claimed organization is only compared."""
+        from .device_routes import routing_hash  # noqa: PLC0415
+
+        if not isinstance(token, str) or not token.strip():
+            raise TenantAccessDenied("invalid credentials")
+        routed = router.organization_for_credential(routing_hash(token))
         if routed is None:
             raise TenantAccessDenied("invalid credentials")
         if claimed_organization_id is not None:
@@ -126,11 +141,7 @@ class TenantResolver:
                 raise TenantAccessDenied("invalid credentials") from None
             if claimed != routed:
                 raise TenantAccessDenied("invalid credentials")
-        context = self._context(routed, ContextKind.DEVICE)
-        device = authenticate_in_tenant(context, token, device_id)
-        if device is None:
-            raise TenantAccessDenied("invalid credentials")
-        return DeviceTenant(context=context, device=device)
+        return self._context(routed, ContextKind.DEVICE)
 
     # ─── per-tenant jobs ──────────────────────────────────────────────────
     def for_job(self, organization_id: object) -> TenantContext:

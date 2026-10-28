@@ -9,6 +9,7 @@
 | 10E-B | **core infrastructure applied**: Cloud SQL `zaza-prod-pg16` (PostgreSQL 16, Enterprise, `db-custom-1-3840`, ZONAL, 20 GB SSD with auto-resize to 200 GB, connector enforcement REQUIRED, no authorized networks, deletion protection, 14 backups, 7-day PITR, `max_connections` 100); the `zaza_control` database; Artifact Registry `zaza`; service accounts `zaza-run` and `zaza-migrate`; three password secrets (version 1); database roles `zaza_app`, `zaza_control_app`, `zaza_migrator` |
 | 10E-C | build identity `zaza-build` and the private build-source bucket; production image `zaza-server@sha256:318a9d19d385…` (commit `7b7c223`, deployed by digest); migration job `zaza-migrate`; control schema migrated to `c0001_control_plane`; control runtime grants applied; legacy Cloud Build builder role removed |
 | 10F-A | **code only**: Cloud Run HTTP security foundation (§10a); no infrastructure change |
+| 10F-B | **code only**: SaaS authentication + credential-derived tenant routing; control migration `c0002_saas_auth_routing` written but **not applied in production**; the next production grants are in [SAAS_AUTH.md](SAAS_AUTH.md) §9 |
 
 **Not created:** no Cloud Run web service, no public application URL, no
 tenant database (`zaza_t_*` = 0), no customer, no employee traffic.

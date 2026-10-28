@@ -358,6 +358,98 @@ def _new_password(username: str) -> str:
     return first
 
 
+_SAAS_USER_COMMANDS = ("saas-user-create", "saas-user-set-password", "saas-user-disable", "saas-user-enable",
+                       "saas-user-revoke-sessions", "saas-auth-cleanup")
+TENANCY_MODES = ("single", "saas")
+
+
+def tenancy_mode_from_env(env: dict | None = None) -> str:
+    """``ZAZA_TENANCY_MODE``: ``single`` (default; one database, legacy) or
+    ``saas`` (control plane + credential-routed tenant databases)."""
+    env = os.environ if env is None else env
+    mode = (env.get("ZAZA_TENANCY_MODE") or "single").strip().lower()
+    if mode not in TENANCY_MODES:
+        raise ConfigError(f"ZAZA_TENANCY_MODE must be one of {', '.join(TENANCY_MODES)}")
+    return mode
+
+
+def _saas_users(args: argparse.Namespace) -> int:
+    """Trusted operator path for SaaS identities. Passwords only through the
+    hidden prompt (never an argument, environment variable or log line)."""
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+    from .tenancy.control_repository import PostgresControlRepository  # noqa: PLC0415
+    from .tenancy.domain import TenancyError  # noqa: PLC0415
+    from .tenancy.saas_auth import PostgresAuthStore, SaasAuthService, saas_auth_settings_from_env  # noqa: PLC0415
+
+    control = PostgresControlRepository(control_database_settings_from_env(), actor_type="CLI", actor_id="saas-cli")
+    try:
+        auth = SaasAuthService(PostgresAuthStore(control), saas_auth_settings_from_env())
+        if args.command == "saas-auth-cleanup":
+            sessions, counters = auth.cleanup()
+            print(f"Deleted {sessions} ended session(s) and {counters} old login counter(s).")
+            return 0
+        if args.command == "saas-user-create":
+            user = control.create_user(args.email, args.name)
+            print(f"Created SaaS user {user.email} ({user.user_id}).")
+            if not args.no_password:
+                version, _ = auth.set_password(user.user_id, _new_password(user.email.split("@")[0]))
+                print(f"Password set (credential version {version}).")
+            return 0
+        user = control.find_user_by_email(args.email)
+        if user is None:
+            raise TenancyError("no SaaS user with that email")
+        if args.command == "saas-user-set-password":
+            version, revoked = auth.set_password(user.user_id, _new_password(user.email.split("@")[0]))
+            print(f"Password set (credential version {version}); {revoked} session(s) revoked.")
+        elif args.command == "saas-user-disable":
+            control.set_user_status(user.user_id, "DISABLED")
+            revoked = auth.revoke_user_sessions(user.user_id, reason="user_disabled")
+            print(f"{user.email}: DISABLED; {revoked} session(s) revoked.")
+        elif args.command == "saas-user-enable":
+            control.set_user_status(user.user_id, "ACTIVE")
+            print(f"{user.email}: ACTIVE")
+        elif args.command == "saas-user-revoke-sessions":
+            print(f"{user.email}: {auth.revoke_user_sessions(user.user_id)} session(s) revoked.")
+        return 0
+    except (TenancyError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        control.close()
+
+
+def _serve_saas(args: argparse.Namespace, backend: str) -> int:
+    """``serve`` in SaaS mode: the multi-tenant app (control plane + routed
+    tenant databases). Never the legacy dashboard; never migrations."""
+    import uvicorn  # noqa: PLC0415
+
+    from .app import create_saas_app  # noqa: PLC0415
+    from .tenancy.saas_sync import SaasRuntime  # noqa: PLC0415
+
+    if backend != "postgres":
+        raise ConfigError("ZAZA_TENANCY_MODE=saas needs the PostgreSQL backend")
+    http = _serve_prepare(backend)
+    runtime = SaasRuntime.from_env()
+    try:
+        from . import http_security  # noqa: PLC0415
+
+        app = create_saas_app(runtime)
+        http_security.install(app, http)
+        if http.cloud_run:
+            print(f"Cloud Run mode: public HTTPS is terminated by Cloud Run for {', '.join(http.public_hosts)}; "
+                  f"the container listens internally on {args.host}:{args.port}.")
+        else:
+            print(f"ZaZa SaaS API on http://{args.host}:{args.port}")
+        print(f"SaaS mode: control plane {runtime.control.settings.display()}; tenant databases are chosen from the "
+              "device credential or the signed-in user's membership, never from the request.")
+        print("Manager dashboard: the legacy dashboard is not served in SaaS mode.")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info", log_config=None,
+                    proxy_headers=False, server_header=False, timeout_graceful_shutdown=10)
+    finally:
+        runtime.close()
+    return 0
+
+
 def _managers(args: argparse.Namespace) -> int:
     from .dashboard.auth import ManagerAuth  # noqa: PLC0415
     from .dashboard.queries import PostgresDashboardRepository  # noqa: PLC0415
@@ -501,6 +593,18 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=f"(dashboard) {helptext}")
         p.add_argument("--username", required=True)
 
+    sc = sub.add_parser("saas-user-create", help="(SaaS) create a SaaS login user; prompts for the password")
+    sc.add_argument("--email", required=True)
+    sc.add_argument("--name", required=True, help="display name")
+    sc.add_argument("--no-password", action="store_true", help="create without a password (set it later)")
+    for name, helptext in (("saas-user-set-password", "set a new password (hidden prompt); signs the user out"),
+                           ("saas-user-disable", "disable a SaaS user and revoke every session"),
+                           ("saas-user-enable", "re-enable a SaaS user"),
+                           ("saas-user-revoke-sessions", "sign a SaaS user out everywhere")):
+        p = sub.add_parser(name, help=f"(SaaS) {helptext}")
+        p.add_argument("--email", required=True)
+    sub.add_parser("saas-auth-cleanup", help="(SaaS) delete ended sessions and old login counters")
+
     args = parser.parse_args(argv)
     try:
         if args.env_file is not None:
@@ -526,6 +630,10 @@ def main(argv: list[str] | None = None) -> int:
                                     sql_only=getattr(args, "sql", False))
         if args.command == "tenant-migrate":
             return _tenant_migrate(args.organization, continue_on_error=args.continue_on_error)
+        if args.command in _SAAS_USER_COMMANDS:
+            return _saas_users(args)
+        if args.command == "serve" and tenancy_mode_from_env() == "saas":
+            return _serve_saas(args, args.backend or backend_from_env())
         backend = args.backend or backend_from_env()
         if args.command in ("migrate", "db-status"):
             return _migrate(show_only=args.command == "db-status")

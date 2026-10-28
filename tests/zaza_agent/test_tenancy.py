@@ -311,7 +311,7 @@ def _tenant_auth(tokens_by_org: dict[uuid.UUID, dict[str, str]], calls: list):  
 
 
 def test_device_is_resolved_from_its_credential_and_checked_inside_that_tenant():
-    from deskmate.zaza_server.auth import hash_token
+    from deskmate.zaza_server.tenancy.device_routes import routing_hash as hash_token
 
     directory = FakeDirectory()
     a, b = directory.org("tenant-a"), directory.org("tenant-b")
@@ -328,7 +328,7 @@ def test_device_is_resolved_from_its_credential_and_checked_inside_that_tenant()
 def test_client_claimed_organization_never_overrides_the_credential():
     """Valid token of organization A + 'organization=B' -> refused, and B's
     database is never opened."""
-    from deskmate.zaza_server.auth import hash_token
+    from deskmate.zaza_server.tenancy.device_routes import routing_hash as hash_token
 
     directory = FakeDirectory()
     a, b = directory.org("tenant-a"), directory.org("tenant-b")
@@ -346,7 +346,7 @@ def test_client_claimed_organization_never_overrides_the_credential():
 
 
 def test_unknown_credentials_and_unusable_tenants_are_refused_for_devices():
-    from deskmate.zaza_server.auth import hash_token
+    from deskmate.zaza_server.tenancy.device_routes import routing_hash as hash_token
 
     directory = FakeDirectory()
     suspended = directory.org("tenant-s", status=OrganizationStatus.SUSPENDED)
@@ -465,13 +465,25 @@ def test_tenant_migrations_are_unchanged_and_still_four():
         assert hashlib.sha256(data).hexdigest() == digest, f"{name} was modified"
 
 
+CONTROL_C0001_SHA256 = "41dab6c2b8ac6bb6f7791d3bf8b7ba3a4d2cc420b773f64421d6e77b3c477273"  # applied in production
+
+
+def test_c0001_is_unchanged_and_revision_ids_fit_the_version_column():
+    versions = TENANCY / "control" / "migrations" / "versions"
+    data = (versions / "c0001_control_plane.py").read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(data).hexdigest() == CONTROL_C0001_SHA256, "c0001 was modified"
+    for path in versions.glob("c*.py"):
+        rev = re.search(r'^revision = "([^"]+)"', path.read_text(encoding="utf-8"), re.MULTILINE).group(1)
+        assert len(rev) <= 32, f"{rev}: alembic version_num is VARCHAR(32)"
+
+
 def test_control_and_tenant_chains_are_separate():
     from deskmate.zaza_server.postgres import migrate as tenant
     from deskmate.zaza_server.tenancy.control import migrate as control
 
     assert control.MIGRATIONS_DIR != tenant.MIGRATIONS_DIR
     assert control.VERSION_TABLE == "zaza_control_version" != tenant.VERSION_TABLE
-    assert control.head_revision() == "c0001_control_plane"
+    assert control.head_revision() == "c0002_saas_auth_routing"
     assert tenant.head_revision() == "0004_manager_dashboard_auth"
     control_revs = {p.stem for p in (control.MIGRATIONS_DIR / "versions").glob("*.py")}
     assert all(r.startswith("c") for r in control_revs)
@@ -487,7 +499,11 @@ def test_control_schema_constraints_match_the_domain():
     text = (TENANCY / "control" / "migrations" / "versions" / "c0001_control_plane.py").read_text(encoding="utf-8")
     ns: dict = {}
     exec(compile(re.search(r"^ACTIONS = \(.*?\)\n", text, re.MULTILINE | re.DOTALL).group(0), "c0001", "exec"), ns)
-    assert set(ns["ACTIONS"]) == domain.AUDIT_ACTIONS
+    assert set(ns["ACTIONS"]) == domain.C0001_AUDIT_ACTIONS
+    c2 = (TENANCY / "control" / "migrations" / "versions" / "c0002_saas_auth_routing.py").read_text(encoding="utf-8")
+    exec(compile(re.search(r"^NEW_ACTIONS = \(.*?\)\n", c2, re.MULTILINE | re.DOTALL).group(0), "c0002", "exec"), ns)
+    assert set(ns["NEW_ACTIONS"]) == domain.C0002_AUDIT_ACTIONS
+    assert domain.AUDIT_ACTIONS == domain.C0001_AUDIT_ACTIONS | domain.C0002_AUDIT_ACTIONS
     assert "'OWNER', 'ADMIN', 'MANAGER', 'VIEWER'" in text and "'EMPLOYEE'" not in text
     columns = re.findall(r"^\s{8}([a-z_]+)\s+(?:uuid|text|jsonb|timestamptz)\b", text, re.MULTILINE)
     assert columns and not [c for c in columns if re.search(r"password|secret|token|key|credential|host|url", c)]

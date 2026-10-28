@@ -46,7 +46,9 @@ def control(control_settings):
 
     pg_admin_execute(control_settings, *(f"ALTER TABLE {CONTROL_SCHEMA}.control_audit_logs {m} TRIGGER "
                                          "control_audit_logs_append_only" for m in ("DISABLE",)),
-                     f"TRUNCATE {CONTROL_SCHEMA}.control_audit_logs, {CONTROL_SCHEMA}.tenant_databases, "
+                     f"TRUNCATE {CONTROL_SCHEMA}.device_credential_routes, {CONTROL_SCHEMA}.user_sessions, "
+                     f"{CONTROL_SCHEMA}.user_password_credentials, {CONTROL_SCHEMA}.login_attempt_counters, "
+                     f"{CONTROL_SCHEMA}.control_audit_logs, {CONTROL_SCHEMA}.tenant_databases, "
                      f"{CONTROL_SCHEMA}.organization_memberships, {CONTROL_SCHEMA}.users, "
                      f"{CONTROL_SCHEMA}.organizations",
                      f"ALTER TABLE {CONTROL_SCHEMA}.control_audit_logs ENABLE TRIGGER control_audit_logs_append_only")
@@ -69,7 +71,7 @@ def test_control_schema_reaches_its_own_head(control_settings):
 
     with psycopg.connect(**control_settings.connect_kwargs()) as conn:
         status = control.schema_status(conn)
-        assert status.up_to_date and status.current == "c0001_control_plane"
+        assert status.up_to_date and status.current == control.head_revision() == "c0002_saas_auth_routing"
         assert conn.execute("SELECT to_regclass('alembic_version')::text").fetchone()[0] is None  # no tenant chain
 
 

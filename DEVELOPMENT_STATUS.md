@@ -1,8 +1,73 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10F-A — Cloud Run web security foundation)
+**Last updated:** 2026-10-28 (Phase 10F-B — SaaS authentication and credential-derived tenant routing)
 
-## Current phase: Phase 10F-A — Cloud Run HTTP security foundation (pending your review)
+## Current phase: Phase 10F-B — SaaS authentication and tenant sync routing (pending your review)
+
+Phase 10F-A is **approved**. 10F-B is **code and tests only**:
+- the production control schema is still `c0001`; c0002 is NOT applied;
+- no image was pushed and no web service exists;
+- no tenant, SaaS user, device route or token exists in production.
+
+Design: [docs/zaza/SAAS_AUTH.md](docs/zaza/SAAS_AUTH.md).
+
+- **Control migration `c0002_saas_auth_routing`** (additive; c0001 pinned by
+  hash) adds four tables:
+  - `user_password_credentials`: Argon2id only;
+  - `user_sessions`: SHA-256 of the token only;
+  - `login_attempt_counters`: the shared limiter;
+  - `device_credential_routes`: a domain-separated token hash →
+    organization, never the raw token or the tenant hash.
+
+  It also extends the audit vocabulary.
+- **SaaS auth service** (`tenancy/saas_auth.py`):
+  - Argon2id passwords, with a dummy check for unknown emails;
+  - server-side sessions (cookie `zaza_session`: Secure, HttpOnly,
+    SameSite=Strict, Path=/app);
+  - a disabled user loses access at once; a password change revokes every
+    session;
+  - a SHARED PostgreSQL limiter per identity digest plus a global bucket
+    (no IPs, no Redis), atomic across instances.
+
+  SQL lives only in `PostgresAuthStore`.
+- **Session API** `/app/login`, `/app/session`, `/app/logout`,
+  `/app/orgs/{slug}`, `/app/orgs/{slug}/employees`:
+  - double-submit login token, CSRF token and `http_security.same_origin`;
+  - generic errors; an unknown slug and a missing membership give the same
+    404;
+  - no self-signup.
+- **Authorization:** a session identifies a USER. Every organization goes
+  through `TenantResolver.for_member`. Explicit permission sets per role:
+  MANAGER has no company-wide employee access (team scopes later), and
+  OWNER is not a platform admin. `employees.role` grants nothing in the
+  SaaS.
+- **Device routing:**
+  - `create_saas_app(runtime)` (separate from the unchanged
+    `create_app(repo)`): bearer credential → control route → organization →
+    TenantContext(DEVICE) → leased tenant repository →
+    `authenticate_request` INSIDE that tenant → touch + sync in the same
+    tenant;
+  - a route is not authentication;
+  - nothing client-supplied selects a tenant.
+- **Operator CLI:** `saas-user-create/-set-password/-disable/-enable/`
+  `-revoke-sessions`, `saas-auth-cleanup` (hidden password prompt only).
+  `serve` runs the SaaS app with `ZAZA_TENANCY_MODE=saas`, which
+  `check-config --cloud-run` requires.
+- **Tests** (details in the final report of this phase):
+  - same ids in A/B;
+  - the cross-tenant token and wrong-route matrix;
+  - forged organization/database headers;
+  - sessions, CSRF and origin;
+  - the shared limiter across two instances;
+  - multi-org membership; user/employee separation;
+  - a concurrent A/B stress through real pools with eviction;
+  - repeated isolation proofs.
+
+**Next:** after review, apply c0002 in production through the migration
+job, then the control runtime grants (SAAS_AUTH.md §9). Enrollment and the
+web-service deployment follow.
+
+## Earlier: Phase 10F-A — Cloud Run HTTP security foundation (approved)
 
 Phases 10D, 10E-A, 10E-B and 10E-C are **approved**. 10F-A is **code only**.
 The web service is NOT deployed (`deploy_service = false`); there is no

@@ -36,6 +36,16 @@
 >   The loopback-proxy (Windows/Caddy) path is unchanged, and the sync API is
 >   still single-database; credential-derived tenant routing is a later
 >   phase (CLOUD_SQL_PRODUCTION.md §10a).
+> - **Phase 10F-B:** SaaS authentication and credential-derived tenant
+>   routing (code only; control migration c0002 not yet applied in
+>   production):
+>   - `create_saas_app(runtime)` routes device credentials through the
+>     control plane to their tenant, then authenticates inside that tenant;
+>   - SaaS users sign in to control-plane sessions and reach organizations
+>     only through memberships.
+>
+>   `create_app(repo)` stays the single-database path. See
+>   [docs/zaza/SAAS_AUTH.md](docs/zaza/SAAS_AUTH.md).
 >   The real resources are created in Phase 10E.
 >
 > The single-VPS layout described below (diagram, §9) is the earlier,

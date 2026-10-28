@@ -227,11 +227,18 @@ def schema_revision(value: object) -> str | None:
 
 # ─── audit ────────────────────────────────────────────────────────────────
 
-AUDIT_ACTIONS = frozenset({
+C0001_AUDIT_ACTIONS = frozenset({
     "organization.create", "organization.status_change", "organization.suspend", "organization.reactivate",
     "organization.close", "user.create", "user.status_change", "membership.create", "membership.role_change",
     "membership.status_change", "tenant_database.assign", "tenant_database.status_change",
 })
+# Phase 10F-B (c0002): security-sensitive administrative events. Never the
+# password, a hash, a session token or a device token in the details.
+C0002_AUDIT_ACTIONS = frozenset({
+    "user.password_set", "user.sessions_revoked", "device_route.create", "device_route.revoke",
+})
+AUDIT_ACTIONS = C0001_AUDIT_ACTIONS | C0002_AUDIT_ACTIONS
+AUDIT_ENTITY_TYPES = frozenset({"organization", "user", "membership", "tenant_database", "device_route"})
 ACTOR_TYPES = frozenset({"USER", "PLATFORM", "SYSTEM", "CLI"})
 _ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 

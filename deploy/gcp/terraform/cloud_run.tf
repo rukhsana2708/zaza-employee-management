@@ -43,6 +43,7 @@ locals {
     ZAZA_DB_CONNECTION_BUDGET     = tostring(var.db_connection_budget)
     ZAZA_DASHBOARD_COOKIE_SECURE  = "true"
     ZAZA_HTTP_DEPLOYMENT_MODE     = "cloud-run"
+    ZAZA_TENANCY_MODE             = "saas"
     ZAZA_PUBLIC_HOST              = local.public_host
   })
 

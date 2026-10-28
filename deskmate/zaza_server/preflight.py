@@ -295,6 +295,10 @@ def check_cloud_run_config(env: dict | None = None, *, connect: bool = False) ->
             ", ".join(http.public_hosts) if http.public_hosts else
             "ZAZA_PUBLIC_HOST is not set: deployment blocker for the web service (set the service's run.app "
             "host, and later the custom domain); serve refuses Cloud Run mode without it")
+        tenancy = (env.get("ZAZA_TENANCY_MODE") or "single").strip().lower()
+        add(OK if tenancy == "saas" else FAIL, "tenancy mode",
+            "saas: devices routed by credential, users by membership" if tenancy == "saas" else
+            f"{tenancy} (the Cloud Run web service must run ZAZA_TENANCY_MODE=saas)")
         add(OK if not http.legacy_dashboard_allowed else FAIL, "legacy dashboard",
             "not served in Cloud Run mode (pending SaaS authentication)" if not http.legacy_dashboard_allowed
             else "would be eligible to mount; Cloud Run mode is required")

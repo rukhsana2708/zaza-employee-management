@@ -179,7 +179,7 @@ def _cloud_run_env(tmp_path, **overrides):
         "ZAZA_TENANT_POOL_MAX": "2", "ZAZA_TENANT_POOL_CACHE_MAX": "8", "ZAZA_TENANT_POOL_IDLE_SECONDS": "300",
         "ZAZA_CLOUD_RUN_MAX_INSTANCES": "3", "ZAZA_DB_CONNECTION_BUDGET": "70",
         "ZAZA_DASHBOARD_COOKIE_SECURE": "true", "ZAZA_PUBLIC_HOST": "zaza.example.com",
-        "ZAZA_HTTP_DEPLOYMENT_MODE": "cloud-run",
+        "ZAZA_HTTP_DEPLOYMENT_MODE": "cloud-run", "ZAZA_TENANCY_MODE": "saas",
     }
     env.update(overrides)
     return {k: v for k, v in env.items() if v is not None}
