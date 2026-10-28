@@ -1,11 +1,48 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10E-B — core Google Cloud infrastructure created)
+**Last updated:** 2026-10-28 (Phase 10E-C — secure build, migration job, control schema)
 
-## Current phase: Phase 10E-B — core production infrastructure (pending your review)
+## Current phase: Phase 10E-C — secure build pipeline, production image, migration job, control schema (pending your review)
 
-Phases 10D and 10E-A (remote Terraform state + reviewed plan) are
-**approved**.
+Phases 10D, 10E-A and 10E-B are **approved**.
+
+**Phase 10E-C (2026-10-28): secure build, migration job, control schema:**
+- **Build identity `zaza-build`** (Terraform `build.tf`):
+  - project-level `roles/logging.logWriter`;
+  - `artifactregistry.writer` on the `zaza` repository only;
+  - `storage.objectViewer` on the private build-source bucket only;
+  - no keys, no secrets, no Cloud SQL, no Terraform-state access.
+- **Legacy build account hardened:** `roles/cloudbuild.builds.builder` was
+  removed from the legacy Cloud Build service account. There were no
+  triggers, and no build ever used that account.
+- **Production image:** built on Cloud Build as `zaza-build` from a
+  `git archive` of commit `7b7c223` (tag = full SHA), linux/amd64, uid 10001.
+  `/app` is byte-identical to the commit. It is deployed **by digest**:
+  `asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:318a9d19d385303fa11be95cb2e887d67643c1cde2fba8813756a7a544505482`.
+- **Migration job `zaza-migrate`** (`deploy_migration_job = true`):
+  - identity `zaza-migrate`;
+  - the Cloud SQL socket and the migrator secret only;
+  - no HTTP endpoint, no IAM bindings;
+  - default arguments `control-db-status`.
+- **Control schema:** `control-migrate` ran through the job (`(empty) →
+  c0001_control_plane`). The runtime grants for `zaza_control_app` are
+  applied (INSERT/UPDATE on 4 tables, INSERT on the audit log, SELECT; no
+  DELETE). They were verified positively and negatively, and every test
+  write was rolled back.
+- **Preflight:** `check-config --cloud-run --connect` passed inside the job.
+  The control schema is current; the warnings for the public host and the
+  front-end proxy are expected.
+- **Still NOT created:** no web service, no public URL, no tenant database
+  (`zaza_t_*` = 0), no customer, no employee traffic.
+
+**Next:** the Cloud Run web-service hardening, before `deploy_service =
+true`:
+- trusted proxy and HTTPS/origin reconstruction;
+- dashboard mounting;
+- distributed login rate limiting;
+- the web preflight.
+
+## Earlier: Phase 10E-B — core production infrastructure (approved)
 
 **Core infrastructure created in Phase 10E-B (2026-10-28):**
 - **Cloud SQL `zaza-prod-pg16`** (PostgreSQL 16, Enterprise, `db-custom-1-3840`,
@@ -38,9 +75,7 @@ not migrated yet.
 billing budget with alerts is recommended; the Budget API is not enabled on
 the project.
 
-**Next:** push the image by digest, run `control-migrate` as the migrator
-job and apply the control-role grants. The Cloud Run proxy/origin fixes come
-before `deploy_service = true`.
+(The image, migration job and control migration followed in 10E-C, above.)
 
 ## Earlier: Phase 10D — production Cloud SQL and tenant connection foundation (approved)
 

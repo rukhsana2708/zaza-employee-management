@@ -141,7 +141,39 @@ directly. It **never** does any of these at start-up:
 - loads sample or fake data;
 - runs the attendance or Google Sheets jobs (separate scheduled jobs later).
 
-## Cloud SQL (Phase 10D; nothing created yet)
+## Production build and migration job (Phase 10E-C)
+
+Images are built on **Cloud Build**, never on a laptop, and run as the
+dedicated service account **`zaza-build`**. They are built from a
+`git archive` of an exact, pushed commit, using `deploy/gcp/cloudbuild.yaml`:
+
+```sh
+SHA=<full commit sha, pushed>
+git archive --format=tar.gz -o source.tar.gz "$SHA"
+gcloud storage cp source.tar.gz gs://zaza-employee-monitor-build-source/source/$SHA.tar.gz
+gcloud builds submit gs://zaza-employee-monitor-build-source/source/$SHA.tar.gz \
+  --region=asia-south1 --config=<deploy/gcp/cloudbuild.yaml of that commit> \
+  --substitutions=_GIT_SHA=$SHA \
+  --gcs-source-staging-dir=gs://zaza-employee-monitor-build-source/staging \
+  --service-account=projects/zaza-employee-monitor/serviceAccounts/zaza-build@zaza-employee-monitor.iam.gserviceaccount.com
+```
+
+Always pass `--gcs-source-staging-dir`. Without it, gcloud re-stages the
+source in Google's default `<project>_cloudbuild` bucket, which `zaza-build`
+cannot (and should not) read.
+
+The image gets one immutable tag (the commit SHA). Deployments reference
+the **digest**. Current production image:
+`asia-south1-docker.pkg.dev/zaza-employee-monitor/zaza/zaza-server@sha256:318a9d19d385303fa11be95cb2e887d67643c1cde2fba8813756a7a544505482` (commit `7b7c223`).
+
+The **`zaza-migrate` job** runs explicit commands with the migrator identity:
+
+```sh
+gcloud run jobs execute zaza-migrate --region=asia-south1 --wait                          # control-db-status (default)
+gcloud run jobs execute zaza-migrate --region=asia-south1 --wait --args=control-migrate
+```
+
+## Cloud SQL (Phase 10D; created in Phase 10E-B)
 
 On Cloud Run, the service's Cloud SQL connection mounts
 `/cloudsql/PROJECT:REGION:INSTANCE`. The container is configured with:

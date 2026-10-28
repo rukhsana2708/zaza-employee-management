@@ -178,13 +178,8 @@ resource "google_cloud_run_v2_job" "migrate" {
       max_retries     = 0
       timeout         = "1800s"
 
-      volumes {
-        name = "cloudsql"
-        cloud_sql_instance {
-          instances = [google_sql_database_instance.main.connection_name]
-        }
-      }
-
+      # Block order matches what the Cloud Run API returns (secret first), so
+      # plans show no spurious reordering diff.
       volumes {
         name = "db-migrator"
         secret {
@@ -193,6 +188,13 @@ resource "google_cloud_run_v2_job" "migrate" {
             version = "latest"
             path    = "password"
           }
+        }
+      }
+
+      volumes {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = [google_sql_database_instance.main.connection_name]
         }
       }
 
@@ -210,12 +212,12 @@ resource "google_cloud_run_v2_job" "migrate" {
         }
 
         volume_mounts {
-          name       = "cloudsql"
-          mount_path = "/cloudsql"
-        }
-        volume_mounts {
           name       = "db-migrator"
           mount_path = "/secrets/db-migrator"
+        }
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
         }
 
         resources {

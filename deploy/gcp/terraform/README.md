@@ -73,7 +73,7 @@ terraform providers lock -platform=linux_amd64 -platform=windows_amd64 -platform
 |---|---|---|
 | 10E-A | private, versioned state bucket; GCS backend; reviewed plan | done |
 | 10E-B | core apply (18 resources): Cloud SQL `zaza-prod-pg16`, `zaza_control`, Artifact Registry, `zaza-run` / `zaza-migrate`, secret containers; database roles and secret versions out of band | done |
-| 10E-C | `zaza-build` identity, build-source bucket, image built from an exact commit and deployed by digest, `deploy_migration_job = true`, `control-migrate` plus the control runtime grants | this phase |
+| 10E-C | `zaza-build` identity, build-source bucket, image built from an exact commit (`7b7c223`) and deployed by digest (`sha256:318a9d19d385…`), `deploy_migration_job = true`, `control-migrate` plus the control runtime grants; legacy Cloud Build builder role removed | done |
 | later | Cloud Run proxy/origin/dashboard fixes, then `deploy_service = true` | **not done: no web service exists** |
 
 Working rules:

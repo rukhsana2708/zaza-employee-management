@@ -6,7 +6,8 @@
 #   gcloud builds submit gs://<project>-build-source/source/<sha>.tar.gz \
 #     --region=asia-south1 --config=deploy/gcp/cloudbuild.yaml \
 #     --service-account=projects/<project>/serviceAccounts/zaza-build@<project>.iam.gserviceaccount.com \
-#     --substitutions=_GIT_SHA=<sha>
+#     --substitutions=_GIT_SHA=<sha> \
+#     --gcs-source-staging-dir=gs://<project>-build-source/staging   # never the default bucket
 #
 # The build uses deploy/gcp/Dockerfile with its allowlisted build context
 # (deploy/gcp/Dockerfile.dockerignore, BuildKit). It pushes ONE immutable tag
