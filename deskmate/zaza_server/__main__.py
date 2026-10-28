@@ -509,8 +509,14 @@ def _saas_operator(args: argparse.Namespace) -> int:  # noqa: C901
             elif args.command == "enrollment-reconcile":
                 manager = TenantRepositoryManager(database_settings_from_env())
                 r = EnrollmentService(store, resolver, manager, PostgresAuthStore(control)).reconcile()
-                print(f"expired {r.expired_codes} code(s); interrupted enrollments {r.interrupted}; tokens revoked "
-                      f"{r.tokens_revoked}; tenant unreachable {r.tenant_unreachable}")
+                print(f"expired codes: {r.expired_codes}\n"
+                      f"newly interrupted (now cleanup-pending): {r.interrupted}\n"
+                      f"cleanup completed (FAILED): {r.cleanup_completed} (tokens revoked now: {r.tokens_revoked})\n"
+                      f"cleanup still pending: {r.cleanup_pending} (tenant unreachable: {r.tenant_unreachable})")
+                if r.cleanup_pending:
+                    print("Run enrollment-reconcile again once the tenant is reachable; "
+                          "cleanup-pending enrollments are retried on every run.")
+                    return 1
         return 0
     except (TenancyError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

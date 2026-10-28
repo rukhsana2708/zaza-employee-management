@@ -241,7 +241,7 @@ C0002_AUDIT_ACTIONS = frozenset({
 # or a token in the details.
 C0003_AUDIT_ACTIONS = frozenset({
     "enrollment.code_create", "enrollment.code_revoke", "enrollment.complete", "enrollment.fail",
-    "enrollment.reconcile",
+    "enrollment.cleanup_pending", "enrollment.reconcile",
 })
 AUDIT_ACTIONS = C0001_AUDIT_ACTIONS | C0002_AUDIT_ACTIONS | C0003_AUDIT_ACTIONS
 AUDIT_ENTITY_TYPES = frozenset({"organization", "user", "membership", "tenant_database", "device_route",

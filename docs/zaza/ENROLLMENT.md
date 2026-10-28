@@ -69,25 +69,95 @@ together. The flow is therefore an explicit saga:
 | Step | Database | What | If it fails or the process dies here |
 |---|---|---|---|
 | 1 CLAIM | control | `UPDATE … SET status='CLAIMED', device_id, token_id WHERE code_hash=… AND status='ISSUED' AND expires_at>now()`. One atomic statement: with N concurrent requests, exactly one claims. The `token_id` is chosen now and recorded. | Nothing claimed (503); the code stays usable. |
-| 2 RESOLVE | — | `TenantResolver.for_enrollment(organization)`: ACTIVE organization, READY tenant. | FAILED `tenant_unavailable` (403). |
-| 3 TENANT | tenant | Employee exists and is active. Create the device if new; issue the token with the recorded `token_id` (existing implementation: `zzd_` + 256 bits, SHA-256 stored). | Before the token: FAILED (403/409/503). A crash leaves CLAIMED with no token. |
-| 4 COMPLETE | control, **one transaction** | CLAIMED → COMPLETED + `route_hash`, INSERT the device credential route, audit. | Immediate **compensation**: revoke the token (by `token_id`), FAILED `route_failed` (503). |
+| 2 RESOLVE | — | `TenantResolver.for_enrollment(organization)`: ACTIVE organization, READY tenant. | FAILED `tenant_unavailable` (403). No token can exist. |
+| 3 TENANT | tenant | Employee exists and is active. Create the device if new; issue the token with the recorded `token_id` (existing implementation: `zzd_` + 256 bits, SHA-256 stored). | Refused before the token: FAILED (403/409/503). The token write itself fails (its INSERT may have committed): **CLEANUP_PENDING** `token_uncertain`. A crash leaves CLAIMED. |
+| 4 COMPLETE | control, **one transaction** | CLAIMED → COMPLETED + `route_hash`, INSERT the device credential route, audit. | Immediate **compensation**: revoke the token by `token_id`. Revocation confirmed: FAILED `route_failed`. Revocation failed: **CLEANUP_PENDING** `route_failed`. Either way 503. |
+
+### Status model (c0003)
+
+```
+ISSUED ──claim──> CLAIMED ──complete──> COMPLETED
+  │                 │  └──refused before any token / token confirmed revoked──> FAILED
+  │                 └──token may exist, not confirmed revoked──> CLEANUP_PENDING ──cleanup confirmed──> FAILED
+  └──> REVOKED | EXPIRED
+```
+
+- **Terminal:** COMPLETED, REVOKED, EXPIRED and FAILED. A database trigger
+  refuses any change out of them.
+- **CLEANUP_PENDING is not terminal,** but it can only move on to FAILED:
+  never back to ISSUED or CLAIMED, and never to COMPLETED.
+- CLEANUP_PENDING and FAILED always carry a `failure_reason`: one of
+  `interrupted`, `route_failed`, `token_uncertain`, `tenant_unavailable`,
+  `employee_unavailable`, `device_exists`, `device_disabled` or `timeout`.
+- **FAILED means the credential cleanup is complete:** the claim's token
+  was revoked, was already revoked, or was never issued.
 
 **Why no usable orphan can survive:** the sync API routes a token only
 through `device_credential_routes`, and a route is written only in step 4,
 atomically with COMPLETED. An interruption before step 4 leaves at most a
-tenant token **without a route**, which is unusable. It is revoked by
-compensation, or later by **`enrollment-reconcile`**. That command marks
-CLAIMED codes older than 15 minutes FAILED (`interrupted`), revokes their
-recorded `token_id` in the tenant, and expires unused codes past their
-expiry.
+tenant token **without a route**, which is unusable. It is still revoked,
+and nothing marks the enrollment done until that is confirmed.
 
-Completion and reconciliation can't both win:
-- completion requires status CLAIMED;
-- reconciliation flips CLAIMED to FAILED first;
-- a completion that loses revokes its own token.
+### Reconciliation (`enrollment-reconcile`, safe to run any number of times)
 
-The raw token is never persisted for recovery.
+1. Unused codes past their expiry become EXPIRED.
+2. **Interrupted claims first become cleanup-pending:** CLAIMED codes older
+   than 15 minutes move to CLEANUP_PENDING (`interrupted`) in one atomic
+   UPDATE.
+3. **Every** CLEANUP_PENDING enrollment is retried on **every** run. Its
+   tenant is resolved and `revoke_token(token_id)` is called:
+   - **revoked now, already revoked, or never existed** (a crash between
+     claim and token): the cleanup is confirmed, and the enrollment
+     becomes FAILED;
+   - **tenant unreachable** (down, not resolvable, or the organization not
+     ACTIVE): the enrollment **stays CLEANUP_PENDING**. An unreachable
+     tenant never causes cleanup to be abandoned: there is no retry limit,
+     and the next run tries again;
+   - token revoked but the FAILED state can't be recorded (control down):
+     it stays CLEANUP_PENDING, and the next run finds the token already
+     revoked and records FAILED.
+
+`revoke_token(token_id)` is idempotent. It returns True if this call
+revoked an ACTIVE token, and False if the token was already revoked or
+never existed; either way it guarantees no ACTIVE token has that id. It
+*raises* when storage is unavailable, so an outage can never be mistaken
+for "nothing to revoke".
+
+Operator output separates:
+- expired codes;
+- newly interrupted enrollments;
+- cleanup completed, and how many tokens were revoked now;
+- cleanup still pending, and how many of those had an unreachable tenant.
+
+The command exits 1 while anything is still pending. It never prints
+database names, token hashes, tokens or code hashes.
+
+### Completion vs. reconciliation
+
+Both transitions out of CLAIMED are single conditional UPDATEs on the same
+row (`… WHERE status = 'CLAIMED'`), so exactly one wins:
+- **completion wins:** COMPLETED, which is terminal. Reconciliation only
+  selects CLAIMED and CLEANUP_PENDING rows, so it never touches the
+  legitimate credential.
+- **reconciliation wins:** CLEANUP_PENDING. Completion then finds no
+  CLAIMED row, writes **no route**, revokes its own token and answers 401.
+  Reconciliation revokes the same token (idempotently), and the
+  enrollment ends FAILED with the token REVOKED.
+
+Late issuing is closed too:
+- a still-running enrollment refuses to issue its token once half the
+  reconcile delay has passed since its claim (`timeout`, FAILED, no token);
+- tenant statements time out after `ZAZA_DB_STATEMENT_TIMEOUT_MS` (15 s),
+  far below the 450 s margin;
+- so no token can appear after reconciliation has confirmed it absent.
+
+**Residual edge, documented:** if the completion transaction commits but
+its acknowledgement is lost, compensation still revokes the token. The
+result is COMPLETED with a route to a revoked token: safe (it authenticates
+nothing), and the agent saw 503, so it never had the token anyway.
+
+The raw token is never persisted for recovery. The recovery metadata is
+only `token_id`, `organization_id` and `device_id`.
 
 **Lost response:** if the agent never receives the token after step 4,
 the code is used, and a retry gets the generic refusal. The operator issues
@@ -99,9 +169,22 @@ unused token. There is no "replay the token" path.
 | Device id in the tenant | Plain code | `--reenroll` code |
 |---|---|---|
 | new | device + first token | device + first token |
-| exists, same employee, ACTIVE | **409** (already enrolled) | **additional** token; the old one keeps working until the operator revokes it |
+| exists, same employee, ACTIVE, **with** an ACTIVE token | **409** (already enrolled) | **additional** token; the old one keeps working until the operator revokes it |
+| exists, same employee, ACTIVE, **no** ACTIVE token | token issued (recovery, see below) | token issued |
 | exists, other employee | 409 | 409 |
 | exists, DISABLED | 409 | **403**: never silently re-enabled |
+
+**Device rows left by interrupted enrollments (decision: keep and
+recover).** An enrollment that dies after creating the device but before
+completing leaves a device row. A device row is not a credential.
+Deleting it would need a cross-database check that no token, record or
+audit entry depends on it, so it is kept. A later **plain** code for the
+**same employee** and device id recovers cleanly once the device has no
+ACTIVE token, that is, once the cleanup has revoked the interrupted token
+or none was ever issued. No `--reenroll` bypass is needed. While a
+cleanup-pending token is still ACTIVE, a plain code is refused (409) until
+reconciliation has revoked it. A device is never reassigned to another
+employee, with either kind of code.
 
 Device ids use the sync protocol's grammar, `[A-Za-z0-9._:-]{1,128}`
 (`domain.identifier`). Spaces, control characters, slashes, quotes and
@@ -195,4 +278,4 @@ Internet -> External Application Load Balancer (managed TLS, custom hostname)
 | Test file | Database | What |
 |---|---|---|
 | `test_enrollment.py` | none | the real service, resolver, manager and SaaS app with in-memory stores |
-| `test_enrollment_postgres.py` | PostgreSQL 16, in a deterministic container network | provisioning A/B, recovery, c0003 constraints, A/B enrollment and sync, 16-way concurrent use of one code, reconciliation, compensation |
+| `test_enrollment_postgres.py` | PostgreSQL 16, in a deterministic container network | provisioning A/B, recovery, c0003 constraints and CLEANUP_PENDING transitions, A/B enrollment and sync, 16-way concurrent use of one code, reconciliation, compensation, a **real tenant outage** (`ALLOW_CONNECTIONS false`) between the CLEANUP_PENDING transition and the revocation across three runs (the fourth finishes), route failure plus revocation failure, completion racing reconciliation (both orders observed), device-row recovery |

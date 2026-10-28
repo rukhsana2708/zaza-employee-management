@@ -28,11 +28,33 @@ THE SAGA (control DB and tenant DB can't commit atomically together)::
 
 A credential is ROUTABLE only after step 3, and step 3 is atomic in the
 control database. So an interruption anywhere leaves at most an UNROUTABLE
-tenant token, which the SaaS sync API can't use (no route). Compensation:
-a failure after step 2 revokes that token immediately (by token_id) and
-marks the code FAILED. If that compensation itself can't run (crash, or
-the tenant is down), the code stays CLAIMED, and ``reconcile()``
-(operator job) marks old CLAIMED codes FAILED and revokes their token_id.
+tenant token, which the SaaS sync API can't use (no route). Such a token
+must still be revoked, and the state machine never forgets that:
+
+  CLAIMED -> FAILED           only when no token of the claim can exist (a
+                              refusal before issuing) or it is CONFIRMED
+                              revoked;
+  CLAIMED -> CLEANUP_PENDING  whenever a token may exist and its revocation
+                              is not confirmed (compensation failed, issuing
+                              failed ambiguously, or the process died:
+                              ``reconcile()`` moves CLAIMED codes older than
+                              the delay here, atomically);
+  CLEANUP_PENDING -> FAILED   by ``reconcile()``, only after the tenant
+                              confirms the token_id is revoked or absent.
+                              An unreachable tenant leaves it CLEANUP_PENDING
+                              and every later run retries; there is no retry
+                              limit. FAILED therefore means "cleanup done".
+
+Completion requires status CLAIMED, so once reconciliation has moved a
+claim to CLEANUP_PENDING no route can be written for it; if completion won
+first, the code is COMPLETED (terminal) and reconciliation never sees it.
+
+An enrollment that is still running can't issue its token after the
+reconciler has confirmed the token absent: it refuses to issue once half of
+the reconcile delay has passed since its claim (the delay is >= 60 s and
+tenant statements time out after ZAZA_DB_STATEMENT_TIMEOUT_MS, 15 s by
+default), and a completion that loses revokes its own token.
+
 The raw token is never persisted for recovery.
 
 Retry: a used code answers the same generic refusal as an unknown one. If
@@ -48,6 +70,7 @@ import logging
 import os
 import re
 import secrets
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -276,6 +299,8 @@ class PostgresEnrollmentStore:
         return True
 
     def fail(self, claim: Claim, reason: str) -> bool:
+        """CLAIMED -> FAILED. Only when no token of this claim can exist, or
+        it is confirmed revoked."""
         with self.control.transaction() as cur:
             row = cur.execute("UPDATE device_enrollment_codes SET status = 'FAILED', failure_reason = %s "
                               "WHERE enrollment_id = %s AND status = 'CLAIMED' RETURNING enrollment_id",
@@ -285,21 +310,54 @@ class PostgresEnrollmentStore:
                                          claim.organization_id, {"reason": reason[:64]})
         return row is not None
 
-    def take_stale_claims(self, older_than_seconds: int) -> list[Claim]:
-        """Reconciliation: atomically mark CLAIMED codes older than the
-        cutoff FAILED and return them (a concurrent completion can't win
-        afterwards: completion requires status CLAIMED)."""
+    def mark_cleanup_pending(self, claim: Claim, reason: str) -> bool:
+        """CLAIMED -> CLEANUP_PENDING: a token may exist and is not confirmed
+        revoked; ``reconcile()`` retries its revocation."""
+        with self.control.transaction() as cur:
+            row = cur.execute("UPDATE device_enrollment_codes SET status = 'CLEANUP_PENDING', failure_reason = %s "
+                              "WHERE enrollment_id = %s AND status = 'CLAIMED' RETURNING enrollment_id",
+                              (reason[:64], claim.enrollment_id)).fetchone()
+            if row:
+                self.control.write_audit(cur, "enrollment.cleanup_pending", "enrollment", claim.enrollment_id,
+                                         claim.organization_id, {"reason": reason[:64]})
+        return row is not None
+
+    def take_stale_claims(self, older_than_seconds: int) -> int:
+        """Reconciliation: atomically move CLAIMED codes older than the
+        cutoff to CLEANUP_PENDING (a concurrent completion can't win
+        afterwards: completion requires status CLAIMED). Returns how many."""
         with self.control.transaction() as cur:
             rows = cur.execute(
-                "UPDATE device_enrollment_codes SET status = 'FAILED', failure_reason = 'interrupted' "
+                "UPDATE device_enrollment_codes SET status = 'CLEANUP_PENDING', failure_reason = 'interrupted' "
                 "WHERE status = 'CLAIMED' AND claimed_at < now() - make_interval(secs => %s) "
-                "RETURNING enrollment_id, organization_id, employee_id, device_display_name, allow_existing_device, "
-                "device_id, token_id", (older_than_seconds,)).fetchall()
+                "RETURNING enrollment_id, organization_id, device_id", (older_than_seconds,)).fetchall()
             for r in rows:
-                self.control.write_audit(cur, "enrollment.reconcile", "enrollment", r["enrollment_id"],
-                                         r["organization_id"], {"device_id": r["device_id"]})
+                self.control.write_audit(cur, "enrollment.cleanup_pending", "enrollment", r["enrollment_id"],
+                                         r["organization_id"], {"reason": "interrupted", "device_id": r["device_id"]})
+        return len(rows)
+
+    def cleanup_pending(self) -> list[Claim]:
+        """Every CLEANUP_PENDING enrollment (no retry limit: each run retries all)."""
+        with self.control.connection() as conn:
+            rows = conn.execute(
+                "SELECT enrollment_id, organization_id, employee_id, device_display_name, allow_existing_device, "
+                "device_id, token_id FROM device_enrollment_codes WHERE status = 'CLEANUP_PENDING' "
+                "ORDER BY claimed_at").fetchall()
         return [Claim(r["enrollment_id"], r["organization_id"], r["employee_id"], r["device_display_name"],
                       r["allow_existing_device"], r["device_id"], r["token_id"]) for r in rows]
+
+    def finish_cleanup(self, claim: Claim) -> bool:
+        """CLEANUP_PENDING -> FAILED (keeping the reason), once the tenant
+        confirmed the token revoked or absent."""
+        with self.control.transaction() as cur:
+            row = cur.execute("UPDATE device_enrollment_codes SET status = 'FAILED' "
+                              "WHERE enrollment_id = %s AND status = 'CLEANUP_PENDING' RETURNING failure_reason",
+                              (claim.enrollment_id,)).fetchone()
+            if row:
+                self.control.write_audit(cur, "enrollment.reconcile", "enrollment", claim.enrollment_id,
+                                         claim.organization_id, {"device_id": claim.device_id,
+                                                                 "reason": row["failure_reason"]})
+        return row is not None
 
     def expire_codes(self) -> int:
         with self.control.connection() as conn:
@@ -312,10 +370,12 @@ class PostgresEnrollmentStore:
 
 @dataclass(frozen=True)
 class ReconcileResult:
-    expired_codes: int
-    interrupted: int
-    tokens_revoked: int
-    tenant_unreachable: int
+    expired_codes: int       # unused codes past their expiry -> EXPIRED
+    interrupted: int         # stale CLAIMED -> CLEANUP_PENDING in this run
+    cleanup_completed: int   # CLEANUP_PENDING -> FAILED (token revoked now, already revoked, or never issued)
+    tokens_revoked: int      # of those, tokens that were still ACTIVE and were revoked now
+    cleanup_pending: int     # still CLEANUP_PENDING after this run (retried by the next run)
+    tenant_unreachable: int  # of those, the tenant (or its resolution) was unavailable
 
 
 class EnrollmentService:
@@ -354,6 +414,7 @@ class EnrollmentService:
             raise EnrollmentRefused(422, str(exc), "invalid_device") from None
 
         # 1. CLAIM (control)
+        started = time.monotonic()
         try:
             claim = self.store.claim(code_hash(normalized), device_id, uuid.uuid4())
         except Exception as exc:  # noqa: BLE001 — control DB unreachable: nothing was claimed
@@ -370,6 +431,7 @@ class EnrollmentService:
 
         # 2. TENANT (device + token in the resolved tenant only)
         issued = None
+        token_attempted = False
         try:
             with self.manager.repository(context) as repo:
                 employee = repo.get_employee(claim.employee_id)
@@ -380,13 +442,22 @@ class EnrollmentService:
                 if device is None:
                     repo.add_device(device_id, claim.employee_id,
                                     display_name=claim.device_display_name or client_name)
-                elif not claim.allow_existing_device or device.employee_id != claim.employee_id:
+                elif device.employee_id != claim.employee_id or (not claim.allow_existing_device and (
+                        device.status != "ACTIVE" or repo.has_active_token(device_id))):
+                    # never reassigned to another employee, and a plain code never adds a second credential.
+                    # Same employee + ACTIVE + no ACTIVE token = never usable (e.g. the device row of an
+                    # interrupted enrollment): a plain code recovers it.
                     self._fail(claim, "device_exists")
                     raise EnrollmentRefused(409, DEVICE_EXISTS, "device_exists")
                 elif device.status != "ACTIVE":
                     self._fail(claim, "device_disabled")  # never silently re-enabled
                     raise EnrollmentRefused(403, REFUSED, "device_disabled")
                 self._fault("device_ready")
+                if time.monotonic() - started > self.settings.reconcile_after_seconds / 2:
+                    # too late to issue: the reconciler may already treat this claim as interrupted
+                    self._fail(claim, "timeout")
+                    raise RepositoryUnavailable("enrollment took too long")
+                token_attempted = True
                 issued = issue_token(repo, device_id, token_id=str(claim.token_id))
                 self._fault("token_issued")
                 # 3. COMPLETE (control: state + route + audit in ONE transaction)
@@ -394,15 +465,18 @@ class EnrollmentService:
                     completed = self.store.complete(claim, routing_hash(issued.token))
                 except Exception as exc:  # noqa: BLE001 — control failed: revoke the unrouted token now
                     self._compensate(repo, claim, issued.token_id, "route_failed")
-                    logger.warning("enrollment completion failed (%s); token revoked", type(exc).__name__)
+                    logger.warning("enrollment completion failed (%s)", type(exc).__name__)
                     raise RepositoryUnavailable("enrollment could not be completed") from None
-                if not completed:  # reconciled meanwhile: this credential must not survive
+                if not completed:  # reconciliation won (CLEANUP_PENDING) and also retries this revocation
                     self._revoke(repo, issued.token_id)
                     raise EnrollmentRefused(401, GENERIC_REFUSAL, "reconciled")
                 self._fault("completed")
         except RepositoryUnavailable:
             if issued is None:
-                self._fail(claim, "tenant_unavailable")
+                if token_attempted:  # the token INSERT may have committed before the failure
+                    self._cleanup_pending(claim, "token_uncertain")
+                else:
+                    self._fail(claim, "tenant_unavailable")
             raise
         logger.info("device enrolled (enrollment %s)", claim.enrollment_id)
         return EnrolledDevice(device_id, claim.employee_id, issued.token)
@@ -414,31 +488,59 @@ class EnrollmentService:
         except Exception as exc:  # noqa: BLE001 — stays CLAIMED: reconcile() finishes it
             logger.warning("could not mark enrollment %s failed (%s)", claim.enrollment_id, type(exc).__name__)
 
+    def _cleanup_pending(self, claim: Claim, reason: str) -> None:
+        try:
+            self.store.mark_cleanup_pending(claim, reason)
+        except Exception as exc:  # noqa: BLE001 — stays CLAIMED: reconcile() moves it to CLEANUP_PENDING
+            logger.warning("could not mark enrollment %s for cleanup (%s)", claim.enrollment_id, type(exc).__name__)
+
     @staticmethod
     def _revoke(repo, token_id: str) -> bool:  # noqa: ANN001
+        """True once the token is CONFIRMED not ACTIVE (revoked now, already
+        revoked, or never issued); False if that is unknown (storage error)."""
         try:
-            return repo.revoke_token(str(token_id))
+            repo.revoke_token(str(token_id))
+            return True
         except Exception as exc:  # noqa: BLE001 — the token has no route; reconcile() retries
             logger.warning("could not revoke an unrouted enrollment token (%s)", type(exc).__name__)
             return False
 
     def _compensate(self, repo, claim: Claim, token_id: str, reason: str) -> None:  # noqa: ANN001
-        self._revoke(repo, token_id)
-        self._fail(claim, reason)
+        if self._revoke(repo, token_id):
+            self._fail(claim, reason)             # cleanup confirmed: terminal
+        else:
+            self._cleanup_pending(claim, reason)  # cleanup still required: reconcile() retries
 
     def reconcile(self) -> ReconcileResult:
-        """Operator job: expire unused codes past their expiry, and finish
-        interrupted enrollments (CLAIMED longer than the delay): mark FAILED
-        and revoke the token they may have issued. Their tokens never had a
-        route, so they were never usable."""
+        """Operator job, safe to run any number of times:
+
+        1. expire unused codes past their expiry;
+        2. move CLAIMED codes older than the delay to CLEANUP_PENDING;
+        3. for EVERY CLEANUP_PENDING code, revoke its token_id in its tenant;
+           once that is confirmed (revoked now, already revoked, or never
+           issued) mark it FAILED. If the tenant can't be reached it stays
+           CLEANUP_PENDING for the next run: cleanup is never abandoned.
+        """
         expired = self.store.expire_codes()
-        stale = self.store.take_stale_claims(self.settings.reconcile_after_seconds)
-        revoked = unreachable = 0
-        for claim in stale:
+        interrupted = self.store.take_stale_claims(self.settings.reconcile_after_seconds)
+        completed = revoked = pending = unreachable = 0
+        for claim in self.store.cleanup_pending():
+            self._fault("cleanup_started")
             try:
                 context = self.resolver.for_job(claim.organization_id)
                 with self.manager.repository(context) as repo:
-                    revoked += int(self._revoke(repo, str(claim.token_id)))
-            except (TenantAccessDenied, RepositoryUnavailable):
-                unreachable += 1  # not READY/unreachable: the token is unroutable anyway; revoke later
-        return ReconcileResult(expired, len(stale), revoked, unreachable)
+                    revoked_now = repo.revoke_token(str(claim.token_id))
+            except Exception as exc:  # noqa: BLE001 — tenant (or its resolution) unavailable: retry next run
+                logger.warning("enrollment %s cleanup deferred (%s)", claim.enrollment_id, type(exc).__name__)
+                pending += 1
+                unreachable += 1
+                continue
+            revoked += int(bool(revoked_now))
+            try:
+                finished = self.store.finish_cleanup(claim)
+            except Exception as exc:  # noqa: BLE001 — the token is revoked; the state change is retried next run
+                logger.warning("enrollment %s cleanup not recorded (%s)", claim.enrollment_id, type(exc).__name__)
+                pending += 1
+                continue
+            completed += int(finished)
+        return ReconcileResult(expired, interrupted, completed, revoked, pending, unreachable)

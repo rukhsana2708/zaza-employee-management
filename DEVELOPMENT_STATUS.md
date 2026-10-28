@@ -27,6 +27,31 @@ Design: [docs/zaza/ENROLLMENT.md](docs/zaza/ENROLLMENT.md).
   - compensation revokes that token immediately, and `enrollment-reconcile`
     finishes anything left;
   - concurrent use of one code yields exactly one credential.
+- **Repair before approval (durable reconciliation):** an interrupted
+  enrollment used to be marked FAILED *before* its token was revoked, so a
+  tenant outage at that moment left an ACTIVE, unroutable token that was
+  never retried.
+  - c0003 (still unapplied everywhere, so edited in place) adds the
+    non-terminal state **`CLEANUP_PENDING`**:
+    `CLAIMED → CLEANUP_PENDING → FAILED`. It can only move on to FAILED.
+  - **FAILED now means the credential cleanup is complete:** the token was
+    revoked, was already revoked, or was never issued.
+  - `enrollment-reconcile` moves stale claims to CLEANUP_PENDING atomically
+    and retries every cleanup-pending enrollment on every run, with no
+    give-up limit. An unreachable tenant leaves it CLEANUP_PENDING.
+  - **Compensation:** if revoking the token fails during compensation, the
+    enrollment becomes CLEANUP_PENDING rather than FAILED. An ambiguous
+    token write is treated as "possibly issued".
+  - **Late enrollments:** an enrollment that is still running refuses to
+    issue a token after half the reconcile delay.
+  - **Device rows of interrupted enrollments:** they are kept. A plain code
+    for the same employee recovers such a device once it has no ACTIVE
+    token, and a device is never reassigned to another employee.
+  - Proven in memory and on real PostgreSQL 16:
+    - a real tenant outage (`ALLOW_CONNECTIONS false`) across three
+      reconcile runs, finished by the fourth;
+    - a route failure combined with a revocation failure;
+    - completion racing reconciliation, in both orders.
 - **`POST /api/v1/enroll`** (SaaS app only; not deployed): strict JSON, 4 KiB
   limit, shared per-code and global rate limits, token returned once.
 - **Provisioning** is now repairable on retry: a separate idempotent

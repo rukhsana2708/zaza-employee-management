@@ -673,6 +673,14 @@ deployed):
   Interruptions leave at most an unroutable token, which is revoked by
   compensation or by `enrollment-reconcile`. Raw tokens and codes are never
   stored or logged.
+- **Cleanup is never abandoned:**
+  - an enrollment whose token may still exist stays `CLEANUP_PENDING`, and
+    every `enrollment-reconcile` run retries it, so an unreachable tenant
+    only delays the revocation;
+  - it becomes FAILED only once the tenant confirms the token is revoked or
+    was never issued;
+  - completion and reconciliation can't both win: both require status
+    CLAIMED.
 - **Concurrent use** of one code yields exactly one credential.
 - **Rate limits:** shared per-code and global enrollment limits; no client
   IPs.

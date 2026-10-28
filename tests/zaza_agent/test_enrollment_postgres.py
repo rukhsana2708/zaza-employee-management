@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import secrets
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -84,7 +85,8 @@ def env():
             finally:
                 repo.close()
             tenants[name] = SimpleNamespace(org=org, db=result.database_name, settings=settings, result=result)
-        runtime_base = dataclasses.replace(admin, user=role, password=role_pw, dbname="unused")
+        # short pool wait: the outage tests make a tenant unreachable on purpose
+        runtime_base = dataclasses.replace(admin, user=role, password=role_pw, dbname="unused", pool_timeout=4.0)
         manager = TenantRepositoryManager(runtime_base, TenantPoolLimits(cache_max=2))
         closers.append(manager)
         resolver, counters = TenantResolver(control), PostgresAuthStore(control)
@@ -238,26 +240,101 @@ def test_concurrent_same_code_on_postgres(env):
     assert _exec(env.control_settings, "SELECT count(*) FROM device_credential_routes")[0][0] == 1
 
 
-def test_interrupted_enrollment_is_reconciled_on_postgres(env):
+def _crash_after_token(env, device="device-1"):  # noqa: ANN001, ANN202
     a = env.tenants["a"]
-    _, code = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
+    info, code = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
 
     def crash(step: str) -> None:
         if step == "token_issued":
             raise RuntimeError("injected crash")
 
     env.service._fault = crash
-    assert _enroll(env, code).status_code == 500
-    env.service._fault = lambda step: None
-    assert _exec(env.control_settings, "SELECT status FROM device_enrollment_codes")[0][0] == "CLAIMED"
-    assert _exec(env.control_settings, "SELECT count(*) FROM device_credential_routes")[0][0] == 0
-    assert _exec(a.settings, "SELECT status FROM device_tokens")[0][0] == "ACTIVE"  # exists but unroutable
-    _exec(env.control_settings, "UPDATE device_enrollment_codes SET claimed_at = now() - interval '1 hour'")
+    try:
+        assert _enroll(env, code, device=device).status_code == 500
+    finally:
+        env.service._fault = lambda step: None
+    return info.enrollment_id
+
+
+def _state(env, eid):  # noqa: ANN001, ANN202
+    return _exec(env.control_settings, "SELECT status, failure_reason, token_id FROM device_enrollment_codes "
+                 "WHERE enrollment_id = %s", (eid,))[0]
+
+
+def _token_status(env, token_id, name="a"):  # noqa: ANN001, ANN202
+    rows = _exec(env.tenants[name].settings, "SELECT status FROM device_tokens WHERE token_id = %s", (token_id,))
+    return rows[0][0] if rows else None
+
+
+def _age_claims(env):  # noqa: ANN001
+    _exec(env.control_settings, "UPDATE device_enrollment_codes SET claimed_at = now() - interval '1 hour' "
+          "WHERE status = 'CLAIMED'")
+
+
+def _routes(env):  # noqa: ANN001, ANN202
+    return _exec(env.control_settings, "SELECT count(*) FROM device_credential_routes")[0][0]
+
+
+def _tenant_offline(env, name="a"):  # noqa: ANN001
+    """A REAL outage of tenant ``name``: no new connections, existing ones killed."""
+    db = env.tenants[name].db
+    _exec(env.admin, sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS false").format(sql.Identifier(db)))
+    _exec(env.admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s "
+          "AND pid <> pg_backend_pid()", (db,))
+
+
+def _tenant_online(env, name="a"):  # noqa: ANN001
+    _exec(env.admin, sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS true").format(
+        sql.Identifier(env.tenants[name].db)))
+
+
+def test_interrupted_enrollment_is_reconciled_on_postgres(env):
+    eid = _crash_after_token(env)
+    status, _, token_id = _state(env, eid)
+    assert status == "CLAIMED" and _routes(env) == 0
+    assert _token_status(env, token_id) == "ACTIVE"  # exists but unroutable
+    _age_claims(env)
     result = env.service.reconcile()
-    assert (result.interrupted, result.tokens_revoked) == (1, 1)
-    assert _exec(env.control_settings, "SELECT status, failure_reason FROM device_enrollment_codes")[0] == (
-        "FAILED", "interrupted")
-    assert _exec(a.settings, "SELECT status FROM device_tokens")[0][0] == "REVOKED"
+    assert (result.interrupted, result.cleanup_completed, result.tokens_revoked, result.cleanup_pending) == (1, 1, 1, 0)
+    assert _state(env, eid)[:2] == ("FAILED", "interrupted")
+    assert _token_status(env, token_id) == "REVOKED"
+
+
+def test_tenant_outage_during_cleanup_is_retried_until_it_succeeds_on_postgres(env):
+    """The 10G-A repair on real databases: the tenant goes down BETWEEN the
+    CLEANUP_PENDING transition and the revocation, stays down for three runs,
+    and the fourth run (tenant back) finishes the cleanup."""
+    eid = _crash_after_token(env)
+    token_id = _state(env, eid)[2]
+    _age_claims(env)
+    went_down = []
+
+    def outage(step: str) -> None:
+        if step == "cleanup_started" and not went_down:
+            # the claim is already CLEANUP_PENDING (committed) when the tenant disappears
+            assert _state(env, eid)[0] == "CLEANUP_PENDING"
+            _tenant_offline(env)
+            went_down.append(True)
+
+    env.service._fault = outage
+    try:
+        for run in range(3):
+            r = env.service.reconcile()
+            assert (r.interrupted, r.cleanup_completed, r.cleanup_pending, r.tenant_unreachable) == (
+                int(run == 0), 0, 1, 1), r
+            assert _state(env, eid)[:2] == ("CLEANUP_PENDING", "interrupted")
+            assert _routes(env) == 0
+    finally:
+        env.service._fault = lambda step: None
+        _tenant_online(env)
+    assert _token_status(env, token_id) == "ACTIVE"  # still there: nothing pretended it was cleaned up
+    r = env.service.reconcile()
+    assert (r.cleanup_completed, r.tokens_revoked, r.cleanup_pending, r.tenant_unreachable) == (1, 1, 0, 0)
+    assert _state(env, eid)[:2] == ("FAILED", "interrupted") and _token_status(env, token_id) == "REVOKED"
+    again = env.service.reconcile()  # idempotent
+    assert (again.interrupted, again.cleanup_completed, again.tokens_revoked, again.cleanup_pending) == (0, 0, 0, 0)
+    assert _state(env, eid)[:2] == ("FAILED", "interrupted") and _token_status(env, token_id) == "REVOKED"
+    assert _routes(env) == 0
 
 
 def test_route_failure_is_compensated_on_postgres(env):
@@ -272,3 +349,118 @@ def test_route_failure_is_compensated_on_postgres(env):
     assert _exec(a.settings, "SELECT status FROM device_tokens")[0][0] == "REVOKED"
     assert _exec(env.control_settings, "SELECT status, failure_reason FROM device_enrollment_codes")[0] == (
         "FAILED", "route_failed")
+
+
+def test_route_failure_with_tenant_down_for_revocation_stays_cleanup_pending_on_postgres(env):
+    a = env.tenants["a"]
+    info, code = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
+
+    def completion_fails(claim, route_hash):  # noqa: ANN001, ANN202
+        _tenant_offline(env)  # ... and the tenant is gone too when compensation tries to revoke
+        raise psycopg.OperationalError("control down")
+
+    original = env.store.complete
+    env.store.complete = completion_fails
+    try:
+        assert _enroll(env, code).status_code == 503
+    finally:
+        env.store.complete = original
+        _tenant_online(env)
+    status, reason, token_id = _state(env, info.enrollment_id)
+    assert (status, reason) == ("CLEANUP_PENDING", "route_failed") and _routes(env) == 0
+    assert _token_status(env, token_id) == "ACTIVE"  # revocation failed: NOT recorded as cleaned up
+    r = env.service.reconcile()
+    assert (r.interrupted, r.cleanup_completed, r.tokens_revoked, r.cleanup_pending) == (0, 1, 1, 0)
+    assert _state(env, info.enrollment_id)[:2] == ("FAILED", "route_failed")
+    assert _token_status(env, token_id) == "REVOKED" and _routes(env) == 0
+
+
+def test_completion_and_reconciliation_race_on_postgres(env):
+    import random
+
+    a = env.tenants["a"]
+    outcomes = []
+    for i in range(12):
+        info, code = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
+        go = threading.Barrier(2)
+        late = ("enroll", "reconcile")[i % 2]
+        result = {}
+
+        def at_token(step: str) -> None:
+            if step == "token_issued":
+                _age_claims(env)  # the claim is stale: reconciliation may take it from now on
+                go.wait(30)
+                if late == "enroll":
+                    time.sleep(random.uniform(0.02, 0.05))
+
+        def enroll() -> None:
+            result["enroll"] = _enroll(env, code, device=f"race-{i}").status_code
+
+        def reconcile() -> None:
+            go.wait(30)
+            if late == "reconcile":
+                time.sleep(random.uniform(0.02, 0.05))
+            result["reconcile"] = env.service.reconcile()
+
+        env.service._fault = at_token
+        threads = [threading.Thread(target=enroll), threading.Thread(target=reconcile)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(120)
+        env.service._fault = lambda step: None
+        env.service.reconcile()  # finish any cleanup still pending
+        status, _, token_id = _state(env, info.enrollment_id)
+        routes = _exec(env.control_settings, "SELECT count(*) FROM device_credential_routes WHERE device_id = %s",
+                       (f"race-{i}",))[0][0]
+        token = _token_status(env, token_id)
+        if result["enroll"] == 200:  # A: completion won
+            assert (status, routes, token) == ("COMPLETED", 1, "ACTIVE")
+        else:  # B: reconciliation won
+            assert result["enroll"] == 401
+            assert (status, routes, token) == ("FAILED", 0, "REVOKED")
+        outcomes.append(result["enroll"])
+    assert set(outcomes) == {200, 401}, outcomes  # both orders really happened
+    with pytest.raises(psycopg.errors.CheckViolation):  # and a FAILED race loser can never be revived
+        _exec(env.control_settings, "UPDATE device_enrollment_codes SET status = 'COMPLETED' WHERE status = 'FAILED'")
+
+
+def test_device_row_of_an_interrupted_enrollment_is_recovered_on_postgres(env):
+    a = env.tenants["a"]
+    eid = _crash_after_token(env, device="device-7")
+    _age_claims(env)
+    assert env.service.reconcile().cleanup_completed == 1
+    assert _state(env, eid)[0] == "FAILED"
+    _, code = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
+    r = _enroll(env, code, device="device-7")  # plain code, same employee and device: recovered
+    assert r.status_code == 200, r.text
+    assert _exec(a.settings, "SELECT count(*) FROM devices WHERE device_id = 'device-7'")[0][0] == 1
+    assert sorted(x[0] for x in _exec(a.settings, "SELECT status FROM device_tokens WHERE device_id = 'device-7'")) == [
+        "ACTIVE", "REVOKED"]
+
+
+def test_c0003_cleanup_pending_transitions(env):
+    a = env.tenants["a"]
+    cs = env.control_settings
+    eid = _crash_after_token(env)
+    _age_claims(env)
+    _tenant_offline(env)
+    try:
+        env.service.reconcile()
+    finally:
+        _tenant_online(env)
+    assert _state(env, eid)[0] == "CLEANUP_PENDING"
+    for bad in ("ISSUED", "CLAIMED", "COMPLETED", "REVOKED", "EXPIRED"):  # only forward, to FAILED
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _exec(cs, "UPDATE device_enrollment_codes SET status = %s WHERE enrollment_id = %s", (bad, eid))
+    with pytest.raises(psycopg.errors.CheckViolation):  # cleanup-pending always says why
+        _exec(cs, "UPDATE device_enrollment_codes SET failure_reason = NULL WHERE enrollment_id = %s", (eid,))
+    env.service.reconcile()
+    assert _state(env, eid)[0] == "FAILED"
+    for bad in ("CLEANUP_PENDING", "CLAIMED", "ISSUED", "COMPLETED"):  # FAILED is terminal
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _exec(cs, "UPDATE device_enrollment_codes SET status = %s WHERE enrollment_id = %s", (bad, eid))
+    info, _ = env.store.create_code(a.org.organization_id, "employee-1", ttl_hours=1)
+    with pytest.raises(psycopg.errors.CheckViolation):  # an unused code can't jump to FAILED/COMPLETED
+        _exec(cs, "UPDATE device_enrollment_codes SET status = 'FAILED', failure_reason = 'x' "
+              "WHERE enrollment_id = %s", (info.enrollment_id,))

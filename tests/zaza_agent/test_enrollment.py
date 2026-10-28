@@ -7,7 +7,9 @@ proof is in test_enrollment_postgres.py."""
 from __future__ import annotations
 
 import hashlib
+import random
 import threading
+import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -43,6 +45,9 @@ class MemoryEnrollmentStore:
         self.now = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
         self.fail_complete = False
         self.fail_claim = False
+        self.fail_mark = False
+        self.fail_finish = False
+        self.transitions: list[tuple] = []
 
     def create_code(self, organization_id, employee_id, *, ttl_hours, device_display_name=None,  # noqa: ANN001, ANN201
                     allow_existing_device=False):
@@ -71,7 +76,7 @@ class MemoryEnrollmentStore:
         with self.lock:
             r = self.rows.get(enrollment_id)
             if r and r["status"] == "ISSUED":
-                r.update(status="REVOKED")
+                self._move(r, "REVOKED")
                 return True
             return False
 
@@ -81,7 +86,7 @@ class MemoryEnrollmentStore:
         with self.lock:
             for r in self.rows.values():
                 if r["code_hash"] == digest and r["status"] == "ISSUED" and r["expires_at"] > self.now:
-                    r.update(status="CLAIMED", claimed_at=self.now, device_id=device_id, token_id=token_id)
+                    self._move(r, "CLAIMED", claimed_at=self.now, device_id=device_id, token_id=token_id)
                     return E.Claim(r["enrollment_id"], r["organization_id"], r["employee_id"],
                                    r["device_display_name"], r["allow_existing_device"], device_id, token_id)
             return None
@@ -94,36 +99,72 @@ class MemoryEnrollmentStore:
             if r["status"] != "CLAIMED":
                 return False
             assert route_hash not in self.routes.routes, "route collision"
-            r.update(status="COMPLETED", completed_at=self.now, route_hash=route_hash)
+            self._move(r, "COMPLETED", completed_at=self.now, route_hash=route_hash)
             self.routes.routes[route_hash] = claim.organization_id
             self.audit.append(("enrollment.complete", claim.enrollment_id))
             return True
+
+    # the c0003 trigger: terminal states never change; CLEANUP_PENDING only moves to FAILED
+    ALLOWED = {"ISSUED": {"CLAIMED", "REVOKED", "EXPIRED"}, "CLAIMED": {"COMPLETED", "CLEANUP_PENDING", "FAILED"},
+               "CLEANUP_PENDING": {"FAILED"}}
+
+    def _move(self, r: dict, status: str, **fields) -> None:  # noqa: ANN003
+        assert status in self.ALLOWED.get(r["status"], set()), f"forbidden {r['status']} -> {status}"
+        r.update(status=status, **fields)
+        self.transitions.append((r["enrollment_id"], status))
+
+    @staticmethod
+    def _claim(r: dict) -> E.Claim:
+        return E.Claim(r["enrollment_id"], r["organization_id"], r["employee_id"], r["device_display_name"],
+                       r["allow_existing_device"], r["device_id"], r["token_id"])
 
     def fail(self, claim, reason):  # noqa: ANN001, ANN201
         with self.lock:
             r = self.rows[claim.enrollment_id]
             if r["status"] != "CLAIMED":
                 return False
-            r.update(status="FAILED", failure_reason=reason)
+            self._move(r, "FAILED", failure_reason=reason)
+            return True
+
+    def mark_cleanup_pending(self, claim, reason):  # noqa: ANN001, ANN201
+        if self.fail_mark:
+            raise ConnectionError("control database down")
+        with self.lock:
+            r = self.rows[claim.enrollment_id]
+            if r["status"] != "CLAIMED":
+                return False
+            self._move(r, "CLEANUP_PENDING", failure_reason=reason)
             return True
 
     def take_stale_claims(self, older_than_seconds):  # noqa: ANN001, ANN201
         with self.lock:
-            out = []
+            n = 0
             for r in self.rows.values():
                 if r["status"] == "CLAIMED" and r["claimed_at"] < self.now - timedelta(seconds=older_than_seconds):
-                    r.update(status="FAILED", failure_reason="interrupted")
-                    out.append(E.Claim(r["enrollment_id"], r["organization_id"], r["employee_id"],
-                                       r["device_display_name"], r["allow_existing_device"], r["device_id"],
-                                       r["token_id"]))
-            return out
+                    self._move(r, "CLEANUP_PENDING", failure_reason="interrupted")
+                    n += 1
+            return n
+
+    def cleanup_pending(self):  # noqa: ANN201
+        with self.lock:
+            return [self._claim(r) for r in self.rows.values() if r["status"] == "CLEANUP_PENDING"]
+
+    def finish_cleanup(self, claim):  # noqa: ANN001, ANN201
+        if self.fail_finish:
+            raise ConnectionError("control database down")
+        with self.lock:
+            r = self.rows[claim.enrollment_id]
+            if r["status"] != "CLEANUP_PENDING":
+                return False
+            self._move(r, "FAILED")
+            return True
 
     def expire_codes(self):  # noqa: ANN201
         with self.lock:
             n = 0
             for r in self.rows.values():
                 if r["status"] == "ISSUED" and r["expires_at"] <= self.now:
-                    r.update(status="EXPIRED")
+                    self._move(r, "EXPIRED")
                     n += 1
             return n
 
@@ -363,12 +404,131 @@ def test_crash_before_completion_leaves_no_usable_credential_and_reconcile_clean
         assert len(tokens) == 1 and tokens[0].status == "ACTIVE" and tokens[0].token_id == str(row["token_id"])
     # the code is not reusable while/after it is claimed
     assert _enroll(env, code).status_code == 401
-    # reconcile after the delay: FAILED + the issued token (if any) revoked
-    env.store.now += timedelta(seconds=env.service.settings.reconcile_after_seconds + 1)
+    # reconcile after the delay: CLEANUP_PENDING, then (tenant reachable) FAILED + the token (if any) revoked
+    _age(env)
     result = env.service.reconcile()
-    assert result.interrupted == 1 and result.tokens_revoked == (1 if step == "token_issued" else 0)
+    assert result == E.ReconcileResult(0, 1, 1, 1 if step == "token_issued" else 0, 0, 0)
     assert row["status"] == "FAILED" and row["failure_reason"] == "interrupted"
+    assert [s for _, s in env.store.transitions][-2:] == ["CLEANUP_PENDING", "FAILED"]
     assert all(t.status == "REVOKED" for t in env.t["a"]["repo"]._tokens.values())
+
+
+def _age(env) -> None:  # noqa: ANN001
+    env.store.now += timedelta(seconds=env.service.settings.reconcile_after_seconds + 1)
+
+
+def _tenant_down(env, name="a"):  # noqa: ANN001, ANN202
+    """Tenant ``name`` unreachable for token revocation; returns the restore function."""
+    repo = env.t[name]["repo"]
+
+    def down(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise RepositoryUnavailable(f"tenant {name} down")
+
+    repo.revoke_token = down
+    return lambda: repo.__dict__.pop("revoke_token", None)
+
+
+def _crash_after_token(env):  # noqa: ANN001, ANN202
+    """An enrollment whose process died after issuing the token: CLAIMED, ACTIVE unroutable token."""
+    _, code = _code(env)
+    env.faults.append("token_issued")
+    assert _enroll(env, code).status_code == 500
+    env.faults.remove("token_issued")
+    row = next(r for r in env.store.rows.values() if r["status"] == "CLAIMED")
+    token = next(t for t in env.t["a"]["repo"]._tokens.values() if t.token_id == str(row["token_id"]))
+    assert token.status == "ACTIVE"
+    return row, token
+
+
+def _token(env, token_id, name="a"):  # noqa: ANN001, ANN202
+    return next(t for t in env.t[name]["repo"]._tokens.values() if t.token_id == token_id)
+
+
+def test_unreachable_tenant_keeps_cleanup_pending_and_a_later_run_finishes_it():
+    """The 10G-A repair: an interrupted enrollment whose tenant is down is NOT
+    marked FAILED (which would abandon its ACTIVE token); the next run retries."""
+    env = _env()
+    row, token = _crash_after_token(env)
+    _age(env)
+    restore = _tenant_down(env)
+    first = env.service.reconcile()
+    assert first == E.ReconcileResult(expired_codes=0, interrupted=1, cleanup_completed=0, tokens_revoked=0,
+                                      cleanup_pending=1, tenant_unreachable=1)
+    assert row["status"] == "CLEANUP_PENDING" and row["failure_reason"] == "interrupted"
+    assert _token(env, token.token_id).status == "ACTIVE" and not env.runtime.routes.routes  # live but unroutable
+    restore()
+    second = env.service.reconcile()
+    assert second == E.ReconcileResult(0, 0, 1, 1, 0, 0)
+    assert row["status"] == "FAILED" and _token(env, token.token_id).status == "REVOKED"
+    assert not env.runtime.routes.routes
+    before = list(env.store.transitions)
+    third = env.service.reconcile()  # idempotent
+    assert third == E.ReconcileResult(0, 0, 0, 0, 0, 0)
+    assert env.store.transitions == before and row["status"] == "FAILED"
+    assert _token(env, token.token_id).status == "REVOKED" and not env.runtime.routes.routes
+
+
+def test_cleanup_is_retried_on_every_run_without_a_give_up_limit():
+    env = _env()
+    row, token = _crash_after_token(env)
+    _age(env)
+    restore = _tenant_down(env)
+    for run in range(3):
+        r = env.service.reconcile()
+        assert (r.interrupted, r.cleanup_pending, r.tenant_unreachable, r.cleanup_completed) == (int(run == 0), 1, 1, 0)
+        assert row["status"] == "CLEANUP_PENDING" and _token(env, token.token_id).status == "ACTIVE"
+    restore()
+    r = env.service.reconcile()
+    assert (r.cleanup_completed, r.tokens_revoked, r.cleanup_pending) == (1, 1, 0)
+    assert row["status"] == "FAILED" and _token(env, token.token_id).status == "REVOKED"
+
+
+def test_tenant_not_resolvable_also_keeps_cleanup_pending():
+    env = _env()
+    row, token = _crash_after_token(env)
+    _age(env)
+    org_id = env.t["a"]["org"]
+    org = env.runtime.control.orgs[org_id]
+    env.runtime.control.orgs[org_id] = replace(org, status=OrganizationStatus.SUSPENDED)
+    r = env.service.reconcile()
+    assert (r.cleanup_pending, r.tenant_unreachable) == (1, 1) and row["status"] == "CLEANUP_PENDING"
+    env.runtime.control.orgs[org_id] = org
+    assert env.service.reconcile().cleanup_completed == 1 and _token(env, token.token_id).status == "REVOKED"
+
+
+def test_cleanup_recorded_later_if_control_fails_after_the_revocation():
+    env = _env()
+    row, token = _crash_after_token(env)
+    _age(env)
+    env.store.fail_finish = True
+    r = env.service.reconcile()
+    assert (r.tokens_revoked, r.cleanup_completed, r.cleanup_pending, r.tenant_unreachable) == (1, 0, 1, 0)
+    assert row["status"] == "CLEANUP_PENDING" and _token(env, token.token_id).status == "REVOKED"
+    env.store.fail_finish = False
+    r = env.service.reconcile()  # token already revoked = cleanup confirmed
+    assert (r.tokens_revoked, r.cleanup_completed) == (0, 1) and row["status"] == "FAILED"
+
+
+def test_token_never_issued_completes_cleanup():
+    env = _env()
+    env.faults.append("device_ready")  # died after CLAIM and device creation, before the token
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 500
+    row = next(iter(env.store.rows.values()))
+    assert row["status"] == "CLAIMED" and not env.t["a"]["repo"]._tokens
+    _age(env)
+    assert env.service.reconcile() == E.ReconcileResult(0, 1, 1, 0, 0, 0)
+    assert row["status"] == "FAILED" and not env.t["a"]["repo"]._tokens
+
+
+def test_token_already_revoked_completes_cleanup():
+    env = _env()
+    row, token = _crash_after_token(env)
+    assert env.t["a"]["repo"].revoke_token(token.token_id)  # e.g. an operator revoked it meanwhile
+    assert env.t["a"]["repo"].revoke_token(token.token_id) is False  # idempotent
+    _age(env)
+    assert env.service.reconcile() == E.ReconcileResult(0, 1, 1, 0, 0, 0)
+    assert row["status"] == "FAILED"
 
 
 def test_route_failure_revokes_the_token_immediately():
@@ -380,7 +540,115 @@ def test_route_failure_revokes_the_token_immediately():
     tokens = list(env.t["a"]["repo"]._tokens.values())
     assert len(tokens) == 1 and tokens[0].status == "REVOKED"
     assert not env.runtime.routes.routes
-    assert next(iter(env.store.rows.values()))["failure_reason"] == "route_failed"
+    row = next(iter(env.store.rows.values()))
+    assert (row["status"], row["failure_reason"]) == ("FAILED", "route_failed")
+
+
+def test_route_failure_with_revocation_failure_stays_cleanup_pending():
+    env = _env()
+    env.store.fail_complete = True
+    restore = _tenant_down(env)
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 503
+    row = next(iter(env.store.rows.values()))
+    token = _token(env, str(row["token_id"]))
+    assert (row["status"], row["failure_reason"]) == ("CLEANUP_PENDING", "route_failed")  # NOT terminal
+    assert token.status == "ACTIVE" and not env.runtime.routes.routes
+    restore()
+    r = env.service.reconcile()  # no need to wait for the delay: it is already cleanup-pending
+    assert (r.interrupted, r.cleanup_completed, r.tokens_revoked) == (0, 1, 1)
+    assert row["status"] == "FAILED" and _token(env, token.token_id).status == "REVOKED"
+
+
+def test_route_and_revocation_and_control_failure_falls_back_to_reconcile():
+    env = _env()
+    env.store.fail_complete = env.store.fail_mark = True
+    restore = _tenant_down(env)
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 503
+    row = next(iter(env.store.rows.values()))
+    assert row["status"] == "CLAIMED"  # nothing could be recorded: the stale-claim path takes over
+    restore()
+    env.store.fail_complete = env.store.fail_mark = False
+    _age(env)
+    assert env.service.reconcile() == E.ReconcileResult(0, 1, 1, 1, 0, 0)
+    assert row["status"] == "FAILED" and _token(env, str(row["token_id"])).status == "REVOKED"
+
+
+def test_ambiguous_token_write_is_treated_as_possibly_issued():
+    env = _env()
+    repo = env.t["a"]["repo"]
+    real_add = repo.add_token
+
+    def committed_then_lost(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        real_add(*a, **k)  # the INSERT committed ...
+        raise RepositoryUnavailable("connection lost")  # ... but the answer never arrived
+
+    repo.add_token = committed_then_lost
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 503
+    del repo.add_token
+    row = next(iter(env.store.rows.values()))
+    assert (row["status"], row["failure_reason"]) == ("CLEANUP_PENDING", "token_uncertain")
+    assert _token(env, str(row["token_id"])).status == "ACTIVE"
+    assert env.service.reconcile().cleanup_completed == 1
+    assert row["status"] == "FAILED" and _token(env, str(row["token_id"])).status == "REVOKED"
+
+
+def test_slow_enrollment_refuses_to_issue_after_half_the_reconcile_delay(monkeypatch):
+    env = _env()
+    _, code = _code(env)
+    clock = [1000.0]
+    monkeypatch.setattr(E.time, "monotonic", lambda: clock[0])
+
+    def stall(step: str) -> None:
+        if step == "device_ready":
+            clock[0] += env.service.settings.reconcile_after_seconds / 2 + 1
+
+    env.service._fault = stall
+    assert _enroll(env, code).status_code == 503
+    row = next(iter(env.store.rows.values()))
+    assert (row["status"], row["failure_reason"]) == ("FAILED", "timeout") and not env.t["a"]["repo"]._tokens
+
+
+# ─── device rows left by interrupted enrollments ───────────────────────────
+
+
+@pytest.mark.parametrize("step", ["device_ready", "token_issued"])
+def test_device_row_of_an_interrupted_enrollment_is_recovered_by_a_plain_code(step):
+    env = _env()
+    env.faults.append(step)
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 500
+    env.faults.remove(step)
+    assert env.t["a"]["repo"].get_device("device-1").employee_id == "employee-1"
+    # while the cleanup has not run, the unroutable token still counts: a plain code is refused
+    if step == "token_issued":
+        _, code = _code(env)
+        assert _enroll(env, code).status_code == 409
+    _age(env)
+    env.service.reconcile()
+    assert not env.t["a"]["repo"].has_active_token("device-1")
+    _, code = _code(env)
+    r = _enroll(env, code)  # same employee, same device id, plain code: recovered, no bypass needed
+    assert r.status_code == 200 and _sync_ok(env, r.json()["device_token"]).status_code == 200
+    assert len(env.t["a"]["repo"].list_devices()) == 1
+
+
+def test_orphan_device_row_is_never_reassigned_to_another_employee():
+    env = _env()
+    env.faults.append("device_ready")
+    _, code = _code(env)
+    assert _enroll(env, code).status_code == 500
+    env.faults.clear()
+    _age(env)
+    env.service.reconcile()
+    env.t["a"]["repo"].add_employee("employee-2", "Someone else")
+    for reenroll in (False, True):
+        _, code = _code(env, employee="employee-2", allow_existing_device=reenroll)
+        assert _enroll(env, code).status_code == 409
+    assert env.t["a"]["repo"].get_device("device-1").employee_id == "employee-1"
+    assert not env.t["a"]["repo"]._tokens
 
 
 def test_control_database_down_at_claim_claims_nothing():
@@ -414,14 +682,96 @@ def test_completion_losing_to_reconcile_revokes_the_token():
     _, code = _code(env)
 
     def reconcile_wins(step: str) -> None:
-        if step == "token_issued":  # reconcile runs between token issue and completion
-            for r in env.store.rows.values():
-                r.update(status="FAILED", failure_reason="interrupted")
+        if step == "token_issued":  # a full reconcile runs between token issue and completion
+            _age(env)
+            assert env.service.reconcile().interrupted == 1
 
     env.service._fault = reconcile_wins
     assert _enroll(env, code).status_code == 401
+    row = next(iter(env.store.rows.values()))
+    assert row["status"] == "FAILED" and row["route_hash"] is None and not env.runtime.routes.routes
     assert all(t.status == "REVOKED" for t in env.t["a"]["repo"]._tokens.values())
-    assert not env.runtime.routes.routes
+
+
+def test_reconcile_moved_to_cleanup_pending_blocks_completion_even_if_the_tenant_is_down():
+    env = _env()
+    _, code = _code(env)
+    restore = None
+
+    def reconcile_wins(step: str) -> None:
+        nonlocal restore
+        if step == "token_issued":
+            _age(env)
+            restore = _tenant_down(env)
+            env.service.reconcile()
+
+    env.service._fault = reconcile_wins
+    assert _enroll(env, code).status_code == 401  # completion found CLEANUP_PENDING: no route written
+    row = next(iter(env.store.rows.values()))
+    assert row["status"] == "CLEANUP_PENDING" and not env.runtime.routes.routes
+    restore()
+    env.service._fault = lambda step: None
+    assert env.service.reconcile().cleanup_completed == 1
+    assert row["status"] == "FAILED" and all(t.status == "REVOKED" for t in env.t["a"]["repo"]._tokens.values())
+
+
+def test_completion_winning_is_never_touched_by_reconcile():
+    env = _env()
+    _, code = _code(env)
+    token = _enroll(env, code).json()["device_token"]
+    _age(env)
+    assert env.service.reconcile() == E.ReconcileResult(0, 0, 0, 0, 0, 0)
+    row = next(iter(env.store.rows.values()))
+    assert row["status"] == "COMPLETED" and len(env.runtime.routes.routes) == 1
+    assert _sync_ok(env, token).status_code == 200
+
+
+def test_concurrent_completion_and_reconciliation_have_exactly_one_valid_outcome():
+    seen = set()
+    for _ in range(40):
+        env = _env()
+        _, code = _code(env)
+        go = threading.Barrier(2)
+        results: dict[str, object] = {}
+        late = random.choice(("enroll", "reconcile"))  # which side starts a little later: both orders occur
+
+        def at_token(step: str) -> None:
+            if step == "token_issued":
+                go.wait(10)  # completion and reconciliation start together
+                if late == "enroll":
+                    time.sleep(0.005)
+
+        env.service._fault = at_token
+
+        def enroll() -> None:
+            results["enroll"] = _enroll(env, code)
+
+        def reconcile() -> None:
+            go.wait(10)
+            if late == "reconcile":
+                time.sleep(0.005)
+            _age(env)
+            results["reconcile"] = env.service.reconcile()
+
+        threads = [threading.Thread(target=enroll), threading.Thread(target=reconcile)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(30)
+        env.service._fault = lambda step: None
+        env.service.reconcile()  # let any pending cleanup finish
+        row = next(iter(env.store.rows.values()))
+        tokens = list(env.t["a"]["repo"]._tokens.values())
+        assert len(tokens) == 1
+        seen.add(results["enroll"].status_code)
+        if results["enroll"].status_code == 200:  # A: completion won
+            assert row["status"] == "COMPLETED" and len(env.runtime.routes.routes) == 1
+            assert tokens[0].status == "ACTIVE"
+        else:  # B: reconciliation won
+            assert results["enroll"].status_code == 401
+            assert row["status"] == "FAILED" and not env.runtime.routes.routes and tokens[0].status == "REVOKED"
+        assert [s for _, s in env.store.transitions].count("COMPLETED") <= 1
+    assert seen == {200, 401}, seen  # both valid outcomes were exercised
 
 
 # ─── limits and HTTP hygiene ───────────────────────────────────────────────

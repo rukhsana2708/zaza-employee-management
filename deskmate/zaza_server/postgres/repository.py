@@ -386,6 +386,11 @@ class PostgresRepository:
                             old={"status": "ACTIVE"}, new={"status": "REVOKED", "device_id": row["device_id"]})
         return row is not None
 
+    def has_active_token(self, device_id: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM device_tokens WHERE device_id = %s AND status = 'ACTIVE' LIMIT 1",
+                                (device_id,)).fetchone() is not None
+
     def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
         stale = f"now() - interval '{_LAST_SEEN_RESOLUTION}'"
         with self._conn() as conn, conn.transaction():

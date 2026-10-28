@@ -12,7 +12,13 @@ Additive. c0001 and c0002 are unchanged. Control/auth metadata only.
   and the saga state of the enrollment:
     ISSUED -> CLAIMED -> COMPLETED            (success)
     ISSUED -> REVOKED | EXPIRED               (operator / clock)
-    CLAIMED -> FAILED                         (refused, compensated or reconciled)
+    CLAIMED -> FAILED                         (refused before any token was
+                                               issued, or its token confirmed revoked)
+    CLAIMED -> CLEANUP_PENDING -> FAILED      (a token may exist: FAILED only
+                                               once its revocation/absence is confirmed)
+  COMPLETED, REVOKED, EXPIRED and FAILED are terminal; CLEANUP_PENDING is
+  not (reconciliation retries it until the cleanup is done) and can only
+  become FAILED. FAILED therefore means "credential cleanup complete".
   ``token_id`` (the tenant token's non-secret id, chosen BEFORE the tenant
   write) and ``route_hash`` let an operator/reconciler find and revoke
   exactly what an interrupted enrollment created. No raw token is stored.
@@ -39,9 +45,9 @@ PREVIOUS_ACTIONS = ("organization.create", "organization.status_change", "organi
                     "tenant_database.assign", "tenant_database.status_change", "user.password_set",
                     "user.sessions_revoked", "device_route.create", "device_route.revoke")
 NEW_ACTIONS = ("enrollment.code_create", "enrollment.code_revoke", "enrollment.complete", "enrollment.fail",
-               "enrollment.reconcile")
+               "enrollment.cleanup_pending", "enrollment.reconcile")
 PREVIOUS_ENTITIES = ("organization", "user", "membership", "tenant_database", "device_route")
-STATUSES = ("ISSUED", "CLAIMED", "COMPLETED", "REVOKED", "EXPIRED", "FAILED")
+STATUSES = ("ISSUED", "CLAIMED", "CLEANUP_PENDING", "COMPLETED", "REVOKED", "EXPIRED", "FAILED")
 
 
 def _list(values: tuple[str, ...]) -> str:
@@ -80,6 +86,8 @@ STATEMENTS = [
         CONSTRAINT device_enrollment_codes_expiry_after_creation CHECK (expires_at > created_at),
         CONSTRAINT device_enrollment_codes_failure_reason_length CHECK (failure_reason IS NULL
             OR char_length(failure_reason) BETWEEN 1 AND 64),
+        CONSTRAINT device_enrollment_codes_failure_reason_consistent CHECK (
+            (status IN ('CLEANUP_PENDING', 'FAILED')) = (failure_reason IS NOT NULL)),
         CONSTRAINT device_enrollment_codes_claim_consistent CHECK (
             (status IN ('ISSUED', 'REVOKED', 'EXPIRED')) = (claimed_at IS NULL)),
         CONSTRAINT device_enrollment_codes_claim_identifiers CHECK (
@@ -102,9 +110,18 @@ STATEMENTS = [
             RAISE EXCEPTION USING ERRCODE = 'check_violation',
                 MESSAGE = 'enrollment code is in a terminal state: ' || OLD.status;
         END IF;
-        IF OLD.status = 'CLAIMED' AND NEW.status NOT IN ('CLAIMED', 'COMPLETED', 'FAILED') THEN
+        IF OLD.status = 'CLAIMED' AND NEW.status NOT IN ('CLAIMED', 'COMPLETED', 'CLEANUP_PENDING', 'FAILED') THEN
             RAISE EXCEPTION USING ERRCODE = 'check_violation',
-                MESSAGE = 'a claimed enrollment can only complete or fail';
+                MESSAGE = 'a claimed enrollment can only complete, need cleanup or fail';
+        END IF;
+        -- cleanup-pending is not terminal, but it only ever moves forward, to FAILED
+        IF OLD.status = 'CLEANUP_PENDING' AND NEW.status NOT IN ('CLEANUP_PENDING', 'FAILED') THEN
+            RAISE EXCEPTION USING ERRCODE = 'check_violation',
+                MESSAGE = 'a cleanup-pending enrollment can only fail';
+        END IF;
+        IF OLD.status = 'ISSUED' AND NEW.status NOT IN ('ISSUED', 'CLAIMED', 'REVOKED', 'EXPIRED') THEN
+            RAISE EXCEPTION USING ERRCODE = 'check_violation',
+                MESSAGE = 'an issued enrollment code can only be claimed, revoked or expire';
         END IF;
         RETURN NEW;
     END $$

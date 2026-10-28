@@ -150,7 +150,13 @@ class CentralRepository(Protocol):
     def find_token(self, token_hash: str) -> TokenRecord | None: ...
     def revoke_tokens(self, device_id: str, *, except_token_id: str | None = None) -> int: ...
     def revoke_token(self, token_id: str) -> bool:
-        """Revoke ONE token by id (enrollment compensation). True if it was ACTIVE."""
+        """Revoke ONE token by id (enrollment compensation). Idempotent: True
+        if THIS call revoked an ACTIVE token, False if the token was already
+        revoked or never existed. Either way, once it returns, no ACTIVE token
+        with that id exists. It RAISES (never returns False) when storage is
+        unavailable, so callers can't mistake an outage for "nothing to revoke"."""
+    def has_active_token(self, device_id: str) -> bool:
+        """Whether the device holds at least one ACTIVE token."""
     def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
         """Record API connectivity (``last_seen_at``) after a successful
         authentication. This is device connectivity, never employee activity."""
@@ -289,6 +295,10 @@ class InMemoryRepository:
                     self._tokens[key] = replace(token, status="REVOKED", revoked_at=utc_now())
                     return True
             return False
+
+    def has_active_token(self, device_id: str) -> bool:
+        with self._lock:
+            return any(t.device_id == device_id and t.status == "ACTIVE" for t in self._tokens.values())
 
     def upsert_records(self, records: Iterable[IncomingRecord]) -> list[UpsertOutcome]:
         with self._lock:
@@ -515,6 +525,12 @@ class SqliteDevRepository:
                 (utc_now(), token_id),
             )
         return cur.rowcount == 1
+
+    def has_active_token(self, device_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute("SELECT 1 FROM device_tokens WHERE device_id = ? AND status = 'ACTIVE' LIMIT 1",
+                                     (device_id,)).fetchone()
+        return row is not None
 
     def upsert_records(self, records: Iterable[IncomingRecord]) -> list[UpsertOutcome]:
         outcomes = []
