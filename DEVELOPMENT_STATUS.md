@@ -9,7 +9,7 @@
   `LowLevelHooksTimeout`), the agent reports `UNKNOWN / INPUT_HOOK_DIVERGENCE`, never IDLE.
 - Wired into the installed runner; tests in `test_input_hook_divergence.py`.
 - 10G-E-B: image `bc81ce5` built on Cloud Build (digest `sha256:dda9c500...0d53`); deploying it to
-  the `zaza-migrate` job was blocked by the permission classifier and has NOT been done.
+  the `zaza-migrate` job: DONE (execution zaza-migrate-nscq5, control-db-status OK at c0003). The user, membership and employee bootstrap is still pending.
 
 ## Phase 10H-A — public edge definition (code only; pending your review)
 
