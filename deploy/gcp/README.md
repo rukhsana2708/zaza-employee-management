@@ -10,7 +10,8 @@ for **Google Cloud Run**, and holds its infrastructure definition
 | Exists | Does NOT exist yet |
 |---|---|
 | Cloud SQL `zaza-prod-pg16` (PostgreSQL 16) with the `zaza_control` database | the `zaza-server` web service: it has **NOT been deployed**, and no public application URL exists |
-| control schema **`c0003_device_enrollment`** (10G-B), runtime grants applied; the enrollment tables are empty | any organization, SaaS user, membership or tenant (`zaza_t_*`) database |
+| control schema **`c0003_device_enrollment`** (10G-B), runtime grants applied; the enrollment tables are empty | any SaaS user, membership, employee or device |
+| ONE internal organization `zaza-internal` and its server-generated tenant database `zaza_t_7jihzm6q6wvdogkv535q45mhdy` (READY, empty; 10G-C) | any customer organization or customer tenant |
 | Artifact Registry `zaza` with the production image (by digest, see "Production build and migration job") | any enrollment code, device route or issued device token |
 | the `zaza-migrate` Cloud Run **job** (explicit migrations / operator commands; no HTTP endpoint). Its base database is `postgres`, the maintenance connection used only for provisioning (10G-C0); the control database is `zaza_control`, tenants are `zaza_t_*` | edge protection (load balancer + Cloud Armor), needed before public traffic |
 | service accounts `zaza-run`, `zaza-migrate`, `zaza-build`; three password secrets; database roles | employee or customer traffic |

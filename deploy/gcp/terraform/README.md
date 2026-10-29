@@ -77,6 +77,7 @@ terraform providers lock -platform=linux_amd64 -platform=windows_amd64 -platform
 | 10F-C | migration job image → `sha256:b7ffd93a82c1…` (commit `1f63fb2`); `control-migrate` c0001 → c0002; c0002 runtime grants | done |
 | 10G-B | migration job image → `sha256:b7ad3a892306…` (commit `778488c`); plan 0 add / 1 change / 0 destroy; `control-migrate` c0002 → c0003; c0003 runtime grants | done |
 | 10G-C0 | migration job environment: `ZAZA_DB_NAME = "postgres"` (maintenance connection for provisioning) and `ZAZA_TENANT_RUNTIME_ROLE = "zaza_app"`; plan 0 add / 1 change / 0 destroy | done |
+| 10G-C | first internal tenant created by the operator job (application lifecycle, NOT a Terraform resource); plan: no changes | done |
 | later | edge protection (Cloud Armor) for the login, enrollment, then `deploy_service = true` | **not done: no web service exists** |
 
 Working rules:
