@@ -24,6 +24,15 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10I — single-machine pilot (2026-10-30)
+
+- Device `zaza-pilot-pc-01` enrolled for employee `internal-pilot-1` in `zaza-internal` (enrollment COMPLETED).
+- Agent 0.9.0 on the pilot PC: all components HEALTHY, sync cycles confirmed (0 stale/conflicts/failures);
+  restart recovers the interrupted session and resumes with stored credentials.
+- Server: sync batches 200, bad/missing credentials 401, run.app 404, no 5xx, no secrets in service logs.
+- GAP: the agent UI has no enrollment-code field (code -> token exchange is done by calling /api/v1/enroll).
+- NOT yet verified: offline/recovery, owner login success, activity visible in an admin view (no API for it).
+
 ## Agent hardening — input-hook divergence (code only)
 
 - `deskmate/zaza/os_input.py` reads `GetLastInputInfo` (seconds only, no content).
