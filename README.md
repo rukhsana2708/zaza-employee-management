@@ -74,14 +74,12 @@ for the current phase and what's implemented so far. As of this writing:
   - **Approved:** Phase 10B, the Cloud Run container of the central server
     ([deploy/gcp/README.md](deploy/gcp/README.md)).
   - **Approved:** Phase 10C, the tenancy foundation (local only).
-  - **Pending review:** Phase 10D, the production Cloud SQL and tenant
-    connection foundation
-    ([docs/zaza/CLOUD_SQL_PRODUCTION.md](docs/zaza/CLOUD_SQL_PRODUCTION.md)).
-    It covers the Cloud SQL socket, Secret Manager password files, bounded
-    tenant pools, `tenant-migrate`, `check-config --cloud-run` and a
-    Terraform definition.
-  - Code and configuration only: no Cloud SQL, no Google Cloud resources,
-    no customer data in the cloud.
+  - **Approved:** Phases 10D to 10G-D: production Cloud SQL, the control plane,
+    the first internal tenant `zaza-internal`, and a verified backup/PITR drill.
+  - **Pending review:** 10G-E-A (tenant-aware employee operator) and 10H-A (gated
+    public edge definition). Remaining production steps are in
+    [docs/zaza/ROLLOUT_RUNBOOK.md](docs/zaza/ROLLOUT_RUNBOOK.md).
+  - Production has no web service, users, employees or devices yet.
 - **Historical:** the earlier single Windows VPS deployment (ARCHITECTURE.md
   §9, runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md))
   was abandoned for the SaaS direction. Its files in `deploy/windows/` are
