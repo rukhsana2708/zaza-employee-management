@@ -21,6 +21,8 @@
   0 to change, 0 to destroy. APPLIED 2026-10-30 (4 added). Edge IP 34.111.227.196; HTTPS forwarding rule,
   backend (to NEG zaza-server-neg -> zaza-server), URL map and HTTPS proxy exist. Cloud Armor off.
   Certificate PROVISIONING (FAILED_NOT_VISIBLE until the DNS A record exists). Direct run.app: 404.
+  2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
+  serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
 ## Agent hardening — input-hook divergence (code only)
 
