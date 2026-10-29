@@ -4,10 +4,17 @@
 # deploy_edge = true requires deploy_service = true and edge_domain. With the
 # edge on, the Cloud Run service accepts traffic only from the load balancer
 # (ingress INTERNAL_LOAD_BALANCER) and its default run.app URL is disabled,
-# so Cloud Armor cannot be bypassed. Not applied: review the plan first.
+# so the edge cannot be bypassed. Not applied: review the plan first.
+#
+# enable_cloud_armor = false omits the Cloud Armor policy and the backend's
+# attachment to it; the ingress lock, https-only redirect and managed
+# certificate are unchanged. Set it to true once the quota is granted.
 
 locals {
   deploy_edge = var.deploy_edge ? 1 : 0
+  # Cloud Armor is part of the final design but optional until the project's
+  # Cloud Armor quota is granted (var.enable_cloud_armor).
+  deploy_armor = var.deploy_edge && var.enable_cloud_armor ? 1 : 0
 }
 
 resource "google_project_service" "compute" {
@@ -45,7 +52,7 @@ resource "google_compute_region_network_endpoint_group" "edge" {
 }
 
 resource "google_compute_security_policy" "edge" {
-  count      = local.deploy_edge
+  count      = local.deploy_armor
   depends_on = [google_project_service.compute]
   name       = "${var.service_name}-edge-policy"
 
@@ -88,7 +95,7 @@ resource "google_compute_backend_service" "edge" {
   name                  = "${var.service_name}-backend"
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
-  security_policy       = google_compute_security_policy.edge[0].id
+  security_policy       = local.deploy_armor == 1 ? google_compute_security_policy.edge[0].id : null
 
   backend {
     group = google_compute_region_network_endpoint_group.edge[0].id

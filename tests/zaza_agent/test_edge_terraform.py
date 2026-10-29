@@ -36,7 +36,7 @@ def test_cloud_run_is_only_reachable_through_the_edge_when_enabled():
 def test_edge_has_armor_policy_and_https_only_backend():
     edge = _read("edge.tf")
     assert "google_compute_security_policy" in edge
-    assert "security_policy       = google_compute_security_policy.edge[0].id" in edge
+    assert "local.deploy_armor == 1 ? google_compute_security_policy.edge[0].id : null" in edge
     assert "https_redirect         = true" in edge
     assert "SERVERLESS" in edge
 
@@ -44,3 +44,16 @@ def test_edge_has_armor_policy_and_https_only_backend():
 def test_example_tfvars_does_not_enable_the_edge():
     # terraform.tfvars is local and git-ignored: only the shipped example is checked.
     assert "deploy_edge = true" not in _read("terraform.tfvars.example")
+
+
+def test_cloud_armor_is_optional_and_only_referenced_when_enabled():
+    edge = _read("edge.tf")
+    assert "deploy_armor = var.deploy_edge && var.enable_cloud_armor ? 1 : 0" in edge
+    policy = edge.split('resource "google_compute_security_policy"')[1].split("resource \"", 1)[0]
+    assert "count      = local.deploy_armor" in policy and "rate_limit_options" in policy
+    # the only reference to the policy outside its own block is the guarded one
+    outside = edge.replace(policy, "")
+    assert outside.count("google_compute_security_policy.edge") == 1
+    assert "local.deploy_armor == 1 ?" in outside
+    variables = _read("variables.tf")
+    assert 'variable "enable_cloud_armor"' in variables

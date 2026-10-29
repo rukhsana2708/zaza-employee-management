@@ -224,3 +224,9 @@ variable "edge_rate_limit_per_minute" {
   type        = number
   default     = 600
 }
+
+variable "enable_cloud_armor" {
+  description = "Attach a Cloud Armor security policy (per-client-IP throttle) to the edge backend. Needs the project's SECURITY_POLICIES / SECURITY_POLICY_RULES quota (new projects start at 0). Only used when deploy_edge is true."
+  type        = bool
+  default     = true
+}

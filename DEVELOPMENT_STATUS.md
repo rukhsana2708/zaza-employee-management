@@ -13,6 +13,13 @@
 - Code fixes found by the apply: every compute resource now depends on the Compute API; the service's
   volume order matches the order Cloud Run returns (no spurious update).
 
+## Phase 10H-C — Cloud Armor optional (plan only, NOT applied)
+
+- `enable_cloud_armor` (default true; local tfvars sets false) gates the policy and the backend's
+  `security_policy` attachment. Quota requests for Cloud Armor were refused (NOT_ENOUGH_USAGE_HISTORY).
+- Plan with Cloud Armor off: 4 to add (backend service, URL map, HTTPS proxy, HTTPS forwarding rule),
+  0 to change, 0 to destroy.
+
 ## Agent hardening — input-hook divergence (code only)
 
 - `deskmate/zaza/os_input.py` reads `GetLastInputInfo` (seconds only, no content).
