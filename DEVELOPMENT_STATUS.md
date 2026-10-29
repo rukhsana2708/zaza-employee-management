@@ -1,8 +1,41 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-29 (Phase 10G-C — first internal production organization and tenant)
+**Last updated:** 2026-10-29 (Phase 10G-D — production backup and PITR restore drill)
 
-## Current phase: Phase 10G-C — first internal production tenant (pending your review)
+## Current phase: Phase 10G-D — production backup and PITR restore drill (pending your review)
+
+Phase 10G-C is **approved**. 10G-D is a disaster-recovery DRILL: **PASS**.
+The source `zaza-prod-pg16` was never restored onto, overwritten,
+restarted or reconfigured. The only production write was one on-demand
+backup. Details and the procedure: [docs/zaza/RECOVERY_RUNBOOK.md](docs/zaza/RECOVERY_RUNBOOK.md).
+
+- **On-demand backup:** ID `1793272723324` ("Phase 10G-D restore drill
+  after first tenant"), SUCCESSFUL, 2026-10-29 11:18:43 → 11:20:14 UTC,
+  taken after the tenant existed. It is the first verified restore-drill
+  backup and is **kept**. It is stored in the `asia` multi-region (the
+  default without `--location`).
+- **Backup restore → NEW instance `zaza-restore-drill-20261029a`:** about 6
+  minutes. The copy independently held `zaza_control` (c0003, 1
+  organization `zaza-internal` ACTIVE, 1 tenant row READY) AND
+  `zaza_t_7jihzm6q6wvdogkv535q45mhdy` (`0004_manager_dashboard_auth`, 15
+  tenant tables, 0 business rows), with the roles, `zaza_migrator`
+  ownership, ACL, `zaza_app` grants and default privileges intact. Deleted.
+- **PITR → NEW instance `zaza-pitr-drill-20261029a`:** point
+  `2026-10-29T10:30:00Z` (after the last 10G-C write at 09:53:31Z), inside
+  the window 2026-10-27T20:25:09Z → 2026-10-29T11:44:51Z. Same checks:
+  PASS. Deleted.
+- **Source after the drill:** unchanged (c0003, 1 organization, 1 READY
+  tenant, 0 users, memberships, employees, devices, tokens, codes and
+  routes); backups (14), PITR (7 days) and deletion protection unchanged.
+- **Instance-level only:** this proves whole-instance recovery. There is no
+  Cloud SQL backup of a single tenant; single-tenant recovery is the
+  documented temporary-instance + `pg_dump` path (runbook §B), not yet
+  exercised.
+- No cutover, no Terraform/Cloud Run/secret/DNS change; Terraform: no
+  changes. 0 Cloud Run services, 1 job, no public URL, no user, employee,
+  enrollment code or device credential.
+
+## Earlier: Phase 10G-C — first internal production tenant (approved)
 
 Phase 10G-C0 is **approved**. 10G-C is the FIRST deliberate production
 tenant creation. Everything ran through the `zaza-migrate` operator job
@@ -44,8 +77,7 @@ tenant creation. Everything ran through the `zaza-migrate` operator job
 - **Backups:** automated backups (latest successful), PITR (7-day logs) and
   deletion protection unchanged. Cloud SQL backup and restore are
   instance-level: this tenant has no separately restorable Cloud SQL
-  backup. **A restore drill is still due before real employee pilot
-  traffic.**
+  backup. (The restore drill followed in 10G-D.)
 - Terraform: tenant databases are application lifecycle, not Terraform
   resources; the final plan shows no changes.
 

@@ -398,7 +398,8 @@ enforcement exists yet.
   - Cloud SQL backups are per instance. Per-tenant logical backups
     (`pg_dump` of one `zaza_t_…` database) allow restoring **one** customer
     without touching others.
-  - The control database is backed up separately and is small.
+  - The control database is in the same instance and is restored with
+    it; the drilled procedures are in [RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md).
 - **Restoring a tenant** means restoring its database, checking its
   `schema_revision` against the head, then re-marking it `READY`. A restore
   must never overwrite another tenant's database: the name comes from the

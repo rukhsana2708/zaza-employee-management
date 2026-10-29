@@ -15,11 +15,12 @@
 | 10G-B | image `sha256:b7ad3a892306…` (commit `778488c`, build `efe5ed6f…`) built as `zaza-build` and set on `zaza-migrate`; **production control schema migrated to c0003**; the database-enforced status model verified live; c0003 runtime grants applied and verified; `enrollment-reconcile` ran once (all 0); enrollment tables empty; no web service, organization, user, tenant, code or route |
 | 10G-C0 | `zaza-migrate` environment only: `ZAZA_DB_NAME = "postgres"` (the migrator's maintenance connection for provisioning, §7a) and `ZAZA_TENANT_RUNTIME_ROLE = "zaza_app"`; plan 0 add / 1 change / 0 destroy; `db-status` (read only) reached `postgres`, `control-db-status` still c0003; no tenant created |
 | 10G-C | **first internal organization and tenant**, through the job: `zaza-internal` ("ZaZa Internal Pilot", `Asia/Dhaka`, ACTIVE); server-generated tenant database `zaza_t_7jihzm6q6wvdogkv535q45mhdy` in `asia-south1`, READY at `0004_manager_dashboard_auth`; access boundary, default privileges, resolver and pool manager verified live; second `tenant-provision` idempotent; no user, membership, employee, device, code or route |
+| 10G-D | **backup and PITR restore drill: PASS** ([RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md)): on-demand backup `1793272723324` (kept) restored to the temporary instance `zaza-restore-drill-20261029a`, and PITR to `2026-10-29T10:30:00Z` into `zaza-pitr-drill-20261029a`; both held the control plane and the first tenant with correct schema, directory linkage, roles and grants; both deleted; source never overwritten and unchanged |
 
 **Not created:** no Cloud Run web service, no public application URL, no
 SaaS user, membership, employee, device or enrollment code, no customer, no
 employee traffic. Exactly one tenant database exists: `zaza_t_7jihzm6q6wvdogkv535q45mhdy` (internal
-pilot, empty). A restore drill is still due before employee pilot traffic.
+pilot, empty). The 10G-D restore drill passed (instance-level).
 
 Google Cloud project `zaza-employee-monitor`, region `asia-south1`,
 PostgreSQL **16** (the version every local and in-image test runs against).
@@ -420,8 +421,12 @@ employee pilot):
 - PITR is on and the retention matches;
 - deletion protection is on.
 
-A restore drill belongs before the employee pilot. Per-tenant restore
-options are in SAAS_TENANCY.md §19.
+**Phase 10G-D drilled both paths (PASS):** an on-demand backup restored to
+a NEW temporary instance, and PITR into another NEW temporary instance; each
+held `zaza_control` and the first tenant intact, and both were deleted.
+Recovery is instance-level; the procedures, including the planned
+single-tenant path, are in [RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md).
+Per-tenant restore options are in SAAS_TENANCY.md §19.
 
 ## 12. A dedicated instance for a large customer, later
 
