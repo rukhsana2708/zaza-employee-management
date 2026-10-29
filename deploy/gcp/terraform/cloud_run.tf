@@ -66,12 +66,12 @@ locals {
 }
 
 resource "google_cloud_run_v2_service" "server" {
-  count               = local.deploy_service
-  name                = var.service_name
-  location            = var.region
+  count                = local.deploy_service
+  name                 = var.service_name
+  location             = var.region
   ingress              = var.deploy_edge ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
   default_uri_disabled = var.deploy_edge
-  deletion_protection = var.deletion_protection
+  deletion_protection  = var.deletion_protection
 
   template {
     service_account                  = google_service_account.runtime.email

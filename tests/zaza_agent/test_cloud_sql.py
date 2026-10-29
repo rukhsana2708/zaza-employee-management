@@ -362,7 +362,7 @@ def test_terraform_cloud_run_is_gated_and_never_migrates():
     run = (TF / "cloud_run.tf").read_text(encoding="utf-8")
     assert re.search(r'variable "deploy_service" \{[^}]*default\s+= false', _tf(), re.DOTALL)
     assert re.search(r'variable "deploy_migration_job" \{[^}]*default\s+= false', _tf(), re.DOTALL)
-    assert run.count("count               = local.deploy_service") == 1  # web service: its own gate
+    assert len(re.findall(r"count\s+= local\.deploy_service(?!\w)", run)) == 1  # web service: its own gate
     assert run.count("count               = local.deploy_job") == 1      # migration job: its own gate
     assert "deploy_service = var.deploy_service ? 1 : 0" in run and "deploy_job     = var.deploy_migration_job ? 1 : 0" in run
     public = run.split('resource "google_cloud_run_v2_service_iam_member" "public"')[1].split("resource ")[0]

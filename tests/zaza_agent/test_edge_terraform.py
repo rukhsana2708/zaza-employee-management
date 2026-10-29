@@ -41,5 +41,6 @@ def test_edge_has_armor_policy_and_https_only_backend():
     assert "SERVERLESS" in edge
 
 
-def test_tfvars_does_not_enable_the_edge():
-    assert "deploy_edge" not in _read("terraform.tfvars")
+def test_example_tfvars_does_not_enable_the_edge():
+    # terraform.tfvars is local and git-ignored: only the shipped example is checked.
+    assert "deploy_edge = true" not in _read("terraform.tfvars.example")
