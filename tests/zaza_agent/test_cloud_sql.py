@@ -320,7 +320,7 @@ def _tf(*, comments: bool = True) -> str:
 
 def test_terraform_files_exist_and_no_state_is_committed():
     assert {p.name for p in TF.glob("*.tf")} == {"versions.tf", "variables.tf", "main.tf", "cloudsql.tf",
-                                                  "cloud_run.tf", "outputs.tf", "build.tf"}
+                                                  "cloud_run.tf", "outputs.tf", "build.tf", "edge.tf"}
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for pattern in (".terraform/", "*.tfstate", "*.tfstate.*", "*.tfvars", "*.tfplan"):
         assert pattern in gitignore.splitlines()
@@ -352,8 +352,7 @@ def test_terraform_contains_no_secrets_keys_or_tenant_databases():
     tf = _tf(comments=False) + (TF / "terraform.tfvars.example").read_text(encoding="utf-8")
     for forbidden in ("google_service_account_key", "google_sql_user", "google_secret_manager_secret_version",
                       "password =", "password  =", "private_key", "BEGIN ", "zaza_t_", "credentials",
-                      "google_compute_global_address", "google_dns",
-                      "google_compute_security_policy"):
+                      "google_dns"):  # the edge (Phase 10H-A, edge.tf) is allowed, DNS is not
         assert forbidden not in tf, forbidden
     # tenant databases are application lifecycle: only the control database is a Terraform resource
     assert tf.count('resource "google_sql_database" ') == 1

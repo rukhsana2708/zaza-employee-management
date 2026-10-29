@@ -16,7 +16,7 @@ data "google_project" "this" {
 locals {
   # Host names the web service answers to (Host-header validation). Default:
   # https://<service>-<project number>.<region>.run.app
-  public_host = var.public_host != "" ? var.public_host : "${var.service_name}-${data.google_project.this.number}.${var.region}.run.app"
+  public_host = var.public_host != "" ? var.public_host : var.edge_domain != "" ? var.edge_domain : "${var.service_name}-${data.google_project.this.number}.${var.region}.run.app"
 
   deploy_service = var.deploy_service ? 1 : 0
   deploy_job     = var.deploy_migration_job ? 1 : 0
@@ -69,7 +69,8 @@ resource "google_cloud_run_v2_service" "server" {
   count               = local.deploy_service
   name                = var.service_name
   location            = var.region
-  ingress             = "INGRESS_TRAFFIC_ALL"
+  ingress              = var.deploy_edge ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
+  default_uri_disabled = var.deploy_edge
   deletion_protection = var.deletion_protection
 
   template {

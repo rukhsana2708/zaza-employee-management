@@ -201,3 +201,26 @@ variable "db_migrator_user" {
   type        = string
   default     = "zaza_migrator"
 }
+
+variable "deploy_edge" {
+  description = "Create the public edge (external Application Load Balancer + Cloud Armor + serverless NEG) and restrict Cloud Run ingress to it. Needs deploy_service and edge_domain. Phase 10H-A: definition only."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.deploy_edge || (var.deploy_service && var.edge_domain != "")
+    error_message = "deploy_edge requires deploy_service = true and edge_domain."
+  }
+}
+
+variable "edge_domain" {
+  description = "Public DNS name served by the edge (its A record must point at the edge IP before the managed certificate becomes ACTIVE). Also the ZAZA_PUBLIC_HOST."
+  type        = string
+  default     = ""
+}
+
+variable "edge_rate_limit_per_minute" {
+  description = "Cloud Armor per-client-IP request ceiling per minute."
+  type        = number
+  default     = 600
+}

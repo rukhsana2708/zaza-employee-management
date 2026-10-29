@@ -21,7 +21,11 @@ from deskmate.zaza_server.repository import EmployeeRecord, RepositoryUnavailabl
 from deskmate.zaza_server.tenancy import domain
 from deskmate.zaza_server.tenancy.context import TenantDatabaseDescriptor
 from deskmate.zaza_server.tenancy.control_repository import Organization
-from deskmate.zaza_server.tenancy.domain import OrganizationStatus, TenancyError, TenantDatabaseStatus
+from deskmate.zaza_server.tenancy.domain import (
+    OrganizationStatus,
+    TenancyError,
+    TenantDatabaseStatus,
+)
 from deskmate.zaza_server.tenancy.employees import OPERATOR_ACTOR, SaasEmployeeOperator
 from deskmate.zaza_server.tenancy.resolver import TenantResolver
 

@@ -2,6 +2,21 @@
 
 **Last updated:** 2026-10-29 (Phase 10G-E-A — tenant-aware SaaS employee operator, code only)
 
+## Phase 10H-A — public edge definition (code only; pending your review)
+
+Terraform and static tests only. Nothing was planned, applied or deployed.
+
+- `deploy/gcp/terraform/edge.tf`: global external Application Load Balancer,
+  managed certificate, serverless NEG, Cloud Armor per-IP throttle, http to
+  https redirect. Every resource is gated by `deploy_edge` (default false).
+- With `deploy_edge`, Cloud Run ingress becomes `INTERNAL_LOAD_BALANCER` and the
+  default run.app URL is disabled, so Cloud Armor cannot be bypassed. It
+  requires `deploy_service` and `edge_domain`.
+- Tests: `test_edge_terraform.py` (static; no Terraform binary here, so
+  `terraform validate` and `plan` still need to run before any apply).
+- 10G-E-A review: full suite 1345 passed, 173 skipped (PostgreSQL opt-in not set);
+  one import-order lint fixed in its test file.
+
 ## Current phase: Phase 10G-E-A — tenant-aware SaaS employee operator (code only; pending your review)
 
 Phase 10G-D is **approved**. 10G-E-A is **code + tests only**: no image was

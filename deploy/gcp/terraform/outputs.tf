@@ -42,3 +42,8 @@ output "build_source_bucket" {
 output "migration_job" {
   value = var.deploy_migration_job ? google_cloud_run_v2_job.migrate[0].name : null
 }
+
+output "edge_ip" {
+  description = "Point the edge_domain A record here."
+  value       = var.deploy_edge ? google_compute_global_address.edge[0].address : null
+}
