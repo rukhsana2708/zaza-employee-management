@@ -378,6 +378,24 @@ def test_terraform_cloud_run_is_gated_and_never_migrates():
     assert "ZAZA_DB_PASSWORD_FILE" in run and "ZAZA_DB_PASSWORD " not in run
 
 
+def test_terraform_migration_job_has_an_existing_admin_database():
+    """The operator job's base connection (tenant-provision: pg_database,
+    CREATE DATABASE) is the maintenance database `postgres`, never the
+    "zaza" fallback; the web service is unchanged."""
+    from deskmate.zaza_server.config import DatabaseSettings
+
+    run = (TF / "cloud_run.tf").read_text(encoding="utf-8")
+    job_env = run.split("job_env = merge(local.common_env, {")[1].split("})")[0]
+    service_env = run.split("service_env = merge(local.common_env, {")[1].split("})")[0]
+    assert re.search(r'^\s*ZAZA_DB_NAME\s+= "postgres"$', job_env, re.MULTILINE)
+    assert re.search(r"^\s*ZAZA_TENANT_RUNTIME_ROLE\s+= var\.db_app_user$", job_env, re.MULTILINE)
+    assert re.search(r"^\s*ZAZA_DB_USER\s+= var\.db_migrator_user$", job_env, re.MULTILINE)
+    assert "ZAZA_DB_NAME" not in service_env and "ZAZA_TENANT_RUNTIME_ROLE" not in service_env
+    assert "ZAZA_DB_NAME" not in run.split("common_env = {")[1].split("}")[0]  # the control name is separate
+    assert DatabaseSettings().dbname == "zaza"  # the fallback this setting replaces
+    assert re.search(r'variable "db_app_user" \{[^}]*default\s+= "zaza_app"', _tf(), re.DOTALL)
+
+
 def test_terraform_runtime_identity_is_least_privilege():
     main = (TF / "main.tf").read_text(encoding="utf-8")
     roles = set(re.findall(r'role\s+= "(roles/[^"]+)"', main))

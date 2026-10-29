@@ -1,8 +1,47 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-28 (Phase 10G-B — enrollment control schema deployed to production)
+**Last updated:** 2026-10-29 (Phase 10G-C0 — production tenant provisioning connection configured)
 
-## Current phase: Phase 10G-B — production enrollment control schema (pending your review)
+## Current phase: Phase 10G-C0 — production tenant provisioning preflight (pending your review)
+
+Phase 10G-B is **approved**, and its concurrent A/B tenant stress gate
+passed 3/3 in one clean run (production code `778488c`, PostgreSQL 16).
+10G-C0 changed **only the `zaza-migrate` job's environment**; no
+application code, image, database, role or secret changed.
+
+- **Root cause:** `tenant-provision` builds `PostgresDatabaseCreator` and
+  `TenantMigrationRunner` from `database_settings_from_env()`. The
+  creator's administrative connection (`database_exists`,
+  `create_database`, `restrict_access`) uses that base database name, and
+  without `ZAZA_DB_NAME` it falls back to `zaza`, a database production
+  does not have.
+- **Fix (Terraform, job only):** `ZAZA_DB_NAME = "postgres"` and
+  `ZAZA_TENANT_RUNTIME_ROLE = var.db_app_user` (`zaza_app`, the approved
+  runtime role, read only by `tenant-provision`). Plan: 0 add, 1 change
+  (exactly those two variables), 0 destroy; the follow-up plan shows no
+  changes. The web service configuration is unchanged.
+- **Three kinds of database** in production:
+  - `zaza_control`: the control plane;
+  - `postgres`: the instance's maintenance database, used only as the
+    migrator's connection target for instance-level operations
+    (`pg_database`, `CREATE DATABASE`). It is not a tenant, is never
+    migrated and holds no ZaZa data;
+  - `zaza_t_*`: the tenant databases, named by the server and
+    substituted for the base name in tenant migrations and at runtime.
+- **Verified through the job:** `db-status` connected to `postgres` over
+  the Cloud SQL socket as `zaza_migrator` (read only; it reports
+  "(empty database)", and `migrate` was deliberately NOT run there).
+  `control-db-status` still reports `zaza_control` at c0003, "Up to
+  date". `postgres` still has 0 user objects.
+- **Roles unchanged:** `zaza_migrator` LOGIN + CREATEDB only; `zaza_app`
+  LOGIN only (no SUPERUSER/CREATEDB/CREATEROLE/BYPASSRLS, member of no
+  role).
+- **No tenant has been created yet:** 0 organizations, users,
+  memberships, tenant directory rows, `zaza_t_*` databases, enrollment
+  codes and device routes; no web service, no public URL, no load
+  balancer or Cloud Armor.
+
+## Earlier: Phase 10G-B — production enrollment control schema (approved)
 
 Phase 10G-A and its durable-reconciliation repair (`778488c`) are
 **approved**. 10G-B deployed the reviewed foundation to production. It

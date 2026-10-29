@@ -47,7 +47,15 @@ locals {
     ZAZA_PUBLIC_HOST              = local.public_host
   })
 
+  # ZAZA_DB_NAME: the job's base connection is the instance's maintenance
+  # database `postgres`, used only to reach pg_database / CREATE DATABASE
+  # when provisioning (never migrated, holds no ZaZa data). Tenant
+  # migrations replace it with the server-generated zaza_t_* name; the
+  # control database stays ZAZA_CONTROL_DB_NAME. Without it the base would
+  # fall back to a database called "zaza", which does not exist.
   job_env = merge(local.common_env, {
+    ZAZA_DB_NAME                  = "postgres"
+    ZAZA_TENANT_RUNTIME_ROLE      = var.db_app_user
     ZAZA_DB_USER                  = var.db_migrator_user
     ZAZA_DB_PASSWORD_FILE         = "/secrets/db-migrator/password"
     ZAZA_CONTROL_DB_USER          = var.db_migrator_user

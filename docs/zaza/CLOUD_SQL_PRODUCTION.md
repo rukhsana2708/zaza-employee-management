@@ -1,6 +1,6 @@
 # ZaZa production database foundation: Cloud Run + Cloud SQL (Phase 10D)
 
-## Status (2026-10-28)
+## Status (2026-10-29)
 
 | Phase | What exists in Google Cloud (project `zaza-employee-monitor`, `asia-south1`) |
 |---|---|
@@ -13,6 +13,7 @@
 | 10F-C | image `sha256:b7ffd93a82c1…` (commit `1f63fb2`) built as `zaza-build` and set on `zaza-migrate`; **production control schema migrated to c0002**; runtime grants applied and verified; auth/routing tables empty; no web service, user, tenant or route |
 | 10G-A | **code only**: tenant provisioning commands + one-time device enrollment (control migration `c0003_device_enrollment`, including the durable CLEANUP_PENDING reconciliation repair); see [ENROLLMENT.md](ENROLLMENT.md) |
 | 10G-B | image `sha256:b7ad3a892306…` (commit `778488c`, build `efe5ed6f…`) built as `zaza-build` and set on `zaza-migrate`; **production control schema migrated to c0003**; the database-enforced status model verified live; c0003 runtime grants applied and verified; `enrollment-reconcile` ran once (all 0); enrollment tables empty; no web service, organization, user, tenant, code or route |
+| 10G-C0 | `zaza-migrate` environment only: `ZAZA_DB_NAME = "postgres"` (the migrator's maintenance connection for provisioning, §7a) and `ZAZA_TENANT_RUNTIME_ROLE = "zaza_app"`; plan 0 add / 1 change / 0 destroy; `db-status` (read only) reached `postgres`, `control-db-status` still c0003; no tenant created |
 
 **Not created:** no Cloud Run web service, no public application URL, no
 tenant database (`zaza_t_*` = 0), no customer, no employee traffic.
@@ -244,6 +245,21 @@ the serve path contains no migration or provisioning calls.
 |---|---|
 | `control-migrate` / `control-db-status` | the control chain (`c0001_control_plane`), version table `zaza_control_version` |
 | `migrate` / `db-status` | the tenant chain (`0001`…`0004`) on the single `ZAZA_DB_NAME` database |
+
+### 7a. Which database each connection uses (production job)
+
+| Database | Role in ZaZa |
+|---|---|
+| `zaza_control` (`ZAZA_CONTROL_DB_NAME`) | the control plane |
+| `postgres` (`ZAZA_DB_NAME` on `zaza-migrate`) | the instance's maintenance database: only the migrator's initial connection target for instance-level operations (`pg_database`, `CREATE DATABASE`, database grants) in `tenant-provision`. It is **not** a tenant, is **never** migrated and stores **no** ZaZa data |
+| `zaza_t_*` | the tenant databases: the server-generated name from the control directory replaces the base name in `tenant-migrate`, provisioning grants and at runtime |
+
+Without `ZAZA_DB_NAME` the base settings fall back to a database called
+`zaza`, which does not exist in production; do not create one to satisfy
+that fallback. `db-status` on the job reports `postgres` as an "(empty
+database)": that is expected, and `migrate` must **never** be run against
+it (the job's default command is `control-db-status`).
+
 | `tenant-migrate --organization ID` (repeatable) | the tenant chain on that organization's tenant database, from the control directory |
 | `tenant-migrate --all-ready [--continue-on-error]` | every READY tenant, sequentially in a stable order |
 
