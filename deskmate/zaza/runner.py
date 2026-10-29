@@ -33,6 +33,7 @@ from .enrollment import Enrollment, current_state
 from .health import HealthState
 from .instance import InstanceLock
 from .logger import get
+from .os_input import os_seconds_since_input
 from .status import AgentStatus, write_status
 from .sync.factory import build_sync_worker
 from .sync.worker import SyncWorker
@@ -46,13 +47,17 @@ ENROLLMENT_POLL = 10.0
 ENROLLMENT_SETTLE = 2.0
 
 
+def _default_agent_factory(config) -> ActivityAgent:
+    """The installed agent cross-checks its input hooks against the OS."""
+    return ActivityAgent(config, os_idle_probe=os_seconds_since_input)
+
 class Runner:
     def __init__(self, *, install_dir: Path | None = None, poll: float = 1.0,
-                 agent_factory: Callable[..., ActivityAgent] = ActivityAgent,
+                 agent_factory: Callable[..., ActivityAgent] | None = None,
                  worker_factory: Callable = build_sync_worker, clock: Callable[[], float] = time.time) -> None:
         self.install_dir = install_dir
         self.poll = poll
-        self.agent_factory = agent_factory
+        self.agent_factory = agent_factory or _default_agent_factory
         self.worker_factory = worker_factory
         self.clock = clock
         self.lock = InstanceLock(paths.lock_path())

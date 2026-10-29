@@ -82,7 +82,9 @@ def _print_sync_health(health: SyncHealth) -> None:
 
 def run() -> None:
     config = from_env()
-    agent = ActivityAgent(config)
+    from .os_input import os_seconds_since_input  # noqa: PLC0415
+
+    agent = ActivityAgent(config, os_idle_probe=os_seconds_since_input)
 
     def on_health_change(entry: ComponentHealth) -> None:
         suffix = f" - {entry.detail}" if entry.detail else ""

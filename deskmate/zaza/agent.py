@@ -75,8 +75,11 @@ class ActivityAgent:
         wall_clock: Callable[[], float] = time.time,
         mono_clock: Callable[[], float] = time.monotonic,
         tz: tzinfo | None = None,
+        os_idle_probe: Callable[[], float | None] | None = None,
     ) -> None:
         self.config = config
+        # Optional cross-check of the hooks against the OS's own last-input time.
+        self._os_idle_probe = os_idle_probe
         self.health = health or HealthRegistry()
         try:
             self.store = store or ActivityStore(config.db_path)
@@ -296,6 +299,9 @@ class ActivityAgent:
             if lock_trusted and self._trusted_since is None:
                 self._trusted_since = mono
             return ACTIVE, None, now - since_input
+        if self._hooks_diverge(since_input, threshold):
+            self._trusted_since = None
+            return UNKNOWN, "INPUT_HOOK_DIVERGENCE", None
         if not lock_trusted:
             # Without a trustworthy lock state, silence may simply mean the
             # session is locked: never turn that into IDLE.
@@ -310,6 +316,20 @@ class ActivityAgent:
         if quiet_for >= threshold:
             return IDLE, None, now - (quiet_for - threshold)
         return UNKNOWN, "AWAITING_INPUT", None
+
+    def _hooks_diverge(self, since_input: float | None, threshold: float) -> bool:
+        """True when the hooks report silence but the OS saw recent input, i.e.
+        a hook was probably removed (LowLevelHooksTimeout). Never IDLE then."""
+        if self._os_idle_probe is None:
+            return False
+        try:
+            os_idle = self._os_idle_probe()
+        except Exception:  # noqa: BLE001
+            return False
+        if os_idle is None:
+            return False
+        hooks_quiet = since_input is None or since_input >= threshold
+        return hooks_quiet and os_idle < threshold
 
     def _poll_window(self, now: float) -> WindowSample | None:
         try:
