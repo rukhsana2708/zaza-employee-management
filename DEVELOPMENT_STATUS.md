@@ -18,7 +18,9 @@
 - `enable_cloud_armor` (default true; local tfvars sets false) gates the policy and the backend's
   `security_policy` attachment. Quota requests for Cloud Armor were refused (NOT_ENOUGH_USAGE_HISTORY).
 - Plan with Cloud Armor off: 4 to add (backend service, URL map, HTTPS proxy, HTTPS forwarding rule),
-  0 to change, 0 to destroy.
+  0 to change, 0 to destroy. APPLIED 2026-10-30 (4 added). Edge IP 34.111.227.196; HTTPS forwarding rule,
+  backend (to NEG zaza-server-neg -> zaza-server), URL map and HTTPS proxy exist. Cloud Armor off.
+  Certificate PROVISIONING (FAILED_NOT_VISIBLE until the DNS A record exists). Direct run.app: 404.
 
 ## Agent hardening — input-hook divergence (code only)
 
