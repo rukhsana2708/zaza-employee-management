@@ -84,13 +84,6 @@ resource "google_cloud_run_v2_service" "server" {
     }
 
     volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [google_sql_database_instance.main.connection_name]
-      }
-    }
-
-    volumes {
       name = "db-app"
       secret {
         secret = google_secret_manager_secret.db["db_app"].secret_id
@@ -112,6 +105,13 @@ resource "google_cloud_run_v2_service" "server" {
       }
     }
 
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [google_sql_database_instance.main.connection_name]
+      }
+    }
+
     containers {
       image = var.container_image
 
@@ -128,16 +128,16 @@ resource "google_cloud_run_v2_service" "server" {
       }
 
       volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
-      }
-      volume_mounts {
         name       = "db-app"
         mount_path = "/secrets/db-app"
       }
       volume_mounts {
         name       = "db-control"
         mount_path = "/secrets/db-control"
+      }
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
       }
 
       resources {

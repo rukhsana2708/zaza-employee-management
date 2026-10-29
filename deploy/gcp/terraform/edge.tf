@@ -23,8 +23,9 @@ resource "google_compute_global_address" "edge" {
 }
 
 resource "google_compute_managed_ssl_certificate" "edge" {
-  count = local.deploy_edge
-  name  = "${var.service_name}-edge-cert"
+  count      = local.deploy_edge
+  depends_on = [google_project_service.compute]
+  name       = "${var.service_name}-edge-cert"
 
   managed {
     domains = [var.edge_domain]
@@ -33,6 +34,7 @@ resource "google_compute_managed_ssl_certificate" "edge" {
 
 resource "google_compute_region_network_endpoint_group" "edge" {
   count                 = local.deploy_edge
+  depends_on            = [google_project_service.compute]
   name                  = "${var.service_name}-neg"
   region                = var.region
   network_endpoint_type = "SERVERLESS"
@@ -43,8 +45,9 @@ resource "google_compute_region_network_endpoint_group" "edge" {
 }
 
 resource "google_compute_security_policy" "edge" {
-  count = local.deploy_edge
-  name  = "${var.service_name}-edge-policy"
+  count      = local.deploy_edge
+  depends_on = [google_project_service.compute]
+  name       = "${var.service_name}-edge-policy"
 
   # Per-client-IP throttle; the API still authenticates every route itself.
   rule {
@@ -81,6 +84,7 @@ resource "google_compute_security_policy" "edge" {
 
 resource "google_compute_backend_service" "edge" {
   count                 = local.deploy_edge
+  depends_on            = [google_project_service.compute]
   name                  = "${var.service_name}-backend"
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
@@ -98,12 +102,14 @@ resource "google_compute_backend_service" "edge" {
 
 resource "google_compute_url_map" "edge" {
   count           = local.deploy_edge
+  depends_on      = [google_project_service.compute]
   name            = "${var.service_name}-urlmap"
   default_service = google_compute_backend_service.edge[0].id
 }
 
 resource "google_compute_target_https_proxy" "edge" {
   count            = local.deploy_edge
+  depends_on       = [google_project_service.compute]
   name             = "${var.service_name}-https-proxy"
   url_map          = google_compute_url_map.edge[0].id
   ssl_certificates = [google_compute_managed_ssl_certificate.edge[0].id]
@@ -120,8 +126,9 @@ resource "google_compute_global_forwarding_rule" "https" {
 
 # Plain http only redirects to https.
 resource "google_compute_url_map" "redirect" {
-  count = local.deploy_edge
-  name  = "${var.service_name}-http-redirect"
+  count      = local.deploy_edge
+  depends_on = [google_project_service.compute]
+  name       = "${var.service_name}-http-redirect"
 
   default_url_redirect {
     https_redirect         = true
@@ -131,9 +138,10 @@ resource "google_compute_url_map" "redirect" {
 }
 
 resource "google_compute_target_http_proxy" "redirect" {
-  count   = local.deploy_edge
-  name    = "${var.service_name}-http-proxy"
-  url_map = google_compute_url_map.redirect[0].id
+  count      = local.deploy_edge
+  depends_on = [google_project_service.compute]
+  name       = "${var.service_name}-http-proxy"
+  url_map    = google_compute_url_map.redirect[0].id
 }
 
 resource "google_compute_global_forwarding_rule" "http" {

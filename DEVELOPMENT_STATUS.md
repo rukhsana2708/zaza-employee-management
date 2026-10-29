@@ -2,6 +2,17 @@
 
 **Last updated:** 2026-10-29 (Phase 10G-E-A — tenant-aware SaaS employee operator, code only)
 
+## Phase 10H-B — edge apply (PARTIAL, 2026-10-30)
+
+- Applied: Compute API, Cloud Run service `zaza-server` (ingress internal-and-cloud-load-balancing,
+  default run.app URL disabled), public invoker, edge IP `34.111.227.196`, managed cert
+  `zaza-server-edge-cert` (work.zazavoice.com, PROVISIONING), NEG, http redirect map/proxy/rule.
+- BLOCKED: Cloud Armor policy failed: quota `SECURITY_POLICIES` / `SECURITY_POLICY_RULES` is 0 for the
+  project. The backend service, URL map, HTTPS proxy and HTTPS forwarding rule depend on it and are not
+  created yet. Next: request the quota increase, then re-run plan/apply.
+- Code fixes found by the apply: every compute resource now depends on the Compute API; the service's
+  volume order matches the order Cloud Run returns (no spurious update).
+
 ## Agent hardening — input-hook divergence (code only)
 
 - `deskmate/zaza/os_input.py` reads `GetLastInputInfo` (seconds only, no content).
