@@ -24,6 +24,17 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10J — enrollment with a code in the agent (2026-10-30, agent 0.9.1)
+
+- The agent window now takes the server address (default https://work.zazavoice.com) and the one-time code.
+  It generates its own device ID; the server decides organization and employee; the token is stored with
+  the existing DPAPI file; the code is never stored or logged. Already-enrolled PCs are not replaced without
+  the explicit "Replace enrollment..." action. `--enroll-stdin` (device ID + token) is unchanged.
+- `enrollment-code-create` refuses to print the code unless stdout is an interactive terminal (checked before
+  a code is created), so it cannot reach Cloud Logging. Use `scripts/prod-operator.sh`. NOT DEPLOYED: the
+  production job still runs the older image until a new image is built and applied.
+- Tests: `test_agent_code_enrollment.py` (23). Suite: 1378 passed, 173 skipped.
+
 ## Phase 10I — single-machine pilot (2026-10-30)
 
 - Device `zaza-pilot-pc-01` enrolled for employee `internal-pilot-1` in `zaza-internal` (enrollment COMPLETED).

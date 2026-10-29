@@ -17,13 +17,17 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import paths
+import httpx
+
+from . import __version__, paths
 from .config import AgentConfig
 from .sync.credentials import (
     CredentialsError,
@@ -40,6 +44,9 @@ from .sync.transport import (
 )
 
 CONFIG_VERSION = 1
+ENROLL_PATH = "/api/v1/enroll"
+DEFAULT_SERVER_URL = "https://work.zazavoice.com"
+_MAX_CODE_LENGTH = 64  # the server refuses longer values; an enrollment code is far shorter
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 _ID_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
 
@@ -204,3 +211,122 @@ def enroll(server_url: str, device_id: str, token: str, *, transport_factory: Tr
                               ("excluded_apps", "hidden_app_names", "excluded_domains")))
     save_enrollment(enrollment)  # written last: config never points at missing credentials
     return EnrollResult(True, "Connection successful. This device is enrolled.", enrollment)
+
+
+# ─── enrollment with a one-time enrollment code ───────────────────────────
+#
+# The administrator gives the employee a single-use code. The agent sends it
+# (with a device ID it generates, and the computer name as a label) to the
+# server's enrollment endpoint over verified TLS. The server alone decides
+# the organization and employee and returns a device token once. That token
+# is verified, then stored with the existing DPAPI credentials file. Neither
+# the code nor the token is ever logged, written to config.json, or kept in
+# memory beyond the call.
+
+ClientFactory = Callable[[], httpx.Client]
+
+
+def _default_client() -> httpx.Client:
+    # Certificates are always verified; redirects are never followed.
+    return httpx.Client(timeout=httpx.Timeout(15.0), follow_redirects=False)
+
+
+def new_device_id() -> str:
+    return "pc-" + uuid.uuid4().hex[:16]
+
+
+def default_device_name() -> str:
+    name = "".join(ch for ch in socket.gethostname() if ch.isprintable())[:100].strip()
+    return name or "Windows PC"
+
+
+def _normalize_code_input(code: str) -> str:
+    code = (code or "").strip()
+    if not code:
+        raise EnrollmentError("Enter the enrollment code your administrator gave you.")
+    if len(code) > _MAX_CODE_LENGTH or not code.isascii() or any(ch.isspace() for ch in code.replace(" ", "")):
+        raise EnrollmentError("Invalid or expired enrollment code. Check it and try again.")
+    return code
+
+
+def _retry_text(response: httpx.Response) -> str:
+    try:
+        wait = int(float(response.headers.get("retry-after", "")))
+    except ValueError:
+        return "Too many attempts. Wait a few minutes and try again."
+    minutes = max(1, (wait + 59) // 60)
+    return f"Too many attempts. Wait about {minutes} minute{'s' if minutes != 1 else ''} and try again."
+
+
+def _exchange(client: httpx.Client, url: str, code: str, device_id: str) -> tuple[str, str] | str:
+    """POST the code. Returns (device_id, token) on success, or a message safe to show."""
+    body = {"enrollment_code": code, "device_id": device_id, "device_name": default_device_name()}
+    try:
+        response = client.post(url + ENROLL_PATH, json=body,
+                               headers={"User-Agent": f"zaza-agent/{__version__}", "Accept": "application/json"})
+    except httpx.TimeoutException:
+        return "The ZaZa Work server did not answer in time. Check your internet connection and try again."
+    except httpx.HTTPError:
+        return "Unable to reach the ZaZa Work server. Check your internet connection and try again."
+    finally:
+        body = None  # noqa: F841 — the code does not stay in this frame
+    status = response.status_code
+    if status == 200:
+        try:
+            data = response.json()
+            token, got_id = data["device_token"], data["device_id"]
+        except (ValueError, KeyError, TypeError):
+            return "The server's answer was not understood. Check that the address is the ZaZa Work server."
+        if not isinstance(token, str) or not token or got_id != device_id:
+            return "The server's answer was not understood. Check that the address is the ZaZa Work server."
+        return got_id, token
+    if status == 401:
+        return "Invalid or expired enrollment code. Ask your administrator for a new one."
+    if status == 429:
+        return _retry_text(response)
+    if status == 409:
+        return "DEVICE_ID_TAKEN"
+    if status in (403, 422):
+        return "This enrollment could not be completed. Ask your administrator to check the code and your account."
+    return "The ZaZa Work server had a problem. Try again in a few minutes."
+
+
+def enroll_with_code(server_url: str, code: str, *, replace_existing: bool = False,
+                     client_factory: ClientFactory = _default_client,
+                     transport_factory: TransportFactory = _default_transport,
+                     device_id_factory: Callable[[], str] = new_device_id,
+                     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> EnrollResult:
+    """Enroll this computer with a one-time code. An already-enrolled computer is
+    never changed unless ``replace_existing`` is set by an explicit user action."""
+    url = validate_server_url(server_url)
+    code = _normalize_code_input(code)
+    previous, creds_ok = current_state()
+    if previous is not None and creds_ok and not replace_existing:
+        raise EnrollmentError("This device is already enrolled.")
+    client = client_factory()
+    try:
+        outcome: tuple[str, str] | str = "DEVICE_ID_TAKEN"
+        for _ in range(3):  # a collision of the random device ID is retried with a new one
+            device_id = device_id_factory()
+            outcome = _exchange(client, url, code, device_id)
+            if outcome != "DEVICE_ID_TAKEN":
+                break
+    finally:
+        client.close()
+        code = ""
+    if isinstance(outcome, str):
+        message = ("This enrollment could not be completed. Try again, or ask your administrator."
+                   if outcome == "DEVICE_ID_TAKEN" else outcome)
+        return EnrollResult(False, message)
+    device_id, token = outcome
+    try:
+        result = enroll(url, device_id, token, transport_factory=transport_factory, allow_device_change=True, now=now)
+    except (CredentialsError, OSError):
+        return EnrollResult(False, "The code was accepted but this computer could not store the credential. "
+                                   "Ask your administrator for a new enrollment code.")
+    finally:
+        token = outcome = ""  # noqa: F841
+    if not result.ok:
+        return EnrollResult(False, "The code was accepted but the connection check failed. Ask your administrator "
+                                   "for a new enrollment code.")
+    return EnrollResult(True, "Connection successful. This device is enrolled.", result.enrollment)

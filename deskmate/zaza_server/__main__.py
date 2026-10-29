@@ -353,6 +353,11 @@ _MANAGER_COMMANDS = ("manager-create", "manager-list", "manager-disable", "manag
                      "manager-reset-password", "manager-revoke-sessions")
 
 
+def _stdout_is_terminal() -> bool:
+    """True only when output goes to a person's terminal (not a job log, pipe or file)."""
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
 def _new_password(username: str) -> str:
     """Prompt twice (never echoed, never a command-line argument)."""
     import getpass  # noqa: PLC0415
@@ -499,6 +504,11 @@ def _saas_operator(args: argparse.Namespace) -> int:  # noqa: C901
                     raise TenancyError("the organization is not ACTIVE or its tenant database is not READY") from None
                 if employee is None or not employee.is_active:
                     raise TenancyError("no ACTIVE employee with that id in this organization")
+                if not _stdout_is_terminal():
+                    # A Cloud Run job's stdout goes to Cloud Logging, which would keep the plaintext code.
+                    raise TenancyError(
+                        "refusing to print an enrollment code to a non-interactive output (it would be kept in "
+                        "logs). Run this from your own terminal: scripts/prod-operator.sh enrollment-code-create ...")
                 info, code = store.create_code(org.organization_id, employee_id, ttl_hours=args.hours,
                                                device_display_name=args.device_name,
                                                allow_existing_device=args.reenroll)
@@ -784,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     ma.add_argument("--email", required=True)
     ma.add_argument("--slug", required=True)
     ma.add_argument("--role", required=True, choices=("OWNER", "ADMIN", "MANAGER", "VIEWER"))
-    ec = sub.add_parser("enrollment-code-create", help="(SaaS) one-time device enrollment code; printed ONCE")
+    ec = sub.add_parser("enrollment-code-create", help="(SaaS) one-time device enrollment code; printed ONCE, to an interactive terminal only")
     ec.add_argument("--slug", required=True)
     ec.add_argument("--employee-id", required=True)
     ec.add_argument("--device-name", default=None)

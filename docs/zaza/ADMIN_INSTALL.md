@@ -59,7 +59,26 @@ ZaZaWorkAgentSetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 This installs the program and the startup task only. Enrollment stays a
 separate step (§4); there is deliberately no token parameter.
 
-## 4. Enroll a device
+## 4. Enroll a device (SaaS: one-time enrollment code)
+
+1. Create the code from your own terminal (it is deliberately refused in the Cloud Run job, so that the
+   plaintext code never reaches Cloud Logging):
+
+   ```sh
+   scripts/prod-operator.sh enrollment-code-create --slug <org> --employee-id <id> --hours 24
+   ```
+
+2. Give the code to the employee through a private channel. It works once and expires.
+3. On the PC the employee opens ZaZa Work Agent (Start menu, or the last page of setup). The server address
+   is already `https://work.zazavoice.com`; the employee types the code and presses Enroll. The agent
+   creates its own device ID, the server decides the organization and employee, and the credential is
+   stored protected by Windows. Recording and syncing start without a restart.
+4. An already-enrolled PC shows "This device is already enrolled". Replacing the enrollment needs the
+   explicit "Replace enrollment..." button and a new code.
+
+## 4b. Enroll a device (legacy single-server: device ID and token)
+
+
 
 First register the device on the server, which prints the token once:
 

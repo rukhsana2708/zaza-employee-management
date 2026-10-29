@@ -4,6 +4,8 @@
 #
 #   scripts/prod-operator.sh control-db-status
 #   scripts/prod-operator.sh saas-user-set-password --email owner@example.com
+#   scripts/prod-operator.sh enrollment-code-create --slug zaza-internal --employee-id internal-pilot-1 --hours 24
+#     (the code is printed to this terminal only; the Cloud Run job refuses to print codes)
 #
 # Opens a Cloud SQL proxy on 127.0.0.1:5433 (your gcloud login), reads the
 # migrator password from Secret Manager into a private temp file that is

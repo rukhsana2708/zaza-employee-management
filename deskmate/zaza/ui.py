@@ -23,7 +23,7 @@ from pathlib import Path
 from . import paths
 from .control import requested
 from .edition import PRODUCT_NAME, VERSION, install_dir
-from .enrollment import EnrollmentError, current_state, enroll
+from .enrollment import DEFAULT_SERVER_URL, EnrollmentError, current_state, enroll_with_code
 from .privacy_notice import ACTIVE_HOURS_NOTE, COLLECTS, NEVER_COLLECTS
 from .status import COMPONENT_LABELS, SYNC_LABELS, effective_status
 
@@ -149,7 +149,7 @@ def show_status() -> int:
             row=1, column=col, sticky="nw", padx=(0, 12))
     ttk.Label(frame, text=ACTIVE_HOURS_NOTE, wraplength=680, justify="left").pack(anchor="w", pady=(10, 0))
     enrolled, _ = current_state()
-    ttk.Button(buttons, text="Re-enroll device..." if enrolled else "Enroll this device",
+    ttk.Button(buttons, text="Enrollment..." if enrolled else "Enroll this device",
                command=lambda: show_enrollment(parent=root)).pack(side="left")
     ttk.Button(buttons, text="Close", command=root.destroy).pack(side="right")
     _fit_to_screen(root)
@@ -159,7 +159,9 @@ def show_status() -> int:
 
 
 def show_enrollment(parent=None) -> bool:  # noqa: ANN001
-    """Returns True if the device was (re-)enrolled."""
+    """Enroll this computer with the one-time code from the administrator.
+    Returns True if the device was (re-)enrolled. An already-enrolled device is
+    shown as such and is only replaced after an explicit, confirmed action."""
     import tkinter as tk  # noqa: PLC0415
     from tkinter import messagebox, ttk  # noqa: PLC0415
 
@@ -167,57 +169,81 @@ def show_enrollment(parent=None) -> bool:  # noqa: ANN001
     win = tk.Tk() if own_root else tk.Toplevel(parent)
     _brand(win)
     win.title(f"{PRODUCT_NAME} - Enroll this device")
-    win.minsize(520, 330)
+    win.minsize(520, 300)
     frame = ttk.Frame(win, padding=16)
     frame.pack(fill="both", expand=True)
-    previous, _ = current_state()
-    intro = ("Enter the details your administrator gave you. The token is checked with the server, then stored "
-             "protected by Windows for your account only. It will not be shown again.")
-    if previous:
-        intro = (f"This computer is enrolled as device {previous.device_id} ({previous.server_host}). "
-                 "Re-enrolling requires the device token again; the current token is never shown.")
+    previous, creds_ok = current_state()
+    already = previous is not None and creds_ok
+    if already:
+        intro = (f"This device is already enrolled ({previous.server_host}). You do not need to do anything. "
+                 "Replacing the enrollment is only needed when your administrator asks you to.")
+    else:
+        intro = ("Enter the enrollment code your administrator gave you. It can be used once. The device "
+                 "credential is stored protected by Windows for your account only and is never shown.")
     ttk.Label(frame, text=intro, wraplength=480, justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
-    url = tk.StringVar(value=previous.server_url if previous else "https://")
-    dev = tk.StringVar(value=previous.device_id if previous else "")
-    tok = tk.StringVar()
-    entries = []
-    for r, (label, var, secret) in enumerate((("Server address", url, False), ("Device ID", dev, False),
-                                              ("Device token", tok, True)), start=1):
-        ttk.Label(frame, text=label).grid(row=r, column=0, sticky="w", pady=6)
-        entry = ttk.Entry(frame, textvariable=var, width=46, show="•" if secret else "")
-        entry.grid(row=r, column=1, sticky="we")
-        entries.append((entry, var))
+    url = tk.StringVar(value=previous.server_url if previous else DEFAULT_SERVER_URL)
+    code = tk.StringVar()
+    ttk.Label(frame, text="Server address").grid(row=1, column=0, sticky="w", pady=6)
+    url_entry = ttk.Entry(frame, textvariable=url, width=46)
+    url_entry.grid(row=1, column=1, sticky="we")
+    ttk.Label(frame, text="Enrollment code").grid(row=2, column=0, sticky="w", pady=6)
+    code_entry = ttk.Entry(frame, textvariable=code, width=46)
+    code_entry.grid(row=2, column=1, sticky="we")
     message = tk.StringVar()
-    ttk.Label(frame, textvariable=message, wraplength=480, justify="left").grid(row=4, column=0, columnspan=2,
+    ttk.Label(frame, textvariable=message, wraplength=480, justify="left").grid(row=3, column=0, columnspan=2,
                                                                                  sticky="w", pady=8)
-    done = {"ok": False}
+    state = {"ok": False, "replace": False, "busy": False}
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=4, column=0, columnspan=2, sticky="e")
 
-    def submit(allow_change: bool = False) -> None:
+    def submit() -> None:
+        if already and not state["replace"]:
+            message.set("This device is already enrolled.")
+            return
+        if state["busy"]:
+            return
+        state["busy"] = True
         message.set("Checking with the server...")
         win.update_idletasks()
         try:
-            result = enroll(url.get(), dev.get(), tok.get(), allow_device_change=allow_change)
+            result = enroll_with_code(url.get(), code.get(), replace_existing=state["replace"])
         except EnrollmentError as exc:
-            if "Confirm the change" in str(exc) and messagebox.askyesno(PRODUCT_NAME, str(exc), parent=win):
-                return submit(allow_change=True)
             message.set(str(exc))
-            return None
-        tok.set("")  # the token never stays in the window
+            return
+        except Exception:  # noqa: BLE001 - never show internals, tokens or stack traces
+            message.set("Something went wrong. Try again, or ask your administrator.")
+            return
+        finally:
+            state["busy"] = False
+            code.set("")  # the code never stays in the window
         message.set(result.message)
         if result.ok:
-            done["ok"] = True
+            state["ok"] = True
             win.after(1500, win.destroy)
-        return None
 
-    buttons = ttk.Frame(frame)
-    buttons.grid(row=5, column=0, columnspan=2, sticky="e")
-    ttk.Button(buttons, text="Check and save", command=submit).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="left")
+    def unlock_replace() -> None:
+        text = ("Replace this computer's enrollment?\n\n"
+                "The current device identity will be replaced by a new "
+                "one. Records that were not uploaded yet will not be uploaded under the new device. Continue "
+                "only if your administrator asked you to.")
+        if messagebox.askyesno(PRODUCT_NAME, text, icon="warning", default="no", parent=win):
+            state["replace"] = True
+            replace_button.state(["disabled"])
+            code_entry.state(["!disabled"])
+            submit_button.state(["!disabled"])
+            message.set("Enter the new enrollment code.")
+            code_entry.focus_set()
+
+    submit_button = ttk.Button(buttons, text="Enroll", command=submit)
+    submit_button.pack(side="left", padx=4)
+    replace_button = ttk.Button(buttons, text="Replace enrollment...", command=unlock_replace)
+    ttk.Button(buttons, text="Cancel" if not already else "Close", command=win.destroy).pack(side="left")
+    if already:
+        replace_button.pack(side="left", padx=4, before=submit_button)
+        code_entry.state(["disabled"])
+        submit_button.state(["disabled"])
     win.bind("<Return>", lambda _event: submit())
-    # keyboard-ready: in front, cursor in the first field still to fill ("https://" counts as empty)
-    first = next((e for e, v in entries if v.get().strip() in ("", "https://")), entries[-1][0])
-    first.focus_set()
-    first.icursor("end")
+    (code_entry if not already else url_entry).focus_set()
     win.lift()
     win.focus_force()
     if own_root:
@@ -225,7 +251,7 @@ def show_enrollment(parent=None) -> bool:  # noqa: ANN001
     else:
         win.grab_set()
         win.wait_window()
-    return done["ok"]
+    return state["ok"]
 
 
 def confirm_remove_local_data(unsynced: int) -> bool:

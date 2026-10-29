@@ -47,6 +47,12 @@ Expected afterwards: 1 user (no password), 1 OWNER membership, 1 employee;
 
 ## 4. Pilot
 
+Enrollment codes are created from an operator terminal, never in the Cloud Run job (the job refuses, so the
+plaintext code cannot reach Cloud Logging): `scripts/prod-operator.sh enrollment-code-create --slug ... --employee-id ... --hours 24`.
+The employee types the code into the agent (agent 0.9.1 or newer); no manual token exchange is needed.
+
+
+
 Only after step 3 passes: set the owner's password, issue the first
 enrollment code (`enrollment-code-create`), install the agent on the pilot
 machine, and enroll it. Watch `enrollment-reconcile` and the audit log.
