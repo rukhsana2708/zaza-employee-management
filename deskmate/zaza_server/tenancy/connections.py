@@ -174,13 +174,15 @@ class _Entry:
         self.closed = False
 
 
-def open_tenant_repository(settings: DatabaseSettings):  # noqa: ANN201 — PostgresRepository
+def open_tenant_repository(settings: DatabaseSettings, *, actor_type: str = "SYSTEM",  # noqa: ANN201
+                           actor_id: str = "saas"):
     """Default factory: the existing production repository on the tenant
     database, refusing an out-of-date schema, then checking that the server
-    really connected to the database the context names."""
+    really connected to the database the context names. ``actor_*`` label
+    the tenant audit entries it writes."""
     from ..postgres import PostgresRepository  # noqa: PLC0415 — optional dependency
 
-    repo = PostgresRepository(settings, actor_type="SYSTEM", actor_id="saas", require_current_schema=True,
+    repo = PostgresRepository(settings, actor_type=actor_type, actor_id=actor_id, require_current_schema=True,
                               pool_name="zaza-tenant", check_connections=True, pool_workers=1)
     try:
         with repo.connection() as conn:

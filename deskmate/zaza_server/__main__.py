@@ -7,8 +7,11 @@ Commands:
   (``--production`` adds the Phase 10 production rules; ``--cloud-run`` is the
   separate Cloud Run + Cloud SQL mode, Phase 10D, ``--connect`` also checks
   the control schema)
-- ``add-employee``      add an employee (needed before registering a device)
-- ``list-employees``
+- ``add-employee``      add an employee (needed before registering a device).
+                        LEGACY single database only (``ZAZA_DB_*``): it does
+                        not resolve a SaaS tenant and must NEVER be used for a
+                        SaaS organization (use ``saas-employee-create``)
+- ``list-employees``    legacy single database only
 - ``register-device``   add a device for an employee and print its token ONCE
 - ``rotate-token``      issue an additional token (optionally revoke the old)
 - ``disable-device`` / ``enable-device``
@@ -20,6 +23,11 @@ Commands:
                         migrations to the SEPARATE control database
                         (``ZAZA_CONTROL_DB_*``); ``--sql`` prints the DDL only
 - ``control-db-status`` (SaaS control plane) show the control schema revision
+- ``saas-employee-create`` / ``saas-employee-list`` / ``saas-employee-disable``
+  / ``saas-employee-enable``  (SaaS, Phase 10G-E-A) employees of ONE
+                        organization named by ``--slug``; the tenant database
+                        is resolved through the control plane
+                        (``tenancy/employees.py``), never taken from the operator
 - ``tenant-migrate``    (SaaS, Phase 10D) apply the tenant migrations to tenant
                         databases named by the control plane
                         (``--organization ID`` or ``--all-ready``), one at a
@@ -527,6 +535,55 @@ def _saas_operator(args: argparse.Namespace) -> int:  # noqa: C901
         control.close()
 
 
+_SAAS_EMPLOYEE_COMMANDS = ("saas-employee-create", "saas-employee-list", "saas-employee-disable",
+                           "saas-employee-enable")
+
+
+def _saas_employees(args: argparse.Namespace) -> int:
+    """Trusted operator path for a SaaS organization's employees (Phase
+    10G-E-A): slug -> control plane -> TenantResolver -> TenantRepositoryManager
+    -> the tenant database. Never the legacy single database (add-employee),
+    never a database chosen by the operator; see tenancy/employees.py."""
+    from .tenancy import domain  # noqa: PLC0415
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+    from .tenancy.connections import TenantRepositoryManager  # noqa: PLC0415
+    from .tenancy.control_repository import PostgresControlRepository  # noqa: PLC0415
+    from .tenancy.domain import TenancyError  # noqa: PLC0415
+    from .tenancy.employees import SaasEmployeeOperator, operator_repository_factory  # noqa: PLC0415
+    from .tenancy.resolver import TenantResolver  # noqa: PLC0415
+
+    control = PostgresControlRepository(control_database_settings_from_env(), actor_type="CLI", actor_id="saas-operator")
+    manager = None
+    try:
+        # the server's base settings supply host/user/password only; the database name comes from the context
+        manager = TenantRepositoryManager(database_settings_from_env(), repository_factory=operator_repository_factory)
+        operator = SaasEmployeeOperator(control, TenantResolver(control), manager)
+        if args.command == "saas-employee-create":
+            e = operator.create(args.slug, args.employee_id, args.name, timezone=args.timezone, role=args.role)
+            print(f"Added employee {e.employee_id} ({e.display_name}, employee role {e.role}, {e.timezone}) "
+                  f"to {domain.normalize_slug(args.slug)}.")
+        elif args.command == "saas-employee-list":
+            rows = operator.list(args.slug)
+            for e in rows:
+                print(f"{e.employee_id:<20} {e.display_name:<28} {e.role:<9} {e.timezone:<20} "
+                      f"{'active' if e.is_active else 'inactive'}")
+            if not rows:
+                print("(no employees)")
+        else:
+            active = args.command == "saas-employee-enable"
+            e = operator.set_active(args.slug, args.employee_id, active)
+            print(f"{e.employee_id}: {'active' if e.is_active else 'inactive'}"
+                  + ("" if active else " (no new enrollment codes; existing devices are NOT disabled by this)"))
+        return 0
+    except (TenancyError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if manager is not None:
+            manager.close()
+        control.close()
+
+
 def _serve_saas(args: argparse.Namespace, backend: str) -> int:
     """``serve`` in SaaS mode: the multi-tenant app (control plane + routed
     tenant databases). Never the legacy dashboard; never migrations."""
@@ -739,6 +796,21 @@ def main(argv: list[str] | None = None) -> int:
     er = sub.add_parser("enrollment-code-revoke", help="(SaaS) revoke an unused enrollment code")
     er.add_argument("--enrollment-id", required=True)
     sub.add_parser("enrollment-reconcile", help="(SaaS) expire old codes; finish interrupted enrollments")
+    se = sub.add_parser("saas-employee-create", help="(SaaS) add an employee to an organization's tenant database "
+                                                     "(resolved from the control plane; never add-employee)")
+    se.add_argument("--slug", required=True)
+    se.add_argument("--employee-id", required=True)
+    se.add_argument("--name", required=True)
+    se.add_argument("--timezone", required=True, help="IANA name used for reports, e.g. Asia/Dhaka")
+    se.add_argument("--role", default="EMPLOYEE", choices=("EMPLOYEE", "MANAGER", "ADMIN"),
+                    help="the tenant's employee role, NOT a SaaS membership role (default EMPLOYEE)")
+    sl = sub.add_parser("saas-employee-list", help="(SaaS) an organization's employees (metadata only)")
+    sl.add_argument("--slug", required=True)
+    for name, helptext in (("saas-employee-disable", "mark an employee inactive in its organization"),
+                           ("saas-employee-enable", "mark an employee active again")):
+        p = sub.add_parser(name, help=f"(SaaS) {helptext}")
+        p.add_argument("--slug", required=True)
+        p.add_argument("--employee-id", required=True)
 
     args = parser.parse_args(argv)
     try:
@@ -769,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
             return _saas_users(args)
         if args.command in _SAAS_OPERATOR_COMMANDS:
             return _saas_operator(args)
+        if args.command in _SAAS_EMPLOYEE_COMMANDS:
+            return _saas_employees(args)
         if args.command == "serve" and tenancy_mode_from_env() == "saas":
             return _serve_saas(args, args.backend or backend_from_env())
         backend = args.backend or backend_from_env()

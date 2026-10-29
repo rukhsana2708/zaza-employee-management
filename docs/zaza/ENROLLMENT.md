@@ -25,11 +25,73 @@ saas-org-create --slug acme --name "Acme Ltd"                 # ACTIVE, no tenan
 tenant-provision --slug acme [--region asia-south1]           # server-generated zaza_t_… -> READY
 saas-user-create --email owner@acme.example --name "…" --no-password
 saas-membership-add --email owner@acme.example --slug acme --role OWNER
+saas-employee-create --slug acme --employee-id alice --name "Alice Example" --timezone Asia/Dhaka
 (saas-user-set-password later: hidden prompt; invitations are a later phase)
 ```
 
 In production these run as the `zaza-migrate` job, with the migrator
 identity.
+
+### 1a. Employees of a SaaS organization (Phase 10G-E-A)
+
+```
+saas-employee-create  --slug acme --employee-id alice --name "Alice Example" --timezone Asia/Dhaka [--role EMPLOYEE]
+saas-employee-list    --slug acme
+saas-employee-disable --slug acme --employee-id alice
+saas-employee-enable  --slug acme --employee-id alice
+```
+
+Code: `deskmate/zaza_server/tenancy/employees.py`.
+
+- **Resolution:** slug → `normalize_slug` → the organization id from the
+  control plane → `TenantResolver.for_job` (ACTIVE organization, READY
+  tenant) → immutable `TenantContext` → `TenantRepositoryManager` → that
+  tenant's repository. The repository refuses an out-of-date schema and
+  checks `current_database()`.
+- **No database input.** The slug names the organization; it never selects
+  a database. The commands take no database, host, URL or organization id.
+- **Refusals, never a fallback.** An unknown slug, a non-ACTIVE
+  organization, a missing or non-READY tenant, an out-of-date tenant
+  schema, or an unreachable tenant are all refused (exit 2). Nothing falls
+  back to the base database (`ZAZA_DB_NAME`, `postgres` in production),
+  `zaza_control`, or another tenant. Errors don't print the tenant database
+  name.
+- **Validation:** the tenancy domain rules. The employee id is 1–128
+  characters of `A-Za-z0-9._:-`; the display name is 1–200 printable
+  characters (no control characters); the timezone must be a real IANA
+  name. The repository then applies its own checks and the database
+  constraints. A duplicate employee id in the same organization is
+  refused. The same id in another organization is a different employee in
+  a different database.
+- **Employee role** (`EMPLOYEE` default, `MANAGER`, `ADMIN`): the tenant's
+  own employee attribute. It is **not** a SaaS membership role
+  (OWNER/ADMIN/MANAGER/VIEWER), is never mapped to one, and grants no
+  dashboard access.
+- **Listing** shows id, name, employee role, timezone and active/inactive
+  only: no tokens, hashes, activity, passwords, connection strings or
+  database name.
+- **Disable/enable** changes `employees.is_active` in that tenant only. It
+  doesn't touch memberships, the organization or any other tenant. A
+  disabled employee gets no new enrollment code and is left out of
+  attendance summaries. **Existing devices and tokens are not revoked by
+  it.**
+- **Audit:** the tenant's `audit_logs` records `employee.create`,
+  `employee.disable` and `employee.enable` with actor `CLI` /
+  `saas-operator`; a no-op enable/disable records nothing. The control
+  plane stores no employee data.
+- **Database identity:** the `zaza-migrate` job connects as
+  `zaza_migrator`, the trusted operator boundary that owns the tenant
+  objects. That is acceptable for bootstrap only. This path is never
+  exposed over HTTP, the web runtime never gets CREATEDB, and the migrator
+  secret is never mounted into the web service. Customer self-service
+  employee management later runs through authenticated SaaS authorization
+  as `zaza_app`.
+
+**Legacy `add-employee` / `list-employees` must NOT be used for a SaaS
+organization.** They open the single database of
+`database_settings_from_env()` (`open_repository`) and resolve no tenant.
+In the production job, that database is the maintenance database
+`postgres`.
 
 **Tenant provisioning:**
 1. assign a server-generated `zaza_t_` name (never operator input);

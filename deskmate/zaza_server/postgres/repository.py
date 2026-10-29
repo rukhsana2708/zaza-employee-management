@@ -295,6 +295,24 @@ class PostgresRepository:
             rows = conn.execute("SELECT * FROM employees ORDER BY employee_id").fetchall()
         return [self._employee(r) for r in rows]
 
+    def set_employee_active(self, employee_id: str, active: bool) -> EmployeeRecord:
+        """Enable or disable one employee (``is_active``), audited as
+        ``employee.enable`` / ``employee.disable``. Idempotent: no change, no
+        audit entry. Devices and tokens are not touched."""
+        with self._conn() as conn:
+            with conn.transaction():
+                old = conn.execute("SELECT * FROM employees WHERE employee_id = %s FOR UPDATE",
+                                   (employee_id,)).fetchone()
+                if old is None:
+                    raise ValueError(f"unknown employee: {employee_id}")
+                if old["is_active"] == active:
+                    return self._employee(old)
+                row = conn.execute("UPDATE employees SET is_active = %s, updated_at = now() WHERE employee_id = %s "
+                                   "RETURNING *", (active, employee_id)).fetchone()
+                self._audit(conn, "employee.enable" if active else "employee.disable", "employee", employee_id,
+                            old={"is_active": old["is_active"]}, new={"is_active": active})
+        return self._employee(row)
+
     # ─── devices & tokens ──────────────────────────────────────────────────
     @staticmethod
     def _device(row: dict) -> DeviceRecord:

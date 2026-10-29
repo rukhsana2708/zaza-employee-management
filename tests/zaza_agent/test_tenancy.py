@@ -406,6 +406,12 @@ def test_tenancy_code_never_reads_employee_roles_or_activity_tables():
             for table in activity:
                 assert not re.search(rf"\b(FROM|JOIN|INTO|UPDATE)\s+{table}\b", statement, re.IGNORECASE), \
                     f"{path.name}: control plane must not touch tenant table {table}"
+        if path.name == "employees.py":
+            # the tenant-aware employee operator (10G-E-A) handles EmployeeRecords, but only those returned by
+            # a resolved tenant repository: it holds no SQL at all and never opens a database itself
+            assert sql == [] and "psycopg" not in path.read_text(encoding="utf-8")
+            assert "manager.repository(context)" in path.read_text(encoding="utf-8")
+            continue
         assert "EmployeeRecord" not in path.read_text(encoding="utf-8"), path.name
 
 

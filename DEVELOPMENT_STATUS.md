@@ -1,8 +1,60 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-29 (Phase 10G-D — production backup and PITR restore drill)
+**Last updated:** 2026-10-29 (Phase 10G-E-A — tenant-aware SaaS employee operator, code only)
 
-## Current phase: Phase 10G-D — production backup and PITR restore drill (pending your review)
+## Current phase: Phase 10G-E-A — tenant-aware SaaS employee operator (code only; pending your review)
+
+Phase 10G-D is **approved**. 10G-E-A is **code + tests only**: no image was
+built, `zaza-migrate` is unchanged, and production was not touched (still
+1 organization, 1 READY tenant, 0 users, memberships, employees, devices,
+codes and routes).
+
+- **Why:** the legacy `add-employee` / `list-employees` open the single
+  database of `database_settings_from_env()` (`open_repository`) and
+  resolve no tenant. In the production job that database is `postgres`.
+  **They must never be used for a SaaS organization.**
+- **New operator commands** (`tenancy/employees.py`, details in
+  [docs/zaza/ENROLLMENT.md §1a](docs/zaza/ENROLLMENT.md)):
+  `saas-employee-create`, `saas-employee-list`, `saas-employee-disable`,
+  `saas-employee-enable`, each with `--slug`.
+  - Path: slug → control plane → `TenantResolver.for_job` → immutable
+    `TenantContext` → `TenantRepositoryManager` → tenant repository
+    (current schema, `current_database()` checked).
+  - No database, host, URL or organization-id input. An unknown,
+    suspended or closed organization, a missing, non-READY, out-of-date or
+    unreachable tenant are refused, with no fallback to `postgres`,
+    `zaza_control` or another tenant.
+- **Validation:** tenancy domain rules (id format, printable display name,
+  IANA timezone, employee role EMPLOYEE/MANAGER/ADMIN), then the
+  repository and database constraints. The employee role is not a SaaS
+  membership role.
+- **Disable/enable:** a new `PostgresRepository.set_employee_active` on the
+  existing `is_active` column (no schema change), idempotent, audited. It
+  doesn't revoke existing devices or tokens.
+- **Audit:** the tenant `audit_logs` records `employee.create` /
+  `employee.disable` / `employee.enable` with actor `CLI` /
+  `saas-operator` (the operator's tenant repository factory). The control
+  plane stores no employee data.
+- **Identity:** in production these run in `zaza-migrate` as
+  `zaza_migrator` — acceptable for bootstrap only; never over HTTP.
+- **Tests:** unit tests (`test_saas_employees.py`) plus real PostgreSQL 16
+  (`test_saas_employees_postgres.py`):
+  - the same `employee-1` in tenants A and B stays separate for create,
+    list and disable;
+  - every refusal case is covered;
+  - the control and maintenance databases get zero employee data;
+  - the legacy path is never called;
+  - the full internal bootstrap sequence runs (organization, tenant, user
+    without password, OWNER membership, employee).
+- **Runbook:** RECOVERY_RUNBOOK.md corrected:
+  - observed label behaviour: the backup restore had no labels, the PITR
+    clone copied production labels; relabel with `gcloud beta sql
+    instances patch … --update-labels`;
+  - `--location asia-south1` guidance for on-demand backups;
+  - the retained drill backup `1793272723324` and a review policy for
+    on-demand backups.
+
+## Earlier: Phase 10G-D — production backup and PITR restore drill (approved)
 
 Phase 10G-C is **approved**. 10G-D is a disaster-recovery DRILL: **PASS**.
 The source `zaza-prod-pg16` was never restored onto, overwritten,

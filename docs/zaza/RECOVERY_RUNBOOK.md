@@ -20,10 +20,23 @@ PostgreSQL logical tools (section B).
   or `zaza-pitr-drill-<suffix>` (PITR) for drills, and a clearly named
   `zaza-recovery-<suffix>` for a real recovery. A deleted instance name
   cannot be reused for about a week, so use a fresh suffix.
-- A restored instance inherits the source's settings stored in the backup
-  (deletion protection ON, automated backups and PITR ON, no labels),
-  even when other flags are passed. Turn deletion protection off on the
-  temporary instance only, right before deleting it.
+- Expect the new instance to carry source settings. In the 10G-D drill,
+  both the backup-restore instance and the PITR clone came up with
+  deletion protection ON and automated backups and PITR ON; the backup
+  restore ignored `--no-deletion-protection`. Labels differed:
+  - **backup restore:** the instance had **no user labels**;
+  - **PITR clone:** it **copied the source's production labels**
+    (`app=zaza`, `environment=production`, `managed-by=terraform`).
+
+  This is what one drill observed, not a documented guarantee: inspect
+  every new instance. Relabel a temporary instance right after creation
+  with the beta command (or the Admin API), e.g.
+  `gcloud beta sql instances patch INSTANCE --update-labels=purpose=dr-drill,environment=dr-drill,temporary=true`
+  plus `--remove-labels=managed-by`, so it is never mistaken for production.
+  (The GA `gcloud sql instances patch` rejected these label flags in the
+  drill; labels can still be changed through beta or the API.) Turn
+  deletion protection off on the temporary instance only, right before
+  deleting it.
 - Keep the source's exposure: public IP with **no authorized networks**,
   connector enforcement REQUIRED, `ENCRYPTED_ONLY`. Connect only through
   the Cloud SQL Auth Proxy. Never open PostgreSQL to the internet.
@@ -41,10 +54,29 @@ PostgreSQL logical tools (section B).
 
 | What | Where |
 |---|---|
-| Backups | `gcloud sql backups list --instance zaza-prod-pg16` (automated daily at 20:30 UTC, 14 retained; on-demand backups are kept until deleted) |
+| Backups | `gcloud sql backups list --instance zaza-prod-pg16` (automated daily at 20:30 UTC, 14 retained; on-demand backups are kept until deleted, see "Backup location and retention") |
 | Backup resource name (needed to restore to a NEW instance) | `gcloud sql backups list --filter=instance:zaza-prod-pg16` → `projects/zaza-employee-monitor/backups/<uuid>` |
 | PITR window | `gcloud beta sql instances get-latest-recovery-time zaza-prod-pg16` → `earliestRecoveryTime`, `latestRecoveryTime` (7 days of logs) |
 | Expected content | control revision, organizations and `tenant_databases` rows; each tenant's `alembic_version` |
+
+## Backup location and retention
+
+- **Location.** Automated backups are configured for `asia-south1`. An
+  on-demand backup created without `--location` goes to Cloud SQL's
+  default multi-region (the 10G-D drill backup is in `asia`). That is a
+  valid Cloud SQL default and the backup is fully usable; the drill
+  restored it successfully. For consistency with the configured production
+  backup location, or any regional data-residency requirement, future
+  on-demand backups **should** pass `--location asia-south1`:
+  `gcloud sql backups create --instance zaza-prod-pg16 --location asia-south1 --description "…"`.
+- **Retention.** Standard on-demand backups are **not** part of the rolling
+  count of 14 automated backups: they stay, and keep costing storage, until
+  someone deletes them. Every on-demand backup needs a deliberate review
+  and keep-or-delete decision, recorded here.
+
+| On-demand backup | Purpose | Location | Decision |
+|---|---|---|---|
+| `1793272723324` (2026-10-29) | 10G-D restore drill; the first verified restore-drill backup (contains the first tenant) | `asia` (multi-region) | **retained intentionally**; review when a later drill produces a newer verified backup, or before customer data exists |
 
 ## A. Complete instance loss (or whole-instance corruption)
 
@@ -140,10 +172,12 @@ reconfigured; the only production write was the on-demand backup.
 
 Observed while drilling:
 - Both temporary instances came up with deletion protection ON and
-  automated backups ON despite `--no-deletion-protection` on the restore;
-  the PITR clone also copied the production labels
-  (`environment=production`, `managed-by=terraform`). The GA
-  `gcloud sql instances patch` has no label flags, so the drill instances
-  were identified by name only. For the next drill, set labels through the
-  beta command or the API right after creation, and keep the drill short.
+  automated backups ON despite `--no-deletion-protection` on the restore.
+  The backup-restore instance had no user labels; the PITR clone copied the
+  production labels (`environment=production`, `managed-by=terraform`).
+  The GA `gcloud sql instances patch` rejected the label flags, and the
+  beta command was not tried, so both drill instances were identified by
+  name only. For the next drill, relabel them with
+  `gcloud beta sql instances patch … --update-labels …` (or the API) right
+  after creation, and keep the drill short.
 - Deleting the temporary instances left no backups behind.

@@ -179,6 +179,8 @@ python -m deskmate.zaza_server register-device --device-id laptop-01 --employee-
 ```
 
 A device always belongs to an existing employee, so add the employee first.
+(This is the single-database development flow. A SaaS organization's employees are added with
+`saas-employee-create --slug …`, never `add-employee`; see docs/zaza/ENROLLMENT.md §1a.)
 `register-device` prints a long token starting with `zzd_`. Copy it; it is shown only
 once. Then start the server and leave the window open:
 
