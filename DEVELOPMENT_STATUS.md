@@ -24,6 +24,20 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10O — same-device Replace enrollment verified (2026-10-30/31)
+
+- Timeline (UTC): 19:03:33 POST /enroll 200 (re-enrollment code claimed+completed) -> 19:03:34 GET /devices/me 200
+  (first use of the NEW credential) -> 19:03:36 POST /sync/batch 403 "token revoked" from the agent's still-running
+  worker using the OLD token -> 19:03:37 batches 200 with the new credential.
+- Device `zaza-pilot-pc-01` unchanged (one device, ACTIVE, one active credential, employee `internal-pilot-1`);
+  credential file rewritten (hash prefix D0BEB1BF... -> 2C290C72...); enrollment code COMPLETED; reconcile clean;
+  no 5xx/DB errors; no secrets in files, command lines or Cloud Logging; run.app 404; Cloud Armor still off.
+- Revoked tokens answer HTTP 403 ("token revoked"), unknown/missing tokens 401.
+- DEFECT (agent): after the in-process restart that follows a re-enrollment, `session_lock` goes to ERROR
+  ("failed to create message-only window": the watcher window class is registered once per process and reused
+  after its callback is gone). Status DEGRADED; lock state untrusted, so no LOCKED/IDLE, only ACTIVE or UNKNOWN
+  (never a false IDLE). A process restart clears it. Fix needed before replacing enrollments on other PCs.
+
 ## Phase 10N — pilot PC upgraded 0.9.0 -> 0.9.2 (2026-10-30)
 
 - Installer sha256 575739888d41...e4d284 verified; in-place silent upgrade approved by the user at the keyboard.
