@@ -24,6 +24,15 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10P — session-lock watcher lifecycle fix (agent 0.9.3, code only; NOT installed)
+
+- Pilot agent restarted: `session_lock` back to HEALTHY (0.9.2, same device, same credential, no re-enrollment).
+- Fix: unique window class per watcher run, callback held until `UnregisterClassW` succeeds, cleanup in `finally`
+  (notifications, window, class, callback), `_tid` reset, no second thread beside a still-exiting one, idempotent
+  `stop()`. Regression reproduced first (red on the old code), then green.
+- Tests: `test_session_lock_lifecycle.py` (13, real Win32). Known findings recorded in docs/zaza/ENROLLMENT.md
+  section 5 (403 vs 401, expected transient 403, employee-bound codes, device-specific codes as a hardening item).
+
 ## Phase 10O — same-device Replace enrollment verified (2026-10-30/31)
 
 - Timeline (UTC): 19:03:33 POST /enroll 200 (re-enrollment code claimed+completed) -> 19:03:34 GET /devices/me 200

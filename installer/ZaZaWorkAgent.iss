@@ -1,5 +1,5 @@
 ; ZaZa Work Agent — Windows installer (Inno Setup 6.x).
-; Built by installer/build.ps1:  ISCC.exe /DAppVersion=0.9.2 installer\ZaZaWorkAgent.iss
+; Built by installer/build.ps1:  ISCC.exe /DAppVersion=0.9.3 installer\ZaZaWorkAgent.iss
 ;
 ; - Installs the one-folder PyInstaller bundle into Program Files (admin once).
 ; - Registers the transparent logon task (\ZaZa\ZaZa Work Agent) via the app

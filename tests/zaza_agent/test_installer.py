@@ -508,7 +508,7 @@ def test_status_rows_never_show_the_token(home):
     _enroll()
     rows = dict(status_lines())
     assert rows["Device ID"] == "pc-1" and rows["Server"] == "zaza.example.com"
-    assert TOKEN not in json.dumps(rows) and rows["Version"] == __version__ == "0.9.2"
+    assert TOKEN not in json.dumps(rows) and rows["Version"] == __version__ == "0.9.3"
     for label in ("Keyboard activity presence", "Mouse activity presence", "Foreground-app monitoring",
                   "Windows lock monitoring", "Local storage", "Last successful sync", "Records waiting to upload"):
         assert label in rows

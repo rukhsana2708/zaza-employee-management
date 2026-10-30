@@ -365,3 +365,25 @@ Internet -> External Application Load Balancer (managed TLS, custom hostname)
 |---|---|---|
 | `test_enrollment.py` | none | the real service, resolver, manager and SaaS app with in-memory stores |
 | `test_enrollment_postgres.py` | PostgreSQL 16, in a deterministic container network | provisioning A/B, recovery, c0003 constraints and CLEANUP_PENDING transitions, A/B enrollment and sync, 16-way concurrent use of one code, reconciliation, compensation, a **real tenant outage** (`ALLOW_CONNECTIONS false`) between the CLEANUP_PENDING transition and the revocation across three runs (the fourth finishes), route failure plus revocation failure, completion racing reconciliation (both orders observed), device-row recovery |
+
+## 5. Known behaviour and limits (documented findings)
+
+- **Revoked vs unknown credentials.** A device credential that was revoked (for example the previous one after a
+  re-enrollment, or after `saas-device-revoke-tokens`) is answered with **HTTP 403** (`token revoked`). A missing or
+  unknown credential gets **HTTP 401**. Do not treat them as the same signal.
+- **Transient 403 during a replacement is expected.** The agent verifies the new credential first (that is the
+  credential's first use, which revokes the old one), then restarts recording with it. A sync request that the
+  still-running worker sends with the OLD token in that second is answered 403, the sync state shows `AUTH_ERROR`
+  for about a second, and it returns to `HEALTHY` as soon as the worker has the new credential. No data is lost
+  (records stay queued until confirmed).
+- **A re-enrollment code is bound to the employee, not to one device.** It can replace the credential of any ACTIVE
+  device of that employee whose device id the agent presents (an agent always sends its own). Binding a code to one
+  device id needs a control-plane migration (a device column on `device_enrollment_codes`). **Device-specific
+  re-enrollment codes are a hardening item to complete before a multi-device rollout.**
+- **First-time enrollment is not affected by the session-lock watcher defect** (see below): the watcher is created
+  once and nothing is restarted in the process.
+- **Session-lock watcher lifecycle (fixed in agent 0.9.3).** Up to 0.9.2 a re-enrollment restarted recording inside
+  the same process and the lock watcher failed to re-create its message-only window (`session_lock=ERROR`, agent
+  DEGRADED, lock state untrusted: only ACTIVE or UNKNOWN, never a false IDLE). A process restart cleared it. From
+  0.9.3 each run registers its own uniquely named window class, keeps its callback alive until the class is
+  unregistered, and always cleans up.

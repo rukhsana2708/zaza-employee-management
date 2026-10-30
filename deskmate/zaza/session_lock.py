@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import itertools
 import os
 import threading
 from collections.abc import Callable
@@ -54,6 +55,15 @@ WNDPROC = (
 )
 
 _EVENT_NAMES = {WTS_SESSION_LOCK: "LOCK", WTS_SESSION_UNLOCK: "UNLOCK"}
+
+# Window-class lifecycle. Every watcher run registers its OWN class (unique name) and unregisters it when the run
+# ends, so a restart in the same process (a re-enrollment restarts recording) never meets a stale class. The window
+# procedure is a ctypes callback: it must stay alive for as long as its class exists, so it is held here until
+# UnregisterClassW has succeeded (a callback freed while its class still exists makes the next window creation
+# fail, ERROR_CLASS_ALREADY_EXISTS / NCCREATE refused).
+_CLASS_SEQ = itertools.count(1)
+_CALLBACK_LOCK = threading.Lock()
+_ACTIVE_CALLBACKS: list = []  # ctypes callbacks are not hashable
 
 
 def classify_session_flags(flags: int) -> bool | None:
@@ -119,14 +129,16 @@ class SessionLockWatcher:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._tid = 0
+        self._class_name = ""
 
     @property
     def available(self) -> bool:
         return os.name == "nt"
 
     def start(self) -> None:
-        if self._thread:
-            return
+        if self._thread is not None and self._thread.is_alive():
+            return  # already running (or still shutting down): never a second watcher thread
+        self._thread = None
         if not self.available:
             self._health.set(SESSION_LOCK, HealthState.ERROR, "unsupported platform (Windows only)")
             return
@@ -136,15 +148,22 @@ class SessionLockWatcher:
         self._thread.start()
 
     def stop(self) -> None:
+        """Idempotent; safe before start() and after a failed start."""
         self._stop.set()
-        if self._tid and os.name == "nt":
+        tid = self._tid
+        if tid and os.name == "nt":
             try:
-                ctypes.windll.user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0)  # type: ignore[attr-defined]
+                ctypes.windll.user32.PostThreadMessageW(tid, WM_QUIT, 0, 0)  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
-        if self._thread:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                # keep the reference: start() must not create a second watcher beside a thread that is still exiting
+                logger.warning("session lock watcher thread did not stop within 5 s")
+            else:
+                self._thread = None
         self._health.set(SESSION_LOCK, HealthState.DEGRADED, "stopped")
 
     def _established(self) -> None:
@@ -239,9 +258,15 @@ class SessionLockWatcher:
                 ("lpszClassName", wt.LPCWSTR),
             ]
 
+        user32.UnregisterClassW.restype = wt.BOOL
+        user32.UnregisterClassW.argtypes = [wt.LPCWSTR, wt.HINSTANCE]
+
         wnd_proc = WNDPROC(_wnd_proc)
+        with _CALLBACK_LOCK:
+            _ACTIVE_CALLBACKS.append(wnd_proc)  # alive until the class that points at it is gone
         hinstance = kernel32.GetModuleHandleW(None)
-        class_name = "ZazaSessionLockWatcher"
+        class_name = f"ZazaSessionLockWatcher.{os.getpid()}.{next(_CLASS_SEQ)}"  # unique per run
+        self._class_name = class_name
 
         wndclass = WNDCLASS()
         wndclass.style = 0
@@ -255,44 +280,63 @@ class SessionLockWatcher:
         wndclass.lpszMenuName = None
         wndclass.lpszClassName = class_name
 
-        if not user32.RegisterClassW(ctypes.byref(wndclass)):
-            # Class may already be registered from a previous run in-process.
-            pass
+        registered = False
+        hwnd = None
+        try:
+            if not user32.RegisterClassW(ctypes.byref(wndclass)):
+                err = kernel32.GetLastError()
+                logger.error("failed to register the session notification window class")
+                self._health.set(SESSION_LOCK, HealthState.ERROR, f"RegisterClassW failed (GetLastError={err})")
+                return
+            registered = True
 
-        hwnd = user32.CreateWindowExW(
-            0, class_name, "ZazaSessionLockWatcher", 0, 0, 0, 0, 0,
-            wt.HWND(HWND_MESSAGE), None, hinstance, None,
-        )
-        if not hwnd:
-            err = kernel32.GetLastError()
-            logger.error("failed to create message-only window for session notifications")
-            self._health.set(SESSION_LOCK, HealthState.ERROR, f"CreateWindowExW failed (GetLastError={err})")
-            return
-
-        if wtsapi32.WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION):
-            self._established()
-        else:
-            err = kernel32.GetLastError()
-            logger.error("WTSRegisterSessionNotification failed (GetLastError=%s)", err)
-            self._health.set(
-                SESSION_LOCK, HealthState.ERROR, f"WTSRegisterSessionNotification failed (GetLastError={err})"
+            hwnd = user32.CreateWindowExW(
+                0, class_name, "ZazaSessionLockWatcher", 0, 0, 0, 0, 0,
+                wt.HWND(HWND_MESSAGE), None, hinstance, None,
             )
+            if not hwnd:
+                err = kernel32.GetLastError()
+                logger.error("failed to create message-only window for session notifications")
+                self._health.set(SESSION_LOCK, HealthState.ERROR, f"CreateWindowExW failed (GetLastError={err})")
+                return
 
-        self._tid = int(kernel32.GetCurrentThreadId())
+            # the window exists, so this thread has a message queue: stop() can reach it from now on
+            self._tid = int(kernel32.GetCurrentThreadId())
 
-        msg = wt.MSG()
-        while not self._stop.is_set():
-            r = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
-            if r == 0 or r == -1:
-                break
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
+            if wtsapi32.WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION):
+                self._established()
+            else:
+                err = kernel32.GetLastError()
+                logger.error("WTSRegisterSessionNotification failed (GetLastError=%s)", err)
+                self._health.set(
+                    SESSION_LOCK, HealthState.ERROR, f"WTSRegisterSessionNotification failed (GetLastError={err})"
+                )
+                return
 
-        try:
-            wtsapi32.WTSUnRegisterSessionNotification(hwnd)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            user32.DestroyWindow(hwnd)
-        except Exception:  # noqa: BLE001
-            pass
+            msg = wt.MSG()
+            while not self._stop.is_set():
+                r = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+                if r == 0 or r == -1:
+                    break
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            # Always, in this order, whatever happened above: notifications, window, class, then the callback.
+            self._tid = 0
+            if hwnd:
+                try:
+                    wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    user32.DestroyWindow(hwnd)
+                except Exception:  # noqa: BLE001
+                    pass
+            released = not registered
+            if registered:
+                released = bool(user32.UnregisterClassW(class_name, hinstance))
+                if not released:
+                    logger.warning("could not unregister the session notification window class")
+            if released:
+                with _CALLBACK_LOCK:
+                    _ACTIVE_CALLBACKS[:] = [c for c in _ACTIVE_CALLBACKS if c is not wnd_proc]  # only now may the callback be freed
