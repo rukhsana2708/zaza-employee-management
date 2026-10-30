@@ -24,6 +24,18 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10M — deploy the re-enrollment lifecycle and SaaS device commands (2026-10-30)
+
+- Image from commit a2b6f79: `sha256:a13ecfcbac4f1eab7b7993d64d0e90b2ac69af4d911d0d7237707d3a7e31b950`.
+  Terraform: fmt/validate OK; plan 0 add / 2 change / 0 destroy (job image + service image only); applied.
+- Service revision `zaza-server-00003-szm` serves 100%. Job `zaza-migrate` runs the same image.
+- Verified: health 200; run.app 404; edge/Cloud Armor/certificate unchanged; the job still refuses to print
+  enrollment codes (code count unchanged); `saas-device-list` live (pilot device active); no 5xx; no secrets in logs;
+  the 0.9.0 pilot agent keeps syncing (200 every minute).
+- Nit: the `--reenroll` help text says earlier credentials are revoked "once the new one is complete"; the actual
+  rule is "after the new one is first used successfully" (docs/zaza/ENROLLMENT.md is correct).
+- NOT DONE (by instruction): PC upgrade to 0.9.2, re-enrollment code, Replace test.
+
 ## Phase 10L — device identity preserved on re-enrollment; tenant device administration (code, agent 0.9.2)
 
 - Agent: "Replace enrollment..." reuses the PC's device ID (needs a `--reenroll` code); a first enrollment still
