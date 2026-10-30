@@ -24,6 +24,20 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10S — network-loss and Windows sign-out/sign-in validation (2026-10-31)
+
+- Network loss (~4 min offline): agent stayed alive, recorded locally (events +50, periods +10), pending 2 -> 19, never
+  AUTH_ERROR, credential unchanged; sync resumed by itself ~1m51s after the network returned (offline backoff) and the
+  19 queued records went in ONE batch: 200, accepted=12 updated=7, stale=0 conflicts=0 failed=0.
+- Sign-out/sign-in: Windows ended the agent abruptly at sign-out (no graceful shutdown line); the first REAL run of the
+  logon task started agent 0.9.3 31 s after login (02:49:24), recovered the interrupted session at its last heartbeat,
+  and caught up (sent=10 confirmed=10). One background agent, one task, one device, credential file byte-identical,
+  DPAPI decrypts under the same user, `/devices/me` 200, all five components HEALTHY, session lock initialised (UNLOCKED).
+- After login the PC's own network flapped (Windows NetworkProfile connect/disconnect events from 02:50:23; longest
+  agent offline stretch ~11 min, DNS failures); server logged no errors; every batch 200; no data lost.
+- Backlog ideas (not done): handle logoff gracefully (WM_QUERYENDSESSION) to close the session and flush; retry sync
+  sooner when the OS reports the network is back; quiet the first-tick "input hooks not HEALTHY" log line.
+
 ## Phase 10R — final same-device Replace with agent 0.9.3: PASS (2026-10-31)
 
 - Same running process (pid 20576, started 01:52:14) before and after: no restart. Recording restarted in-process
