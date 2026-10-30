@@ -24,6 +24,16 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10T — design: sync API rate limiting + HSTS (DESIGN ONLY, 2026-10-31)
+
+- Full proposal: docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md (observed pilot profile, thresholds, state mechanism, failure modes,
+  429/Retry-After behaviour, HSTS ramp, files/tests, risks). Nothing implemented or deployed.
+- Single-machine pilot validated: enrollment, sync, restart, upgrades 0.9.0 -> 0.9.2 -> 0.9.3, same-device Replace, token
+  revocation, session-lock lifecycle, network outage, sign-out/sign-in and autostart, DPAPI, no leaks.
+- Agent polish backlog (documented, not blockers): (1) handle Windows logoff/shutdown to close and flush the session cleanly;
+  (2) quiet the harmless first-tick "input hooks not HEALTHY" startup log line; (3) retry sync sooner when Windows reports
+  connectivity is back.
+
 ## Phase 10S — network-loss and Windows sign-out/sign-in validation (2026-10-31)
 
 - Network loss (~4 min offline): agent stayed alive, recorded locally (events +50, periods +10), pending 2 -> 19, never
