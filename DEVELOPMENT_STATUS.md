@@ -26,6 +26,9 @@
 
 ## Phase 10T — design: sync API rate limiting + HSTS (DESIGN ONLY, 2026-10-31)
 
+- Revision 2 APPROVED with corrections (2026-10-31): every authenticated request counted in PostgreSQL (120 per 60 s per device) plus a
+  reject-only local 40 per 10 s guard; client IP from an LB-injected `X-Zaza-Client-IP` header (verify before enforcing); per-IP
+  failure limits explicitly process-local; HSTS starts at max-age=300; Retry-After = real time to eligibility. Still not implemented.
 - Full proposal: docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md (observed pilot profile, thresholds, state mechanism, failure modes,
   429/Retry-After behaviour, HSTS ramp, files/tests, risks). Nothing implemented or deployed.
 - Single-machine pilot validated: enrollment, sync, restart, upgrades 0.9.0 -> 0.9.2 -> 0.9.3, same-device Replace, token
