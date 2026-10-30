@@ -24,6 +24,16 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10Q — pilot PC upgraded 0.9.2 -> 0.9.3 and verified (2026-10-31)
+
+- Installer sha256 d094ff8c...59da05 and installed exe c631a7fd...3de2 verified; in-place upgrade approved at the keyboard.
+- Preserved: device `zaza-pilot-pc-01`, employee `internal-pilot-1`, config.json, DPAPI credential file (byte-identical,
+  2C290C72...); one autostart task; no re-enrollment (no /enroll request, no new code); one device in `saas-device-list`.
+- After the restart: keyboard/mouse hook, session_lock, window watcher and storage all HEALTHY; no session_lock errors;
+  `/devices/me` 200; 12 batches 200; no 5xx/DB errors; no secrets in files, command lines or Cloud Logging; run.app 404.
+- Note: the installer stops the running agent; a silent install does not start the new one (start `--background`).
+  A harmless first-tick log line ("input hooks not HEALTHY") appeared at 1 of 7 starts.
+
 ## Phase 10P — session-lock watcher lifecycle fix (agent 0.9.3, code only; NOT installed)
 
 - Pilot agent restarted: `session_lock` back to HEALTHY (0.9.2, same device, same credential, no re-enrollment).
