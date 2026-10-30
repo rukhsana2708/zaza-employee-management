@@ -24,6 +24,18 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10R — final same-device Replace with agent 0.9.3: PASS (2026-10-31)
+
+- Same running process (pid 20576, started 01:52:14) before and after: no restart. Recording restarted in-process
+  at 02:09:52; `session_lock` stayed HEALTHY ("session lock state: UNLOCKED" on the new session); no
+  "failed to create message-only window", no error 1410, no DEGRADED; agent USER objects 7, handles 211-212 steady.
+- Server timeline (UTC): 20:09:49 POST /enroll 200 -> 20:09:49 GET /devices/me 200 (first use of the new credential)
+  -> 20:09:52 POST /sync/batch 403 (old worker, old token) -> 20:09:53 batches 200. One device, ACTIVE, one active
+  credential; code 9b0c1c13 COMPLETED (one new code only); reconcile clean; no 5xx/DB errors; no secrets anywhere.
+- Credential file hash 2C290C72... -> 10460665...; token fingerprint 3689e61904 -> 0578e1794d.
+- Remaining before wider rollout: device-bound re-enrollment codes, HSTS, sync API rate limiting, Cloud Armor quota,
+  tenant dashboard, signed installer, Windows sign-out/sign-in and network-loss tests.
+
 ## Phase 10Q — pilot PC upgraded 0.9.2 -> 0.9.3 and verified (2026-10-31)
 
 - Installer sha256 d094ff8c...59da05 and installed exe c631a7fd...3de2 verified; in-place upgrade approved at the keyboard.
