@@ -18,4 +18,4 @@ from __future__ import annotations
 
 __all__ = ["__version__"]
 
-__version__ = "0.9.1"  # ZaZa Work Agent product version (installer, status window)
+__version__ = "0.9.2"  # ZaZa Work Agent product version (installer, status window)

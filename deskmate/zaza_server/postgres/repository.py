@@ -409,6 +409,38 @@ class PostgresRepository:
             return conn.execute("SELECT 1 FROM device_tokens WHERE device_id = %s AND status = 'ACTIVE' LIMIT 1",
                                 (device_id,)).fetchone() is not None
 
+    def _revoke_older(self, conn, token_id: str, device_id: str, created_at) -> int:  # noqa: ANN001
+        rows = conn.execute(
+            "UPDATE device_tokens SET status = 'REVOKED', revoked_at = now() "
+            "WHERE device_id = %s AND status = 'ACTIVE' AND token_id <> %s::uuid AND created_at < %s "
+            "RETURNING token_id", (device_id, token_id, created_at)).fetchall()
+        for row in rows:
+            self._audit(conn, "device_token.supersede", "device_token", str(row["token_id"]),
+                        old={"status": "ACTIVE"}, new={"status": "REVOKED", "device_id": device_id,
+                                                       "superseded_by": token_id})
+        return len(rows)
+
+    def confirm_token_use(self, token_id: str) -> int:
+        """First successful use of a token (ONE transaction): mark it used and revoke the device's older
+        ACTIVE tokens. If the transaction fails, the token stays unused and the next request retries."""
+        with self._conn() as conn, conn.transaction():
+            row = conn.execute(
+                "UPDATE device_tokens SET last_used_at = now() WHERE token_id = %s::uuid AND status = 'ACTIVE' "
+                "AND last_used_at IS NULL RETURNING device_id, created_at", (token_id,)).fetchone()
+            if row is None:
+                return 0
+            return self._revoke_older(conn, token_id, row["device_id"], row["created_at"])
+
+    def supersede_older_tokens(self, token_id: str) -> int:
+        """Reconciliation: same revocation, but only if the token is ACTIVE and has been used."""
+        with self._conn() as conn, conn.transaction():
+            row = conn.execute(
+                "SELECT device_id, created_at FROM device_tokens WHERE token_id = %s::uuid AND status = 'ACTIVE' "
+                "AND last_used_at IS NOT NULL", (token_id,)).fetchone()
+            if row is None:
+                return 0
+            return self._revoke_older(conn, token_id, row["device_id"], row["created_at"])
+
     def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
         stale = f"now() - interval '{_LAST_SEEN_RESOLUTION}'"
         with self._conn() as conn, conn.transaction():

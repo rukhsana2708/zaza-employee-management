@@ -229,15 +229,25 @@ only `token_id`, `organization_id` and `device_id`.
 
 **Lost response:** if the agent never receives the token after step 4,
 the code is used, and a retry gets the generic refusal. The operator issues
-a re-enrollment code (`--reenroll`) and, after the switch, revokes the
-unused token. There is no "replay the token" path.
+a re-enrollment code (`--reenroll`) for the same device; completing it
+revokes the unused token automatically. There is no "replay the token" path.
+
+**Device administration (tenant-aware):** `saas-device-list`,
+`saas-device-disable` and `saas-device-revoke-tokens --yes` (all with
+`--slug`). The legacy `list-devices`, `disable-device` and `rotate-token`
+open the base database and must never be used for a SaaS organization.
+
+**Agent:** "Replace enrollment..." on an enrolled PC reuses that PC's
+device id and needs a `--reenroll` code, so the physical device never
+becomes two device records. A first enrollment (no earlier identity) uses
+a plain code and a new random device id.
 
 ## 4. Re-enrollment and device rules
 
 | Device id in the tenant | Plain code | `--reenroll` code |
 |---|---|---|
-| new | device + first token | device + first token |
-| exists, same employee, ACTIVE, **with** an ACTIVE token | **409** (already enrolled) | **additional** token; the old one keeps working until the operator revokes it |
+| new | device + first token | **403**: a re-enrollment code never creates a second device |
+| exists, same employee, ACTIVE, **with** an ACTIVE token | **409** (already enrolled) | **replacement**: the new token is issued, the enrollment completes (control state + route), and only THEN every other ACTIVE token of the device is revoked. A failure before completion leaves the old token working; a failure of the final revocation is finished by `enrollment-reconcile` (idempotent, re-checked for 14 days). |
 | exists, same employee, ACTIVE, **no** ACTIVE token | token issued (recovery, see below) | token issued |
 | exists, other employee | 409 | 409 |
 | exists, DISABLED | 409 | **403**: never silently re-enabled |

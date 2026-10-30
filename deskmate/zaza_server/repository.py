@@ -157,6 +157,14 @@ class CentralRepository(Protocol):
         unavailable, so callers can't mistake an outage for "nothing to revoke"."""
     def has_active_token(self, device_id: str) -> bool:
         """Whether the device holds at least one ACTIVE token."""
+    def confirm_token_use(self, token_id: str) -> int:
+        """Called on an authenticated request. The FIRST successful use of a token proves the device
+        received it; in the same transaction every OLDER ACTIVE token of that device is revoked
+        (re-enrollment: the previous credential is superseded only once the new one is proven).
+        Returns how many were revoked (0 on every later call)."""
+    def supersede_older_tokens(self, token_id: str) -> int:
+        """Reconciliation: revoke the OLDER ACTIVE tokens of the device iff ``token_id`` is ACTIVE and has
+        been used. Idempotent; 0 if the token was never used (the old credential stays)."""
     def touch_device(self, device_id: str, *, token_id: str | None = None) -> None:
         """Record API connectivity (``last_seen_at``) after a successful
         authentication. This is device connectivity, never employee activity."""
@@ -299,6 +307,34 @@ class InMemoryRepository:
     def has_active_token(self, device_id: str) -> bool:
         with self._lock:
             return any(t.device_id == device_id and t.status == "ACTIVE" for t in self._tokens.values())
+
+    def _supersede_older(self, token_id: str) -> int:
+        count, older = 0, True
+        # tokens are kept in creation order; those BEFORE ``token_id`` are older
+        for key, token in list(self._tokens.items()):
+            if token.token_id == token_id:
+                older = False
+            elif older and token.status == "ACTIVE":
+                device = next((t.device_id for t in self._tokens.values() if t.token_id == token_id), None)
+                if token.device_id == device:
+                    self._tokens[key] = replace(token, status="REVOKED", revoked_at=utc_now())
+                    count += 1
+        return count
+
+    def confirm_token_use(self, token_id: str) -> int:
+        with self._lock:
+            used = self.__dict__.setdefault("_used_tokens", set())
+            if token_id in used:
+                return 0
+            used.add(token_id)
+            return self._supersede_older(token_id)
+
+    def supersede_older_tokens(self, token_id: str) -> int:
+        with self._lock:
+            token = next((t for t in self._tokens.values() if t.token_id == token_id), None)
+            if token is None or token.status != "ACTIVE" or token_id not in self.__dict__.get("_used_tokens", ()):
+                return 0
+            return self._supersede_older(token_id)
 
     def upsert_records(self, records: Iterable[IncomingRecord]) -> list[UpsertOutcome]:
         with self._lock:
@@ -531,6 +567,12 @@ class SqliteDevRepository:
             row = self._conn.execute("SELECT 1 FROM device_tokens WHERE device_id = ? AND status = 'ACTIVE' LIMIT 1",
                                      (device_id,)).fetchone()
         return row is not None
+
+    def confirm_token_use(self, token_id: str) -> int:
+        return 0  # the SQLite repository is single-database development storage: no re-enrollment lifecycle
+
+    def supersede_older_tokens(self, token_id: str) -> int:
+        return 0  # see confirm_token_use
 
     def upsert_records(self, records: Iterable[IncomingRecord]) -> list[UpsertOutcome]:
         outcomes = []

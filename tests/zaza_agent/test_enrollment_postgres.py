@@ -464,3 +464,44 @@ def test_c0003_cleanup_pending_transitions(env):
     with pytest.raises(psycopg.errors.CheckViolation):  # an unused code can't jump to FAILED/COMPLETED
         _exec(cs, "UPDATE device_enrollment_codes SET status = 'FAILED', failure_reason = 'x' "
               "WHERE enrollment_id = %s", (info.enrollment_id,))
+
+
+def test_reenrollment_replaces_the_credential_after_first_use_on_postgres(env):
+    """Failure-safe replacement on real PostgreSQL: same device, old credential valid until the new one is used."""
+    from deskmate.zaza.sync.protocol import DEVICE_ID_HEADER, DEVICE_PATH
+    from deskmate.zaza_server.auth import hash_token
+
+    t = env.tenants["a"]
+
+    def sync_status(token):  # noqa: ANN001, ANN202
+        return env.client.get(DEVICE_PATH, headers={"Authorization": f"Bearer {token}",
+                                                    DEVICE_ID_HEADER: "device-1"}).status_code
+
+    _, code1 = env.store.create_code(t.org.organization_id, "employee-1", ttl_hours=24)
+    old = _enroll(env, code1).json()["device_token"]
+    assert sync_status(old) == 200
+    # a re-enrollment code for a device that does not exist never creates one
+    _, ghost = env.store.create_code(t.org.organization_id, "employee-1", ttl_hours=24, allow_existing_device=True)
+    assert _enroll(env, ghost, device="ghost-device").status_code == 403
+    assert _exec(t.settings, "SELECT device_id FROM devices ORDER BY 1") == [("device-1",)]
+    # the real re-enrollment
+    _, code2 = env.store.create_code(t.org.organization_id, "employee-1", ttl_hours=24, allow_existing_device=True)
+    r = _enroll(env, code2)
+    assert r.status_code == 200 and r.json()["device_id"] == "device-1"
+    new = r.json()["device_token"]
+    assert _exec(t.settings, "SELECT count(*) FROM device_tokens WHERE status = 'ACTIVE'")[0][0] == 2
+    assert sync_status(old) == 200                       # not superseded before the new token is proven
+    assert env.service.reconcile().superseded_tokens == 0
+    assert sync_status(new) == 200                       # first successful use ...
+    assert sync_status(old) in (401, 403)                # ... revokes the older credential
+    assert _exec(t.settings, "SELECT token_hash FROM device_tokens WHERE status = 'ACTIVE'") == [(hash_token(new),)]
+    assert _exec(t.settings, "SELECT count(*) FROM audit_logs WHERE action = 'device_token.supersede'")[0][0] == 1
+    assert env.service.reconcile().superseded_tokens == 0   # idempotent
+    # reconcile finishes a supersession that was missed (e.g. the first-use transaction failed)
+    _, code3 = env.store.create_code(t.org.organization_id, "employee-1", ttl_hours=24, allow_existing_device=True)
+    newer = _enroll(env, code3).json()["device_token"]
+    _exec(t.settings, "UPDATE device_tokens SET last_used_at = now() WHERE token_hash = %s", (hash_token(newer),))
+    assert env.service.reconcile().superseded_tokens == 1
+    assert sync_status(new) in (401, 403) and sync_status(newer) == 200
+    # the control plane keeps the single-use bookkeeping and no secrets
+    assert {r[0] for r in _exec(env.control_settings, "SELECT status FROM device_enrollment_codes")} >= {"COMPLETED"}

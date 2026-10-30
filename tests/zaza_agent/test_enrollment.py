@@ -149,6 +149,18 @@ class MemoryEnrollmentStore:
         with self.lock:
             return [self._claim(r) for r in self.rows.values() if r["status"] == "CLEANUP_PENDING"]
 
+    def recent_reenrollments(self, days):  # noqa: ANN001, ANN201
+        """The latest COMPLETED re-enrollment per (organization, device) within the window."""
+        with self.lock:
+            latest = {}
+            for r in self.rows.values():
+                if (r["status"] == "COMPLETED" and r["allow_existing_device"]
+                        and r["completed_at"] > self.now - timedelta(days=days)):
+                    key = (r["organization_id"], r["device_id"])
+                    if key not in latest or r["completed_at"] >= latest[key]["completed_at"]:
+                        latest[key] = r
+            return [self._claim(r) for r in latest.values()]
+
     def finish_cleanup(self, claim):  # noqa: ANN001, ANN201
         if self.fail_finish:
             raise ConnectionError("control database down")
@@ -373,10 +385,11 @@ def test_existing_device_and_reenrollment_policy():
     _, code = _code(env)
     r = _enroll(env, code)
     assert r.status_code == 409 and r.json() == {"error": E.DEVICE_EXISTS}
-    # explicit re-enrollment code: an ADDITIONAL token; the old one stays until the operator revokes it
+    # explicit re-enrollment code: the NEW token replaces the old one once the enrollment is complete
     _, code = _code(env, allow_existing_device=True)
     second = _enroll(env, code).json()["device_token"]
-    assert _sync_ok(env, first).status_code == 200 and _sync_ok(env, second).status_code == 200
+    assert _sync_ok(env, second).status_code == 200 and _sync_ok(env, first).status_code in (401, 403)
+    assert a["repo"].has_active_token("device-1") and len([d for d in a["repo"].list_devices()]) == 1
     # re-enrollment for ANOTHER employee's device: refused
     a["repo"].add_employee("employee-3", "Someone else")
     _, code = _code(env, employee="employee-3", allow_existing_device=True)

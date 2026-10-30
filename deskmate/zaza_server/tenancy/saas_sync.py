@@ -76,6 +76,14 @@ class SaasDeviceAuthenticator:
             # the route only said WHERE to look; the tenant database decides
             auth = authenticate_request(repo, authorization, device_header)
             try:
+                # Re-enrollment: the first successful use of the NEW credential proves the device has it;
+                # only then are the device's older credentials revoked (one transaction, retried if it fails).
+                repo.confirm_token_use(auth.token_id)
+            except RepositoryUnavailable:
+                raise
+            except Exception:  # noqa: BLE001 — never fail an authenticated request; reconcile() heals it
+                logger.warning("could not confirm first use of a device credential")
+            try:
                 # API connectivity only — never treated as employee activity.
                 repo.touch_device(auth.device.device_id, token_id=auth.token_id)
             except RepositoryUnavailable:

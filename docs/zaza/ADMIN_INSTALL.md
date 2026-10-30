@@ -73,8 +73,14 @@ separate step (§4); there is deliberately no token parameter.
    is already `https://work.zazavoice.com`; the employee types the code and presses Enroll. The agent
    creates its own device ID, the server decides the organization and employee, and the credential is
    stored protected by Windows. Recording and syncing start without a restart.
-4. An already-enrolled PC shows "This device is already enrolled". Replacing the enrollment needs the
-   explicit "Replace enrollment..." button and a new code.
+4. An already-enrolled PC shows "This device is already enrolled". To replace its credential, create a
+   **re-enrollment** code for the same employee (`enrollment-code-create ... --reenroll`) and use the explicit
+   "Replace enrollment..." button. The PC keeps its device ID (it never becomes a second device). The old
+   credential keeps working until the new one has been used once, then it is revoked automatically. A plain
+   code is refused for an enrolled PC.
+5. Inspect or retire devices of an organization (tenant-aware; never the legacy device commands):
+   `saas-device-list --slug <org>`, `saas-device-disable --slug <org> --device-id <id>`,
+   `saas-device-revoke-tokens --slug <org> --device-id <id> --yes`.
 
 ## 4b. Enroll a device (legacy single-server: device ID and token)
 

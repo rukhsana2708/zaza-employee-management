@@ -23,6 +23,8 @@ Commands:
                         migrations to the SEPARATE control database
                         (``ZAZA_CONTROL_DB_*``); ``--sql`` prints the DDL only
 - ``control-db-status`` (SaaS control plane) show the control schema revision
+- ``saas-device-list`` / ``saas-device-disable`` / ``saas-device-revoke-tokens``  (SaaS) devices of ONE
+  organization's tenant (the legacy list-devices/disable-device/rotate-token must never be used for SaaS)
 - ``saas-employee-create`` / ``saas-employee-list`` / ``saas-employee-disable``
   / ``saas-employee-enable``  (SaaS, Phase 10G-E-A) employees of ONE
                         organization named by ``--slug``; the tenant database
@@ -547,6 +549,7 @@ def _saas_operator(args: argparse.Namespace) -> int:  # noqa: C901
 
 _SAAS_EMPLOYEE_COMMANDS = ("saas-employee-create", "saas-employee-list", "saas-employee-disable",
                            "saas-employee-enable")
+_SAAS_DEVICE_COMMANDS = ("saas-device-list", "saas-device-disable", "saas-device-revoke-tokens")
 
 
 def _saas_employees(args: argparse.Namespace) -> int:
@@ -584,6 +587,51 @@ def _saas_employees(args: argparse.Namespace) -> int:
             e = operator.set_active(args.slug, args.employee_id, active)
             print(f"{e.employee_id}: {'active' if e.is_active else 'inactive'}"
                   + ("" if active else " (no new enrollment codes; existing devices are NOT disabled by this)"))
+        return 0
+    except (TenancyError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if manager is not None:
+            manager.close()
+        control.close()
+
+
+def _saas_devices(args: argparse.Namespace) -> int:
+    """Trusted operator path for a SaaS organization's devices (same boundary as
+    ``_saas_employees``; never the legacy list-devices / disable-device)."""
+    from .tenancy import domain  # noqa: PLC0415
+    from .tenancy.config import control_database_settings_from_env  # noqa: PLC0415
+    from .tenancy.connections import TenantRepositoryManager  # noqa: PLC0415
+    from .tenancy.control_repository import PostgresControlRepository  # noqa: PLC0415
+    from .tenancy.devices import SaasDeviceOperator  # noqa: PLC0415
+    from .tenancy.domain import TenancyError  # noqa: PLC0415
+    from .tenancy.employees import operator_repository_factory  # noqa: PLC0415
+    from .tenancy.resolver import TenantResolver  # noqa: PLC0415
+
+    control = PostgresControlRepository(control_database_settings_from_env(), actor_type="CLI", actor_id="saas-operator")
+    manager = None
+    try:
+        manager = TenantRepositoryManager(database_settings_from_env(), repository_factory=operator_repository_factory)
+        operator = SaasDeviceOperator(control, TenantResolver(control), manager)
+        if args.command == "saas-device-list":
+            rows = operator.list(args.slug, args.employee_id)
+            for d in rows:
+                print(f"{d.device_id:<28} employee={d.employee_id:<20} {d.status:<9} "
+                      f"credential={'active' if d.has_active_credential else 'none'}  "
+                      f"last_seen={d.last_seen_at or '-'}  {d.display_name or ''}".rstrip())
+            if not rows:
+                print("(no devices)")
+        elif args.command == "saas-device-disable":
+            d = operator.disable(args.slug, args.device_id)
+            print(f"{d.device_id}: {d.status} in {domain.normalize_slug(args.slug)} "
+                  "(its credentials are kept but can no longer authenticate)")
+        else:
+            if not args.yes:
+                raise TenancyError("this signs the device out until it is re-enrolled; repeat with --yes to confirm")
+            n = operator.revoke_tokens(args.slug, args.device_id)
+            print(f"{args.device_id}: {n} active credential(s) revoked. It needs a re-enrollment code "
+                  "(enrollment-code-create --reenroll) to sync again.")
         return 0
     except (TenancyError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -800,7 +848,9 @@ def main(argv: list[str] | None = None) -> int:
     ec.add_argument("--device-name", default=None)
     ec.add_argument("--hours", type=int, default=72, help="lifetime in hours (1..720)")
     ec.add_argument("--reenroll", action="store_true",
-                    help="allow an ADDITIONAL token for an existing ACTIVE device of this employee")
+                    help="re-enrollment: the code replaces the credential of an EXISTING ACTIVE device of this "
+                         "employee (the agent reuses its device id). Earlier credentials are revoked once the new "
+                         "one is complete. Never creates a new device.")
     el = sub.add_parser("enrollment-code-list", help="(SaaS) enrollment codes (metadata only, never the code)")
     el.add_argument("--slug", default=None)
     er = sub.add_parser("enrollment-code-revoke", help="(SaaS) revoke an unused enrollment code")
@@ -816,6 +866,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="the tenant's employee role, NOT a SaaS membership role (default EMPLOYEE)")
     sl = sub.add_parser("saas-employee-list", help="(SaaS) an organization's employees (metadata only)")
     sl.add_argument("--slug", required=True)
+    dl = sub.add_parser("saas-device-list", help="(SaaS) an organization's devices (metadata only, no tokens)")
+    dl.add_argument("--slug", required=True)
+    dl.add_argument("--employee-id", default=None)
+    dd = sub.add_parser("saas-device-disable", help="(SaaS) disable a device in its organization's tenant")
+    dd.add_argument("--slug", required=True)
+    dd.add_argument("--device-id", required=True)
+    dr = sub.add_parser("saas-device-revoke-tokens", help="(SaaS) revoke every ACTIVE credential of a device")
+    dr.add_argument("--slug", required=True)
+    dr.add_argument("--device-id", required=True)
+    dr.add_argument("--yes", action="store_true", help="confirm: the device is signed out until re-enrolled")
     for name, helptext in (("saas-employee-disable", "mark an employee inactive in its organization"),
                            ("saas-employee-enable", "mark an employee active again")):
         p = sub.add_parser(name, help=f"(SaaS) {helptext}")
@@ -853,6 +913,8 @@ def main(argv: list[str] | None = None) -> int:
             return _saas_operator(args)
         if args.command in _SAAS_EMPLOYEE_COMMANDS:
             return _saas_employees(args)
+        if args.command in _SAAS_DEVICE_COMMANDS:
+            return _saas_devices(args)
         if args.command == "serve" and tenancy_mode_from_env() == "saas":
             return _serve_saas(args, args.backend or backend_from_env())
         backend = args.backend or backend_from_env()

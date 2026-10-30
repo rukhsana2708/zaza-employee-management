@@ -154,6 +154,7 @@ class EnrollmentSettings:
     global_max_attempts: int = 60     # all enrollment attempts per global window
     global_window_seconds: int = 60
     reconcile_after_seconds: int = 900  # a CLAIMED code older than this is interrupted
+    supersede_window_days: int = 14  # reconcile() re-checks re-enrollments completed within this window
 
     def __post_init__(self) -> None:
         if not 1 <= self.default_ttl_hours <= self.max_ttl_hours <= 720:
@@ -359,6 +360,19 @@ class PostgresEnrollmentStore:
                                                                  "reason": row["failure_reason"]})
         return row is not None
 
+    def recent_reenrollments(self, days: int) -> list[Claim]:
+        """The latest COMPLETED re-enrollment per device in the recent past: its token is the one that
+        must be the device's only active credential (reconcile() makes sure it is)."""
+        with self.control.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (organization_id, device_id) enrollment_id, organization_id, employee_id, "
+                "device_display_name, allow_existing_device, device_id, token_id FROM device_enrollment_codes "
+                "WHERE status = 'COMPLETED' AND allow_existing_device AND completed_at > now() - "
+                "make_interval(days => %s) ORDER BY organization_id, device_id, completed_at DESC",
+                (days,)).fetchall()
+        return [Claim(r["enrollment_id"], r["organization_id"], r["employee_id"], r["device_display_name"],
+                      r["allow_existing_device"], r["device_id"], r["token_id"]) for r in rows]
+
     def expire_codes(self) -> int:
         with self.control.connection() as conn:
             return conn.execute("UPDATE device_enrollment_codes SET status = 'EXPIRED' "
@@ -376,6 +390,7 @@ class ReconcileResult:
     tokens_revoked: int      # of those, tokens that were still ACTIVE and were revoked now
     cleanup_pending: int     # still CLEANUP_PENDING after this run (retried by the next run)
     tenant_unreachable: int  # of those, the tenant (or its resolution) was unavailable
+    superseded_tokens: int = 0  # earlier credentials of re-enrolled devices revoked now (idempotent)
 
 
 class EnrollmentService:
@@ -439,6 +454,11 @@ class EnrollmentService:
                     self._fail(claim, "employee_unavailable")
                     raise EnrollmentRefused(403, REFUSED, "employee_unavailable")
                 device = repo.get_device(device_id)
+                if device is None and claim.allow_existing_device:
+                    # a re-enrollment code replaces the credential of a device that is already enrolled; it
+                    # never creates a second device (that would leave the old one active)
+                    self._fail(claim, "device_unknown")
+                    raise EnrollmentRefused(403, REFUSED, "device_unknown")
                 if device is None:
                     repo.add_device(device_id, claim.employee_id,
                                     display_name=claim.device_display_name or client_name)
@@ -543,4 +563,12 @@ class EnrollmentService:
                 pending += 1
                 continue
             completed += int(finished)
-        return ReconcileResult(expired, interrupted, completed, revoked, pending, unreachable)
+        superseded = 0
+        for claim in self.store.recent_reenrollments(self.settings.supersede_window_days):
+            try:
+                context = self.resolver.for_job(claim.organization_id)
+                with self.manager.repository(context) as repo:
+                    superseded += int(repo.supersede_older_tokens(str(claim.token_id)))
+            except Exception as exc:  # noqa: BLE001 — retried by the next run
+                logger.warning("enrollment %s supersession deferred (%s)", claim.enrollment_id, type(exc).__name__)
+        return ReconcileResult(expired, interrupted, completed, revoked, pending, unreachable, superseded)

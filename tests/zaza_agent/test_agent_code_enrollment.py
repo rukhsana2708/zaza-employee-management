@@ -156,14 +156,40 @@ def test_an_enrolled_device_is_not_replaced_without_an_explicit_request(home):
     _, code1 = _code(env)
     assert _run(env, code1)[0].ok
     identity = enrollment.load_enrollment()
-    _, code2 = _code(env)
+    old_token = load_credentials().token
+    _, code2 = _code(env, allow_existing_device=True)
     sent = SharedClient(env.client)
     with pytest.raises(EnrollmentError, match="already enrolled"):
         _run(env, code2, shared=sent)
     assert sent.sent == []  # not even a request: the second code is untouched
     assert enrollment.load_enrollment() == identity
-    replaced, _ = _run(env, code2, replace_existing=True)
-    assert replaced.ok and enrollment.load_enrollment().device_id != identity.device_id
+    replaced, shared = _run(env, code2, replace_existing=True)
+    assert replaced.ok
+    # the physical device keeps ONE identity: the same device id is sent, a new credential is stored
+    assert shared.sent[0]["device_id"] == identity.device_id
+    assert enrollment.load_enrollment().device_id == identity.device_id
+    assert len(env.t["a"]["repo"].list_devices()) == 1
+    new_token = load_credentials().token
+    assert new_token != old_token
+    # the check the agent ran with the new token was its first use: the old credential is superseded
+    assert _sync_ok(env, load_credentials()).status_code == 200
+    assert env.client.get(DEVICE_PATH, headers={"Authorization": f"Bearer {old_token}",
+                                                DEVICE_ID_HEADER: identity.device_id}).status_code in (401, 403)
+
+
+def test_replacing_with_a_plain_code_or_a_failed_attempt_keeps_the_working_identity(home):
+    env = _env()
+    _, first = _code(env)
+    assert _run(env, first)[0].ok
+    identity, creds = enrollment.load_enrollment(), load_credentials()
+    _, plain = _code(env)  # an ordinary code cannot replace an enrolled device
+    refused, _ = _run(env, plain, replace_existing=True)
+    assert not refused.ok and "re-enrollment code" in refused.message
+    bad, _ = _run(env, "ZZE-AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH", replace_existing=True)
+    assert not bad.ok
+    assert enrollment.load_enrollment() == identity and load_credentials().token == creds.token
+    assert _sync_ok(env, load_credentials()).status_code == 200  # the old credential still works
+    assert len(env.t["a"]["repo"].list_devices()) == 1
 
 
 def test_malformed_input_is_rejected_before_any_request(home):

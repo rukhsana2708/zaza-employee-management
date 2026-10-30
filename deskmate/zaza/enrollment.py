@@ -303,11 +303,15 @@ def enroll_with_code(server_url: str, code: str, *, replace_existing: bool = Fal
     previous, creds_ok = current_state()
     if previous is not None and creds_ok and not replace_existing:
         raise EnrollmentError("This device is already enrolled.")
+    # Replacing the enrollment of an enrolled PC keeps its device ID: the physical device must never become a
+    # second device record. That needs a re-enrollment code (the server refuses a plain code for an enrolled
+    # device). A first enrollment gets a fresh random device ID.
+    keep_identity = previous.device_id if previous is not None else None
     client = client_factory()
     try:
         outcome: tuple[str, str] | str = "DEVICE_ID_TAKEN"
-        for _ in range(3):  # a collision of the random device ID is retried with a new one
-            device_id = device_id_factory()
+        for _ in range(1 if keep_identity else 3):  # a collision of a RANDOM device ID is retried with a new one
+            device_id = keep_identity or device_id_factory()
             outcome = _exchange(client, url, code, device_id)
             if outcome != "DEVICE_ID_TAKEN":
                 break
@@ -315,8 +319,12 @@ def enroll_with_code(server_url: str, code: str, *, replace_existing: bool = Fal
         client.close()
         code = ""
     if isinstance(outcome, str):
-        message = ("This enrollment could not be completed. Try again, or ask your administrator."
-                   if outcome == "DEVICE_ID_TAKEN" else outcome)
+        if outcome == "DEVICE_ID_TAKEN":
+            message = ("This code cannot replace the enrollment of this device. Ask your administrator for a "
+                       "re-enrollment code." if keep_identity else
+                       "This enrollment could not be completed. Try again, or ask your administrator.")
+        else:
+            message = outcome
         return EnrollResult(False, message)
     device_id, token = outcome
     try:

@@ -24,6 +24,21 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10L — device identity preserved on re-enrollment; tenant device administration (code, agent 0.9.2)
+
+- Agent: "Replace enrollment..." reuses the PC's device ID (needs a `--reenroll` code); a first enrollment still
+  gets a random ID. A failed attempt never changes the stored identity or credential.
+- Server: a `--reenroll` code only replaces the credential of an EXISTING device of the same employee (unknown
+  device -> 403, never a second device; other employee -> 409; disabled -> 403; plain code on an enrolled
+  device -> 409). The old credential is superseded only when the NEW one is first used successfully (one
+  transaction, `confirm_token_use`), so a failed or lost enrollment never breaks the installation;
+  `enrollment-reconcile` finishes a missed supersession (idempotent, 14-day window, only for tokens proven used).
+  No schema change (no control migration).
+- New operator commands (tenant-aware): `saas-device-list`, `saas-device-disable`,
+  `saas-device-revoke-tokens --yes`.
+- Tests: 33 new (device lifecycle, operator, agent, PostgreSQL). With a disposable PostgreSQL 16:
+  1564 passed, 1 skipped. Installer 0.9.2 built (unsigned). NOT DEPLOYED, NOT INSTALLED.
+
 ## Phase 10K — deploy the enrollment-code log fix (2026-10-30, partial)
 
 - Image from commit 6d84e54: digest `sha256:e6362ce85877c1200d72b5b56d16b03bbcf8ec4e7839c54861d8847859a16e5a`.
