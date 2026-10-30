@@ -320,3 +320,51 @@ Implemented in the repository as specified above:
 5. `sync_limit_mode = "enforce"` (device limiter). Re-check.
 6. `sync_limit_ip_mode = "enforce"` only after the gate passed.
 7. `hsts_max_age_seconds = 300`, then ramp 86,400, 604,800, 2,592,000, 31,536,000, each after a clean observation period.
+
+## 14. Deployment sequencing finding (2026-10-31, before any production change)
+
+**Image built, not deployed:** commit `e0a3372`, Cloud Build `7c6dba04-3755-470d-91f6-ec439ad3be55` (SUCCESS), digest
+`sha256:093b4fde20b315af951159c54d614781eddc59f671c76315ea65d42eb6e7c246`. The image carries `c0004_sync_rate_limits` as its
+control head; defaults are limiter `off`, IP mode `shadow`, HSTS `0`. No service or job uses it yet.
+
+**Finding (proven on a disposable PostgreSQL with the deployed code from `a2b6f79`):** the server requires the control schema to
+equal its own head at start-up (`SchemaStatus.up_to_date` is `current == head`, checked when the control repository opens). So
+the match is strict in BOTH directions:
+
+| Schema | Deployed code (head c0003) | New code (head c0004) |
+|---|---|---|
+| c0003 | starts | **refuses to start** ("this server needs c0004") |
+| c0004 | **refuses to start** ("this server needs c0003") | starts |
+
+The migration is data-compatible (the CHECK only gets wider; every old bucket still works against it), and already-running
+instances keep serving (the check happens once, at start). But **any new instance of the old revision started after the
+migration fails**, and Cloud Run runs with `min_instances = 0`, so a cold start or scale-out in the window between
+`control-migrate` and the new revision would not come up. Agents would queue and retry (no data loss), but sync would be
+degraded until the new revision serves.
+
+**Recommended fix (needs approval; code, tests, a new image):** make additive migrations expand/contract-safe. The control
+schema check accepts the head OR a declared compatible previous revision (`c0004` declares `c0003`). Then the order is safe with
+no window: new server first, migration second. The job (`control-migrate`, `control-db-status`) is unaffected: it never uses the
+strict check.
+
+**Terraform drift:** `container_image` is ONE variable used by both the `zaza-server` service and the `zaza-migrate` job. Move the
+job through Terraform itself, not `gcloud`: set the new digest in the local `terraform.tfvars`, then
+`terraform apply -target='google_cloud_run_v2_job.migrate[0]'` (read-only plan: 0 to add, 1 to change, 0 to destroy, the image only).
+State, configuration and reality then agree for the job, and the service shows a normal pending change. An out-of-band
+`gcloud run jobs update` would also drop Terraform's `client`/`client_version` metadata and show a spurious job change.
+
+**Expected plans (read-only, verified):** all three changes at once, job still old: 0/3/0 (job image; service image and
+environment; backend header). With the job already on the new image: **0 to add, 2 to change, 0 to destroy**, only the service and
+the load-balancer backend. After that apply a plain `terraform plan` must report no changes.
+
+**Sequence A (as originally planned; short exposure window):** job through Terraform, `control-db-status`, `control-migrate`,
+immediately apply the service/backend (0/2/0), verify. Risk: cold starts of the old revision between migrate and apply.
+
+**Sequence B (recommended, after the compatibility fix; zero window):** job through Terraform; `control-db-status` (still c0003);
+apply service + backend with `sync_limit_mode=off` (0/2/0); verify the pilot syncs; `control-migrate` (c0004); apply
+`sync_limit_mode=shadow` (0/1/0, environment only); verify.
+
+**Migration safety, proven:** `c0004` only drops and re-adds one CHECK to include `sync_device`, in a single transaction together
+with the revision bump (`transaction_per_migration`). Failure injection (a broken second statement) left the old constraint and
+the old revision intact. Existing rows are only validated by the new CHECK, not rewritten. Downgrade deletes the new bucket's
+rows and restores the c0003 constraint; because the new server is strict, roll back by redeploying the old image first.
