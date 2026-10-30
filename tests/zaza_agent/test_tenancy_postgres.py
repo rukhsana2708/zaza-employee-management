@@ -72,7 +72,7 @@ def test_control_schema_reaches_its_own_head(control_settings):
 
     with psycopg.connect(**control_settings.connect_kwargs()) as conn:
         status = control.schema_status(conn)
-        assert status.up_to_date and status.current == control.head_revision() == "c0003_device_enrollment"
+        assert status.up_to_date and status.current == control.head_revision() == "c0004_sync_rate_limits"
         assert conn.execute("SELECT to_regclass('alembic_version')::text").fetchone()[0] is None  # no tenant chain
 
 

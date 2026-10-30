@@ -230,3 +230,36 @@ variable "enable_cloud_armor" {
   type        = bool
   default     = true
 }
+
+variable "sync_limit_mode" {
+  description = "Sync API rate limiter: off, shadow (record would-limit decisions, never reject) or enforce (HTTP 429). Start with shadow; enforce only after the verification gate in docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "enforce"], var.sync_limit_mode)
+    error_message = "sync_limit_mode must be off, shadow or enforce."
+  }
+}
+
+variable "sync_limit_ip_mode" {
+  description = "Mode of the per-IP limiters (invalid-credential failures and the coarse authenticated safeguard): off, shadow or enforce. Keep shadow until the trusted client address header X-Zaza-Client-IP has been verified against Cloud Logging remoteIp."
+  type        = string
+  default     = "shadow"
+
+  validation {
+    condition     = contains(["off", "shadow", "enforce"], var.sync_limit_ip_mode)
+    error_message = "sync_limit_ip_mode must be off, shadow or enforce."
+  }
+}
+
+variable "hsts_max_age_seconds" {
+  description = "Strict-Transport-Security max-age (seconds) sent by the application on every HTTPS response; 0 disables it. Ramp 300, 86400, 604800, 2592000, 31536000. Never includeSubDomains or preload."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.hsts_max_age_seconds >= 0 && var.hsts_max_age_seconds <= 63072000 && floor(var.hsts_max_age_seconds) == var.hsts_max_age_seconds
+    error_message = "hsts_max_age_seconds must be a whole number from 0 to 63072000."
+  }
+}

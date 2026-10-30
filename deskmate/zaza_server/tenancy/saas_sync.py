@@ -27,10 +27,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from ..auth import AuthError, authenticate_request
+from ..ratelimit import SyncRateLimiter
 from ..repository import DeviceRecord, RepositoryUnavailable
 from ..service import SyncService
 from .connections import TenantRepositoryManager
 from .context import TenantContext
+from .device_routes import routing_hash
 from .resolver import DeviceCredentialRouter, TenantAccessDenied, TenantResolver
 
 logger = logging.getLogger("zaza_server.saas")
@@ -60,21 +62,48 @@ def _bearer(authorization: str | None, device_header: str | None) -> str:
 
 class SaasDeviceAuthenticator:
     def __init__(self, router: DeviceCredentialRouter, resolver: TenantResolver,
-                 manager: TenantRepositoryManager) -> None:
+                 manager: TenantRepositoryManager, limiter: SyncRateLimiter | None = None) -> None:
         self.router = router
         self.resolver = resolver
         self.manager = manager
+        self.limiter = limiter
 
     @contextmanager
-    def access(self, authorization: str | None, device_header: str | None) -> Iterator[AuthenticatedDevice]:
-        token = _bearer(authorization, device_header)
+    def access(self, authorization: str | None, device_header: str | None,
+               client_ip: str | None = None) -> Iterator[AuthenticatedDevice]:
+        """``client_ip`` is the VERIFIED address (``http_security.trusted_client_ip``) or None; the per-IP limiters are
+        skipped without it. Rate limiting (``limiter``) never changes who is authenticated: it only refuses earlier,
+        with :class:`~..ratelimit.RateLimitExceeded`, and only in ``enforce`` mode."""
+        limiter = self.limiter if self.limiter is not None and self.limiter.enabled else None
         try:
-            context = self.resolver.for_device_route(self.router, token)
+            token = _bearer(authorization, device_header)
+        except AuthError:
+            if limiter:
+                limiter.gate(client_ip, None)
+                limiter.auth_failed(client_ip)
+            raise
+        digest = routing_hash(token)
+        if limiter:
+            limiter.gate(client_ip, digest)
+        try:
+            context, route_device_id = self.resolver.for_device_route_info(self.router, token)
         except TenantAccessDenied:
+            if limiter:
+                limiter.auth_failed(client_ip)
             raise AuthError(401, "invalid credentials") from None
+        if limiter:
+            # before ANY tenant database is touched; the key is the server-validated route identity, never the IP
+            limiter.admit_device(context.organization_id, route_device_id, digest, client_ip)
         with self.manager.repository(context) as repo:
             # the route only said WHERE to look; the tenant database decides
-            auth = authenticate_request(repo, authorization, device_header)
+            try:
+                auth = authenticate_request(repo, authorization, device_header)
+            except AuthError:
+                if limiter:
+                    limiter.auth_failed(client_ip)
+                raise
+            if limiter:
+                limiter.auth_succeeded(digest)
             try:
                 # Re-enrollment: the first successful use of the NEW credential proves the device has it;
                 # only then are the device's older credentials revoked (one transaction, retried if it fails).
@@ -98,14 +127,15 @@ class SaasRuntime:
     shutdown. No module-level singletons."""
 
     def __init__(self, *, control, resolver: TenantResolver, manager: TenantRepositoryManager,  # noqa: ANN001
-                 routes, auth, enrollment=None) -> None:  # noqa: ANN001 — routes, SaasAuthService, EnrollmentService
+                 routes, auth, enrollment=None, limiter=None) -> None:  # noqa: ANN001 — routes, SaasAuthService, ...
         self.control = control
         self.enrollment = enrollment
         self.resolver = resolver
         self.manager = manager
         self.routes = routes
         self.auth = auth
-        self.devices = SaasDeviceAuthenticator(routes, resolver, manager)
+        self.limiter = limiter
+        self.devices = SaasDeviceAuthenticator(routes, resolver, manager, limiter)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> SaasRuntime:
@@ -124,11 +154,14 @@ class SaasRuntime:
             manager.start_reaper()
             from .enrollment import EnrollmentService, PostgresEnrollmentStore, enrollment_settings_from_env  # noqa: PLC0415
 
+            from ..ratelimit import SyncRateLimiter, sync_limit_settings_from_env  # noqa: PLC0415
+
             resolver, store = TenantResolver(control), PostgresAuthStore(control)
             return cls(control=control, resolver=resolver, manager=manager, routes=PostgresDeviceRoutes(control),
                        auth=SaasAuthService(store, saas_auth_settings_from_env(env)),
                        enrollment=EnrollmentService(PostgresEnrollmentStore(control), resolver, manager, store,
-                                                    enrollment_settings_from_env(env)))
+                                                    enrollment_settings_from_env(env)),
+                       limiter=SyncRateLimiter(sync_limit_settings_from_env(env), store))
         except BaseException:
             control.close()
             raise

@@ -39,8 +39,10 @@ grows at about 3.2 records per minute **of running time**:
 
 ## 2. Limiter design
 
-All limits answer HTTP 429 with a stable body. Mode switch: `ZAZA_SYNC_LIMIT_MODE = off | shadow | enforce`; ship in
-`shadow` (count and log, never reject) and compare with the numbers below before enforcing.
+All limits answer HTTP 429 with a stable body. Two mode switches, each `off | shadow | enforce`: `ZAZA_SYNC_LIMIT_MODE`
+(the DEVICE limiter, and the master switch: `off` turns everything off) and `ZAZA_SYNC_LIMIT_IP_MODE` (the per-IP limiters;
+**default `shadow`**, so they never refuse a request until someone explicitly sets `enforce` after the client address has been
+verified). Ship in `shadow` (count and log, never reject) and compare with the numbers below before enforcing.
 
 ### A. Authenticated device traffic (primary)
 
@@ -134,7 +136,7 @@ digest of the derived IP, never the address. Compare it with Cloud Logging's `ht
 2. requests with a deliberately forged `X-Forwarded-For`;
 3. requests with a deliberately forged `X-Zaza-Client-IP` (this proves the load balancer overwrites a client-sent value);
 4. requests from at least two different public IPs if practical (this PC, plus a phone hotspot).
-Only when all of them match is the IP limiter switched to `enforce`. If the overwrite behaviour is not as assumed, the IP
+Only when all of them match is `ZAZA_SYNC_LIMIT_IP_MODE` switched to `enforce`. If the overwrite behaviour is not as assumed, the IP
 limiter stays off and only the device limiter ships.
 
 ## 4. Where the state lives
@@ -209,7 +211,7 @@ unless explicitly approved later.
 - `http_security.py`: trusted client-IP extraction (single validated header, cloud-run mode only); `Strict-Transport-Security`
   middleware.
 - `tenancy/saas_auth.py` (`PostgresAuthStore`): reuse `count_attempt` as is; add a bounded expired-row cleanup helper.
-- Settings parsing: `ZAZA_SYNC_LIMIT_MODE`, thresholds (code defaults, environment overrides),
+- Settings parsing: `ZAZA_SYNC_LIMIT_MODE`, `ZAZA_SYNC_LIMIT_IP_MODE`, thresholds (code defaults, environment overrides),
   `ZAZA_TRUSTED_CLIENT_IP_HEADER`, `ZAZA_HSTS_MAX_AGE_SECONDS`.
 
 **Database:** one control migration, **`c0004`**, required. It follows the precedent of `c0003`: drop and re-add the CHECK
@@ -219,9 +221,10 @@ table, run with the `zaza-migrate` job (`control-migrate`) *before* the new imag
 **Terraform (production):**
 - `edge.tf`: `google_compute_backend_service.edge[0]` gets `custom_request_headers = ["X-Zaza-Client-IP: {client_ip_address}"]`
   (in-place update).
-- `cloud_run.tf`: new environment variables on `zaza-server` (`ZAZA_SYNC_LIMIT_MODE`, `ZAZA_TRUSTED_CLIENT_IP_HEADER`,
+- `cloud_run.tf`: new environment variables on `zaza-server` (`ZAZA_SYNC_LIMIT_MODE`, `ZAZA_SYNC_LIMIT_IP_MODE`, `ZAZA_TRUSTED_CLIENT_IP_HEADER`,
   `ZAZA_HSTS_MAX_AGE_SECONDS`) and the image digest (in-place update, new revision).
-- `variables.tf`: `sync_limit_mode` (default `off`) and `hsts_max_age_seconds` (default `0`). Thresholds stay as code defaults.
+- `variables.tf`: `sync_limit_mode` (default `off`), `sync_limit_ip_mode` (default `shadow`) and `hsts_max_age_seconds`
+  (default `0`). Thresholds stay as code defaults.
 - Expected plan: **0 to add, 2 to change, 0 to destroy** (the backend service and the Cloud Run service). No new resources,
   no networking, no new Google Cloud service, no new dependency.
 
@@ -287,3 +290,33 @@ header and HTTP answers 301 without it.
    "interrupted" at the next start.
 2. Quiet the harmless first-tick "input hooks not HEALTHY, status UNKNOWN" startup log line.
 3. Retry sooner when Windows reports that network connectivity has returned (today recovery can take one to two minutes).
+
+## 12. Implementation status (code and tests only; NOTHING deployed, migrated or applied)
+
+Implemented in the repository as specified above:
+
+- `deskmate/zaza_server/ratelimit.py` (new): settings and modes, the local burst guard, the shared per-device counter call, the
+  process-local per-IP failure tables, the coarse per-IP safeguard, the known-good cache, fail-open with a local ceiling.
+- `deskmate/zaza_server/tenancy/saas_sync.py`, `resolver.py`, `device_routes.py`: the route lookup also returns `device_id`; the
+  limiter runs after the route read and before any tenant database.
+- `deskmate/zaza_server/app.py`: HTTP 429 `{"error":"rate limit exceeded"}` with an integer `Retry-After`.
+- `deskmate/zaza_server/http_security.py`: `X-Zaza-Client-IP` extraction (cloud-run mode only, exactly one valid IP literal,
+  X-Forwarded-For never used) and the HSTS middleware (`ZAZA_HSTS_MAX_AGE_SECONDS`, cloud-run mode only).
+- `deskmate/zaza_server/tenancy/saas_auth.py`: bounded expired-counter cleanup for the new bucket.
+- Control migration `c0004_sync_rate_limits` (adds the `sync_device` bucket; tested on a disposable PostgreSQL only).
+- Terraform source: `edge.tf` (backend `custom_request_headers`), `cloud_run.tf` and `variables.tf` (mode, IP mode, HSTS).
+  Read-only plan: 0 to add, 2 to change, 0 to destroy.
+- Agent: **no change** (a 429 is already a retryable, non-auth failure that honours `Retry-After`; a test proves it).
+
+## 13. Future production deployment plan (NOT executed)
+
+1. Commit and push; build the image from that commit on Cloud Build and record the digest.
+2. Update ONLY the `zaza-migrate` job to the new image (targeted), run `control-migrate`, and confirm the control schema is at
+   `c0004_sync_rate_limits` (`control-db-status`). The old service keeps running: the migration is additive.
+3. Set the new image digest in the local `terraform.tfvars`; `terraform plan` must show exactly 0 to add, 2 to change, 0 to
+   destroy (the Cloud Run service, and the load-balancer backend for the header). Apply.
+   Settings for the first deployment: `sync_limit_mode = "shadow"`, `sync_limit_ip_mode = "shadow"`, `hsts_max_age_seconds = 0`.
+4. Run the client-IP verification gate (section 3) and watch the shadow telemetry for at least a week.
+5. `sync_limit_mode = "enforce"` (device limiter). Re-check.
+6. `sync_limit_ip_mode = "enforce"` only after the gate passed.
+7. `hsts_max_age_seconds = 300`, then ramp 86,400, 604,800, 2,592,000, 31,536,000, each after a clean observation period.

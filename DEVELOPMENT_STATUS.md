@@ -24,6 +24,18 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10U — sync API rate limiter + HSTS: CODE AND TESTS ONLY (2026-10-31)
+
+- Implemented per docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md (revision 2): `deskmate/zaza_server/ratelimit.py`; per-device local burst
+  guard (40/10 s, rejection-only) plus the shared PostgreSQL fixed-window counter (120/60 s, EVERY admitted request counted);
+  process-local per-IP failure limits (20/min, 10/10 s) and coarse safeguard (1,800/min); trusted `X-Zaza-Client-IP`; modes
+  off|shadow|enforce with a SEPARATE IP mode (default shadow); HTTP 429 + real `Retry-After`; fail-open; HSTS
+  (`ZAZA_HSTS_MAX_AGE_SECONDS`, default off, cloud-run only, no includeSubDomains/preload).
+- Control migration `c0004_sync_rate_limits` (adds the `sync_device` bucket): tested on a disposable PostgreSQL ONLY.
+- Terraform SOURCE only (edge.tf, cloud_run.tf, variables.tf); read-only plan 0 add / 2 change / 0 destroy. NOT applied.
+- Agent unchanged (429 already retryable and non-auth); installer NOT rebuilt.
+- NOT deployed, NOT migrated in production, limiter NOT active, HSTS NOT active. Tests: normal suite 1463 passed / 195 skipped; with a disposable PostgreSQL 16: 1646 passed / 12 skipped.
+
 ## Phase 10T — design: sync API rate limiting + HSTS (DESIGN ONLY, 2026-10-31)
 
 - Revision 2 APPROVED with corrections (2026-10-31): every authenticated request counted in PostgreSQL (120 per 60 s per device) plus a

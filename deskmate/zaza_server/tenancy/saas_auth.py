@@ -259,6 +259,16 @@ class PostgresAuthStore:
                                          {"reason": reason, "sessions_revoked": revoked})
         return revoked
 
+    def cleanup_expired_counters(self, bucket: str = "sync_device", max_age_seconds: int = 3600,
+                                 limit: int = 500) -> int:
+        """Delete a bounded batch of long-expired counter rows of ONE bucket (database time). Called opportunistically
+        by the sync rate limiter, so no scheduler or extra service is needed; never touches another bucket."""
+        with self.control.connection() as conn:
+            return conn.execute(
+                "DELETE FROM login_attempt_counters WHERE ctid IN (SELECT ctid FROM login_attempt_counters "
+                "WHERE bucket = %s AND window_start < now() - make_interval(secs => %s) LIMIT %s)",
+                (bucket, max_age_seconds, limit)).rowcount
+
     def count_attempt(self, bucket: str, key_hash: str, window_seconds: int) -> tuple[int, int]:
         """Atomically count one attempt in the CURRENT window (database time,
         so all instances agree). Returns (attempts so far, seconds left)."""

@@ -45,6 +45,14 @@ locals {
     ZAZA_HTTP_DEPLOYMENT_MODE     = "cloud-run"
     ZAZA_TENANCY_MODE             = "saas"
     ZAZA_PUBLIC_HOST              = local.public_host
+    # Sync API rate limiting: off | shadow | enforce (docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md)
+    ZAZA_SYNC_LIMIT_MODE = var.sync_limit_mode
+    # The per-IP limiters have their own mode (shadow until the trusted client address is verified)
+    ZAZA_SYNC_LIMIT_IP_MODE = var.sync_limit_ip_mode
+    # The header the load balancer fills with the client address; only when the edge exists (empty = not set)
+    ZAZA_TRUSTED_CLIENT_IP_HEADER = var.deploy_edge ? "X-Zaza-Client-IP" : ""
+    # Strict-Transport-Security max-age in seconds; 0 = off
+    ZAZA_HSTS_MAX_AGE_SECONDS = tostring(var.hsts_max_age_seconds)
   })
 
   # ZAZA_DB_NAME: the job's base connection is the instance's maintenance

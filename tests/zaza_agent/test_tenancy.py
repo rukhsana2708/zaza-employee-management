@@ -492,7 +492,7 @@ def test_control_and_tenant_chains_are_separate():
 
     assert control.MIGRATIONS_DIR != tenant.MIGRATIONS_DIR
     assert control.VERSION_TABLE == "zaza_control_version" != tenant.VERSION_TABLE
-    assert control.head_revision() == "c0003_device_enrollment"
+    assert control.head_revision() == "c0004_sync_rate_limits"
     assert tenant.head_revision() == "0004_manager_dashboard_auth"
     control_revs = {p.stem for p in (control.MIGRATIONS_DIR / "versions").glob("*.py")}
     assert all(r.startswith("c") for r in control_revs)

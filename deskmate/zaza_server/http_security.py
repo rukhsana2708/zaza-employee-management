@@ -65,6 +65,11 @@ from .config import ConfigError
 ENV_PUBLIC_HOST = "ZAZA_PUBLIC_HOST"
 ENV_TRUSTED_PROXIES = "ZAZA_TRUSTED_PROXY_IPS"
 ENV_HTTP_MODE = "ZAZA_HTTP_DEPLOYMENT_MODE"
+ENV_TRUSTED_CLIENT_IP_HEADER = "ZAZA_TRUSTED_CLIENT_IP_HEADER"
+ENV_HSTS_MAX_AGE = "ZAZA_HSTS_MAX_AGE_SECONDS"
+MAX_HSTS_MAX_AGE = 63_072_000  # two years: the most any browser honours
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_TRUSTED_IP_KEY = "zaza.trusted_client_ip"
 
 
 class HttpMode(str, Enum):
@@ -104,12 +109,28 @@ class HttpSettings:
     public_hosts: tuple[str, ...] = ()
     trusted_proxies: tuple[str, ...] = DEFAULT_TRUSTED_PROXIES
     mode: HttpMode = HttpMode.LOOPBACK_PROXY
+    # Cloud Run behind the Google load balancer only: the header the load balancer fills with the client address
+    # (``X-Zaza-Client-IP: {client_ip_address}``). Empty = no client address is trusted.
+    trusted_client_ip_header: str = ""
+    # Strict-Transport-Security max-age in seconds; 0 = off. Cloud Run mode only, where HTTPS is guaranteed.
+    hsts_max_age_seconds: int = 0
 
     def __post_init__(self) -> None:
         try:
             object.__setattr__(self, "mode", HttpMode(self.mode))
         except ValueError:
             raise ConfigError(f"{ENV_HTTP_MODE} must be one of {', '.join(m.value for m in HttpMode)}") from None
+        if self.trusted_client_ip_header:
+            if self.mode is not HttpMode.CLOUD_RUN:
+                raise ConfigError(f"{ENV_TRUSTED_CLIENT_IP_HEADER} applies only in cloud-run mode (behind the load balancer); "
+                                  "an unrestricted deployment must never trust a client-supplied address header")
+            if not _HEADER_NAME_RE.match(self.trusted_client_ip_header) \
+                    or self.trusted_client_ip_header.lower() == "x-forwarded-for":
+                raise ConfigError(f"{ENV_TRUSTED_CLIENT_IP_HEADER} must be a plain header name other than X-Forwarded-For")
+        if not 0 <= self.hsts_max_age_seconds <= MAX_HSTS_MAX_AGE:
+            raise ConfigError(f"{ENV_HSTS_MAX_AGE} must be 0 (off) to {MAX_HSTS_MAX_AGE} seconds")
+        if self.hsts_max_age_seconds and self.mode is not HttpMode.CLOUD_RUN:
+            raise ConfigError(f"{ENV_HSTS_MAX_AGE} applies only in cloud-run mode, where every response is HTTPS")
         for host in self.public_hosts:
             if not _HOSTNAME_RE.match(host):
                 raise ConfigError(f"{ENV_PUBLIC_HOST}: {host!r} is not a plain host name "
@@ -150,7 +171,14 @@ def http_settings_from_env(env: dict | None = None) -> HttpSettings:
     if mode == HttpMode.CLOUD_RUN.value and raw:
         raise ConfigError(f"{ENV_TRUSTED_PROXIES} does not apply in cloud-run mode: forwarded headers are never "
                           "trusted there")
-    return HttpSettings(public_hosts=hosts, trusted_proxies=proxies, mode=mode)
+    raw_hsts = (env.get(ENV_HSTS_MAX_AGE) or "").strip()
+    try:
+        hsts = int(raw_hsts) if raw_hsts else 0
+    except ValueError:
+        raise ConfigError(f"{ENV_HSTS_MAX_AGE} must be an integer number of seconds") from None
+    return HttpSettings(public_hosts=hosts, trusted_proxies=proxies, mode=mode,
+                        trusted_client_ip_header=(env.get(ENV_TRUSTED_CLIENT_IP_HEADER) or "").strip(),
+                        hsts_max_age_seconds=hsts)
 
 
 def _header(scope: dict, name: bytes) -> str | None:
@@ -243,12 +271,56 @@ class CloudRunMiddleware:
 
     def __init__(self, app, settings: HttpSettings) -> None:  # noqa: ANN001
         self.app = app
+        self._ip_header = settings.trusted_client_ip_header.lower().encode("ascii")
+        self._hsts = (b"strict-transport-security",
+                      f"max-age={settings.hsts_max_age_seconds}".encode("ascii")) if settings.hsts_max_age_seconds else None
 
     async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
         if scope["type"] in ("http", "websocket"):
             scope["scheme"] = "wss" if scope["type"] == "websocket" else "https"
             scope[_CLIENT_TRUST_KEY] = False
+            # The load-balancer-injected address is kept apart from ``client`` (which stays unverified): only code that
+            # asks for it explicitly, through trusted_client_ip(), uses it.
+            scope[_TRUSTED_IP_KEY] = self._trusted_ip(scope) if self._ip_header else None
+        if self._hsts is not None and scope["type"] == "http":
+            await self.app(scope, receive, self._with_hsts(send))
+            return
         await self.app(scope, receive, send)
+
+    def _trusted_ip(self, scope: dict) -> str | None:
+        """Exactly ONE header occurrence holding exactly ONE IPv4/IPv6 literal, else None (unverified)."""
+        values = [v for k, v in scope.get("headers") or () if k.lower() == self._ip_header]
+        if len(values) != 1:
+            return None
+        try:
+            address = ipaddress.ip_address(values[0].decode("ascii").strip())
+        except (UnicodeDecodeError, ValueError):
+            return None
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return str(address)
+
+    def _with_hsts(self, send):  # noqa: ANN001, ANN202
+        name, value = self._hsts
+
+        async def wrapped(message) -> None:  # noqa: ANN001
+            if message["type"] == "http.response.start":
+                headers = [h for h in message.get("headers") or () if h[0].lower() != name]
+                headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        return wrapped
+
+
+def trusted_client_ip(request_or_scope) -> str | None:  # noqa: ANN001 — Starlette Request or ASGI scope
+    """The client address the load balancer reported, or None (unverified).
+
+    Only ever set by :class:`CloudRunMiddleware` when ``ZAZA_TRUSTED_CLIENT_IP_HEADER`` is configured. The trust rests on
+    the deployment: ingress is ``internal-and-cloud-load-balancing``, the default run.app URL is disabled, and the load
+    balancer overwrites the header on every request. X-Forwarded-For is never consulted."""
+    scope = getattr(request_or_scope, "scope", request_or_scope)
+    return scope.get(_TRUSTED_IP_KEY)
 
 
 def _normalize_netloc(scheme: str, netloc: str) -> str:

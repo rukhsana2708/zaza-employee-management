@@ -143,6 +143,26 @@ class TenantResolver:
                 raise TenantAccessDenied("invalid credentials")
         return self._context(routed, ContextKind.DEVICE)
 
+    def for_device_route_info(self, router: DeviceCredentialRouter, token: str) -> tuple[TenantContext, str | None]:
+        """:meth:`for_device_route`, plus the device id of the route when the router can supply it (one control read).
+        The device id identifies the device for rate limiting only; it authenticates nothing."""
+        from .device_routes import routing_hash  # noqa: PLC0415
+
+        if not isinstance(token, str) or not token.strip():
+            raise TenantAccessDenied("invalid credentials")
+        digest = routing_hash(token)
+        lookup = getattr(router, "route_for_credential", None)
+        if lookup is not None:
+            found = lookup(digest)
+            if found is None:
+                raise TenantAccessDenied("invalid credentials")
+            routed, device_id = found
+        else:
+            routed, device_id = router.organization_for_credential(digest), None
+            if routed is None:
+                raise TenantAccessDenied("invalid credentials")
+        return self._context(routed, ContextKind.DEVICE), device_id
+
     def for_enrollment(self, organization_id: object) -> TenantContext:
         """The DEVICE context for a device enrollment. ``organization_id``
         comes from the server-side enrollment record (claimed by its code),

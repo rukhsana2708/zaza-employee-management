@@ -60,6 +60,14 @@ class PostgresDeviceRoutes:
                                "WHERE route_hash = %s AND status = 'ACTIVE'", (route_hash,)).fetchone()
         return row["organization_id"] if row else None
 
+    def route_for_credential(self, route_hash: str) -> tuple[uuid.UUID, str] | None:
+        """(organization id, device id) of an ACTIVE route, from the SAME single read; the device id lets the sync
+        rate limiter key on a server-validated identity before any tenant database is opened. Still not authentication."""
+        with self.control.connection() as conn:
+            row = conn.execute("SELECT organization_id, device_id FROM device_credential_routes "
+                               "WHERE route_hash = %s AND status = 'ACTIVE'", (route_hash,)).fetchone()
+        return (row["organization_id"], row["device_id"]) if row else None
+
     def create_route(self, organization_id: object, device_id: str, token: str) -> str:
         """Route a NEW credential (the raw token exists only in memory at
         issue time) to its organization. Returns the routing hash."""

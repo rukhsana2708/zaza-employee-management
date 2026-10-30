@@ -52,6 +52,8 @@ from deskmate.zaza.sync.protocol import (
 )
 
 from .auth import AuthError, authenticate_request
+from .http_security import trusted_client_ip
+from .ratelimit import RATE_LIMIT_ERROR, RateLimitExceeded
 from .repository import CentralRepository, DeviceRecord, RepositoryUnavailable
 from .service import SyncService, validation_message
 
@@ -59,7 +61,8 @@ logger = logging.getLogger("zaza_server.api")
 
 # (Authorization header, X-ZaZa-Device-Id header) -> context manager yielding
 # (authenticated device, sync service bound to THAT device's repository)
-DeviceAccess = Callable[[str | None, str | None], AbstractContextManager[tuple[DeviceRecord, SyncService]]]
+# (Authorization header, X-ZaZa-Device-Id header, verified client address or None)
+DeviceAccess = Callable[..., AbstractContextManager[tuple[DeviceRecord, SyncService]]]
 
 
 class _BodyTooLarge(Exception):
@@ -90,6 +93,11 @@ def _error(status: int, error: str, detail: str | None = None, headers: dict | N
     return JSONResponse(status_code=status, content=body, headers=headers)
 
 
+def _rate_limited(exc: RateLimitExceeded) -> JSONResponse:
+    """HTTP 429: a stable body and the real time until the request is expected to be eligible again."""
+    return _error(429, RATE_LIMIT_ERROR, headers={"Retry-After": str(exc.retry_after)})
+
+
 def _new_app() -> FastAPI:
     app = FastAPI(title="ZaZa Sync API", version="1", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -110,8 +118,11 @@ def _install_sync_api(app: FastAPI, access: DeviceAccess, max_body_bytes: int) -
     @app.get(DEVICE_PATH)
     def device_me(request: Request):  # noqa: ANN202
         try:
-            with access(request.headers.get("authorization"), request.headers.get(DEVICE_ID_HEADER)) as (device, _):
+            with access(request.headers.get("authorization"), request.headers.get(DEVICE_ID_HEADER),
+                        trusted_client_ip(request)) as (device, _):
                 return {"device_id": device.device_id, "employee_id": device.employee_id, "status": device.status}
+        except RateLimitExceeded as exc:
+            return _rate_limited(exc)
         except AuthError as exc:
             return _error(exc.status_code, exc.error, headers={"WWW-Authenticate": "Bearer"})
 
@@ -123,7 +134,10 @@ def _install_sync_api(app: FastAPI, access: DeviceAccess, max_body_bytes: int) -
             try:
                 device, service = await run_in_threadpool(
                     stack.enter_context,
-                    access(request.headers.get("authorization"), request.headers.get(DEVICE_ID_HEADER)))
+                    access(request.headers.get("authorization"), request.headers.get(DEVICE_ID_HEADER),
+                           trusted_client_ip(request)))
+            except RateLimitExceeded as exc:
+                return _rate_limited(exc)
             except AuthError as exc:
                 logger.warning("sync rejected: %s (device header %r)", exc.error,
                                (request.headers.get(DEVICE_ID_HEADER) or "")[:64])
@@ -153,7 +167,8 @@ def _single_repository_access(repo: CentralRepository) -> DeviceAccess:
     service = SyncService(repo)
 
     @contextmanager
-    def access(authorization: str | None, device_header: str | None) -> Iterator[tuple[DeviceRecord, SyncService]]:
+    def access(authorization: str | None, device_header: str | None,
+               client_ip: str | None = None) -> Iterator[tuple[DeviceRecord, SyncService]]:
         ctx = authenticate_request(repo, authorization, device_header)
         try:
             # API connectivity only — never treated as employee activity.
@@ -185,8 +200,9 @@ def create_saas_app(runtime, *, max_body_bytes: int = MAX_BATCH_BYTES) -> FastAP
     app.state.saas_runtime = runtime
 
     @contextmanager
-    def access(authorization: str | None, device_header: str | None) -> Iterator[tuple[DeviceRecord, SyncService]]:
-        with runtime.devices.access(authorization, device_header) as authenticated:
+    def access(authorization: str | None, device_header: str | None,
+               client_ip: str | None = None) -> Iterator[tuple[DeviceRecord, SyncService]]:
+        with runtime.devices.access(authorization, device_header, client_ip) as authenticated:
             yield authenticated.device, authenticated.service
 
     _install_sync_api(app, access, max_body_bytes)

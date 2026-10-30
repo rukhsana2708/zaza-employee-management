@@ -97,6 +97,12 @@ resource "google_compute_backend_service" "edge" {
   load_balancing_scheme = "EXTERNAL_MANAGED"
   security_policy       = local.deploy_armor == 1 ? google_compute_security_policy.edge[0].id : null
 
+  # The ONLY trusted source of the client address for the application's per-IP limiter. The load balancer sets this
+  # header on every request it forwards (it replaces a client-supplied value; verified before the IP limiter enforces,
+  # see docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md). It is trustworthy only because Cloud Run ingress is restricted to
+  # the load balancer and the default run.app URL is disabled. X-Forwarded-For is never used.
+  custom_request_headers = ["X-Zaza-Client-IP: {client_ip_address}"]
+
   backend {
     group = google_compute_region_network_endpoint_group.edge[0].id
   }
