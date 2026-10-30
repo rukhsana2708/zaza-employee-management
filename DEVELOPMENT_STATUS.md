@@ -24,6 +24,18 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10N — pilot PC upgraded 0.9.0 -> 0.9.2 (2026-10-30)
+
+- Installer sha256 575739888d41...e4d284 verified; in-place silent upgrade approved by the user at the keyboard.
+- Preserved: device `zaza-pilot-pc-01`, employee `internal-pilot-1`, server URL, config.json, and the DPAPI
+  credential file (byte-identical, same hash); exactly one autostart task (logon trigger, --background).
+- Verified: `/devices/me` 200 with the stored credential; sync batches 200 (14 since upgrade); restart via the
+  per-user stop request resumes normally; `saas-device-list` shows ONE device; no 5xx/DB errors; no token or code in
+  local files, command lines or Cloud Logging; run.app 404.
+- Notes: a silent install stops the agent and does not restart it (start it with --background, or sign in again);
+  `--stop-agents` is an installer helper that needs administrator rights (a normal user hits a permission error
+  and leaves a stray process). Windows sign-out/sign-in cycle not exercised.
+
 ## Phase 10M — deploy the re-enrollment lifecycle and SaaS device commands (2026-10-30)
 
 - Image from commit a2b6f79: `sha256:a13ecfcbac4f1eab7b7993d64d0e90b2ac69af4d911d0d7237707d3a7e31b950`.
