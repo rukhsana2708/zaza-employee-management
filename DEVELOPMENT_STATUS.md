@@ -24,6 +24,19 @@
   2026-10-30: DNS A record added (DNS only); certificate ACTIVE (expires 2027-01-27); https://work.zazavoice.com
   serves (health 200, http redirects 301, device/session routes 401 without credentials, run.app 404).
 
+## Phase 10K — deploy the enrollment-code log fix (2026-10-30, partial)
+
+- Image from commit 6d84e54: digest `sha256:e6362ce85877c1200d72b5b56d16b03bbcf8ec4e7839c54861d8847859a16e5a`.
+  Terraform plan was 0 add / 2 change / 0 destroy (job image + service image only); applied.
+  Service revision `zaza-server-00002-sdd` serves 100%; the `zaza-migrate` job runs the same image.
+- Verified: `enrollment-code-create` in the job exits 2 BEFORE creating a code (code list unchanged);
+  no `ZZE-` in Cloud Logging since the deploy; health 200; run.app 404; pilot batches 200; no 5xx.
+- NOT DONE: upgrade of the pilot PC to 0.9.1 (UAC prompt was not approved).
+- FINDING (blocks the replace-enrollment test): the agent's Replace flow creates a NEW random device ID, so the
+  old device `zaza-pilot-pc-01` would stay ACTIVE with a valid token, and there is no tenant-aware operator
+  command to disable a device or revoke its tokens (`disable-device`/`rotate-token` are legacy single-database).
+
+
 ## Phase 10J — enrollment with a code in the agent (2026-10-30, agent 0.9.1)
 
 - The agent window now takes the server address (default https://work.zazavoice.com) and the one-time code.
