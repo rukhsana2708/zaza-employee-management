@@ -1,0 +1,151 @@
+{% macro identity(p) %}
+<section aria-labelledby="identity-title">
+<h2 id="identity-title">My employee profile</h2>
+<dl class="profile-grid">
+<dt>Name</dt>
+<dd>{{ p.display_name }}</dd>
+<dt>Designation</dt>
+<dd>{{ p.designation or 'Not set' }}</dd>
+<dt>Department</dt>
+<dd>{{ p.department or 'Not set' }}</dd>
+<dt>Teams</dt>
+<dd>{{ p.teams|join(', ') or 'Not set' }}</dd>
+<dt>Timezone</dt>
+<dd>{{ p.timezone }}</dd>
+<dt>Employment state</dt>
+<dd>{{ p.employment_status|title }}</dd>
+</dl>
+</section>
+{% endmacro %}
+{% macro current(view) %}
+<section aria-labelledby="monitoring-title">
+<h2 id="monitoring-title">My monitoring information</h2>
+{% if not view.profile.monitoring_enabled %}<p class="scope-note">
+<strong>Monitoring not enabled</strong> in your employee policy. Historical records remain visible; contact your administrator to confirm device collection settings.</p>
+{% else %}<p>Latest available computer state: <strong>{{ view.detail.status.label }}</strong>
+</p>{% endif %}
+<p>Last device contact: {{ view.detail.status.last_seen_at|local(view.profile.timezone) }} ({{ view.profile.timezone }}).</p>
+<p class="note">Connectivity does not mean working. Missing or uncertain observations are not assumed to be idle.</p>
+</section>
+{% endmacro %}
+{% macro today(view) %}
+<section aria-labelledby="today-title">
+<h2 id="today-title">Today, in my timezone</h2>
+<p>{{ view.detail.today }} | {{ view.profile.timezone }} | Schedule: {{ view.detail.schedule.text }}</p>
+{% set s=view.detail.today_summary %}{% if s %}<div class="metric-grid">
+{% for label,seconds in [('Scheduled Hours',s.scheduled_seconds),('Tracked Time',s.tracked_seconds),('Active Computer Time',s.active_seconds),('Idle Time',s.idle_seconds),('Locked Time',s.locked_seconds),('Unknown Time',s.unknown_seconds)] %}
+<article class="metric">
+<span>{{ label }}</span>
+<strong>{{ seconds|hours }}</strong>
+</article>{% endfor %}</div>
+<p>Attendance: <strong>{{ STATUS_LABELS[s.attendance_status] }}</strong> | {{ s.attendance_percentage|pct }} | Quality: {{ QUALITY_LABELS[s.data_quality] }}</p>
+<p>Late: {{ s.late_seconds|minutes }} | Early leave: {{ s.early_leave_seconds|minutes }} | Overtime: {{ s.overtime_seconds|hours }}</p>
+{% for flag in s.quality_flags %}<p class="note">{{ FLAG_NOTES.get(flag,flag) }}</p>{% endfor %}
+{% else %}<p class="empty">No calculated attendance summary is available for today. This is not evidence of absence or inactivity.</p>{% endif %}
+<p class="note">Attendance follows the existing stored calculation. Recorded overtime is not automatically a payroll entitlement.</p>
+</section>
+{% endmacro %}
+{% macro activity(view) %}
+<div class="table-wrap">
+<table>
+<caption>My recent activity evidence ({{ view.profile.timezone }})</caption>
+<thead>
+<tr>
+<th scope="col">Start</th>
+<th scope="col">End</th>
+<th scope="col">Computer state</th>
+<th scope="col">Duration</th>
+<th scope="col">Application</th>
+<th scope="col">Window / Domain</th>
+</tr>
+</thead>
+<tbody>{% for p in view.detail.activity %}<tr>
+<td>{{ p.started_at|local(view.profile.timezone) }}</td>
+<td>{{ p.ended_at|local(view.profile.timezone) }}</td>
+<td>{{ p.status|title }}</td>
+<td>{{ p.duration_seconds|duration }}</td>
+<td>{{ p.app_name or 'Not available' }}</td>
+<td>{{ p.window_title or '' }} {{ p.domain or '' }}{% if p.privacy_excluded %}Privacy excluded{% endif %}</td>
+</tr>
+{% else %}<tr>
+<td colspan="6">No activity records are available in this period. Missing records are not assumed idle.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>
+{% if view.detail.activity_truncated %}<p>Showing the latest {{ view.detail.activity_limit }} periods. Narrow your period for more detail.</p>{% endif %}
+{% endmacro %}
+{% macro applications(rows) %}
+<div class="table-wrap">
+<table>
+<caption>My application usage</caption>
+<thead>
+<tr>
+<th scope="col">Application</th>
+<th scope="col">Active Computer Time</th>
+<th scope="col">Idle Time</th>
+<th scope="col">Unknown Time</th>
+<th scope="col">Recorded days</th>
+</tr>
+</thead>
+<tbody>{% for row in rows %}<tr>
+<th scope="row">{{ row.app }}</th>
+<td>{{ row.active|hours }}</td>
+<td>{{ row.idle|hours }}</td>
+<td>{{ row.unknown|hours }}</td>
+<td>{{ row.usage_days }}</td>
+</tr>
+{% else %}<tr>
+<td colspan="5">No application summaries are available for this period.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>
+<p class="note">Application usage is supplementary activity evidence. Applications are not rated and usage does not measure task completion.</p>
+{% endmacro %}
+{% macro attendance(rows) %}
+<div class="table-wrap">
+<table>
+<caption>My attendance history: stored daily summaries</caption>
+<thead>
+<tr>
+<th scope="col">Local date</th>
+<th scope="col">Scheduled</th>
+<th scope="col">Tracked</th>
+<th scope="col">Active Computer Time</th>
+<th scope="col">Idle</th>
+<th scope="col">Locked</th>
+<th scope="col">Unknown</th>
+<th scope="col">Attendance</th>
+<th scope="col">Status</th>
+<th scope="col">Quality</th>
+<th scope="col">Late / Early</th>
+<th scope="col">Overtime</th>
+</tr>
+</thead>
+<tbody>{% for row in rows %}{% set s=row.summary %}<tr>
+<th scope="row">{{ s.local_date }}</th>
+<td>{{ s.scheduled_seconds|hours }}</td>
+<td>{{ s.tracked_seconds|hours }}</td>
+<td>{{ s.active_seconds|hours }}</td>
+<td>{{ s.idle_seconds|hours }}</td>
+<td>{{ s.locked_seconds|hours }}</td>
+<td>{{ s.unknown_seconds|hours }}</td>
+<td>{{ s.attendance_percentage|pct }}</td>
+<td>{{ STATUS_LABELS[s.attendance_status] }}</td>
+<td>{{ QUALITY_LABELS[s.data_quality] }}{% for flag in s.quality_flags %}<p class="note">{{ FLAG_NOTES.get(flag,flag) }}</p>{% endfor %}</td>
+<td>{{ s.late_seconds|minutes }} / {{ s.early_leave_seconds|minutes }}</td>
+<td>{{ s.overtime_seconds|hours }}</td>
+</tr>
+{% else %}<tr>
+<td colspan="12">No calculated attendance summaries are available for this period.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>
+{% endmacro %}
+{% macro transparency() %}
+<aside class="scope-note" aria-labelledby="transparency-title">
+<h2 id="transparency-title">What ZaZa records</h2>
+<p>When monitoring is configured, ZaZa records computer activity state, application/window metadata according to the configured privacy policy, work-session/attendance summaries, and device connectivity.</p>
+<p>ZaZa does not collect screenshots, screen/OCR contents, typed key contents, clipboard contents, webcam/video, or microphone/audio.</p>
+<p>Computer activity is not proof of work or a productivity score. This product information does not replace your employer's privacy notice.</p>
+</aside>
+{% endmacro %}

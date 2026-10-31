@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% import "_personal.html" as personal %}
+{% block title %}{{ {'my-work':'My Work','my-work/activity':'My Activity','my-work/attendance':'My Attendance','my-work/applications':'My Applications'}[page] }}{% endblock %}
+{% block content %}<h1>{{ {'my-work':'My Work','my-work/activity':'My Activity','my-work/attendance':'My Attendance','my-work/applications':'My Applications'}[page] }}</h1>
+<p class="muted">My activity and attendance records for {{ view.profile.display_name }}. Times use {{ view.profile.timezone }}.</p>
+{% if view.profile.employment_status=='LEAVE' %}<p class="scope-note">
+<strong>On leave</strong> | Read-only access to your own records remains available.</p>{% endif %}
+{% if page=='my-work' %}{{ personal.identity(view.profile) }}{{ personal.current(view) }}{{ personal.today(view) }}<h2>My recent evidence</h2>{% endif %}
+{{ m.filters(f,[],'/app/orgs/'~tenant.slug~'/'~page,show_employee=False) }}{{ m.period_note(view.period) }}
+{% if page=='my-work/activity' %}{{ personal.current(view) }}{% set t=view.detail.totals %}<div class="metric-grid">
+{% for label,value in [('Tracked Time',t.tracked),('Active Computer Time',t.active),('Idle Time',t.idle),('Locked Time',t.locked),('Unknown Time',t.unknown)] %}<article class="metric">
+<span>{{ label }}</span>
+<strong>{{ value|hours if t.days else 'Not available' }}</strong>
+</article>{% endfor %}</div>{% endif %}
+{% if page in ['my-work','my-work/activity'] %}{{ personal.activity(view) }}{% endif %}
+{% if page=='my-work/attendance' %}{{ personal.today(view) }}{{ personal.attendance(view.detail.days) }}{% endif %}
+{% if page in ['my-work','my-work/applications'] %}{{ personal.applications(view.detail.apps) }}{% endif %}
+{{ personal.transparency() }}{% endblock %}

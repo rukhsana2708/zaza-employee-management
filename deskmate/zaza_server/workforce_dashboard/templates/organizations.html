@@ -5,6 +5,6 @@
 {% for org in organizations %}<article class="org-card">
 <h2>{{ org.name }}</h2>
 <p>{{ org.role|title }}</p>
-<a class="button" href="/app/orgs/{{ org.slug|urlencode }}/workspace">Open workspace</a>
+<a class="button" href="/app/orgs/{{ org.slug|urlencode }}/{{ org.entry }}">Open workspace</a>
 </article>
 {% else %}<p>No organizations are currently available. Contact your organization administrator.</p>{% endfor %}</div>{% endblock %}

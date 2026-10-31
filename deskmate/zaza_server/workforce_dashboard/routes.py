@@ -32,6 +32,13 @@ NAV = (
     ("analytics", "Analytics"),
 )
 
+PERSONAL_NAV = (
+    ("my-work", "My Work"),
+    ("my-work/activity", "My Activity"),
+    ("my-work/attendance", "My Attendance"),
+    ("my-work/applications", "My Applications"),
+)
+
 
 def install_browser(app, runtime, access):
     env = _templates()
@@ -52,24 +59,26 @@ def install_browser(app, runtime, access):
                 response.headers[name] = value
         return response
 
-    def render(template, *, ctx=None, tenant=None, status=200, headers=None, **values):
-        can_read = bool(
+    def render(
+        template, *, ctx=None, tenant=None, status=200, headers=None, self_access=None, **values
+    ):
+        management = bool(
             tenant
             and (
-                {
-                    Permission.EMPLOYEES_VIEW_ALL,
-                    Permission.EMPLOYEES_VIEW_SELF,
-                    Permission.EMPLOYEES_VIEW_SCOPED,
-                }
+                {Permission.EMPLOYEES_VIEW_ALL, Permission.EMPLOYEES_VIEW_SCOPED}
                 & permissions(tenant)
             )
         )
+        personal = (
+            reporting.has_self(tenant) if tenant and self_access is None else bool(self_access)
+        )
+        navigation = (PERSONAL_NAV if personal else ()) + (NAV if management else ())
         return HTMLResponse(
             env.get_template(template).render(
                 user=ctx.user if ctx else None,
                 csrf=ctx.csrf_token if ctx else "",
                 tenant=tenant,
-                nav=NAV if can_read else (),
+                nav=navigation,
                 **values,
             ),
             status_code=status,
@@ -113,7 +122,22 @@ def install_browser(app, runtime, access):
         ctx = access.session(request)
         if ctx is None:
             return RedirectResponse(BROWSER_LOGIN_PATH, status_code=303)
-        return render("organizations.html", ctx=ctx, organizations=access.organizations(ctx))
+        organizations = access.organizations(ctx)
+        available = []
+        for org in organizations:
+            try:
+                tenant = access.member_context(ctx, org["slug"])
+            except TenantAccessDenied:
+                continue
+            management = bool(
+                {Permission.EMPLOYEES_VIEW_ALL, Permission.EMPLOYEES_VIEW_SCOPED}
+                & permissions(tenant)
+            )
+            org["entry"] = (
+                "my-work" if not management and reporting.has_self(tenant) else "workspace"
+            )
+            available.append(org)
+        return render("organizations.html", ctx=ctx, organizations=available)
 
     def workforce_page(request, slug, page, employee_id=None):
         ctx = access.session(request)
@@ -203,3 +227,72 @@ def install_browser(app, runtime, access):
     @app.get("/app/orgs/{slug}/workforce/{employee_id}", response_class=HTMLResponse)
     def employee_detail(request: Request, slug: str, employee_id: str):
         return workforce_page(request, slug, "workforce", employee_id)
+
+    def my_page(request, slug, page):
+        ctx = access.session(request)
+        if ctx is None:
+            return RedirectResponse(BROWSER_LOGIN_PATH, status_code=303)
+        try:
+            tenant = access.member_context(ctx, slug)
+        except TenantAccessDenied:
+            return render("error.html", ctx=ctx, message="Not found.", status=404)
+        try:
+            view = reporting.personal_view(tenant, page, request.query_params)
+        except PermissionDenied:
+            return render(
+                "error.html",
+                ctx=ctx,
+                tenant=tenant,
+                self_access=False,
+                message="Employee self-service is not available for this account.",
+                status=403,
+            )
+        except TenantAccessDenied:
+            return render("error.html", ctx=ctx, message="Not found.", status=404)
+        except (TenancyError, RepositoryUnavailable):
+            return render(
+                "error.html",
+                ctx=ctx,
+                tenant=tenant,
+                self_access=False,
+                message="Personal reporting is temporarily unavailable.",
+                status=503,
+            )
+        except ValueError:
+            return render(
+                "error.html",
+                ctx=ctx,
+                tenant=tenant,
+                message="Choose a valid reporting period.",
+                status=400,
+            )
+        return render(
+            "my_work.html",
+            ctx=ctx,
+            tenant=tenant,
+            page=page,
+            view=view,
+            self_access=True,
+            f={
+                "period": request.query_params.get("period", "today"),
+                "employee": "",
+                "from": request.query_params.get("from", ""),
+                "to": request.query_params.get("to", ""),
+            },
+        )
+
+    for page, _ in PERSONAL_NAV:
+
+        def personal_endpoint(page_name):
+            def get(request: Request, slug: str):
+                return my_page(request, slug, page_name)
+
+            return get
+
+        app.add_api_route(
+            "/app/orgs/{slug}/" + page,
+            personal_endpoint(page),
+            methods=["GET"],
+            response_class=HTMLResponse,
+            name="saas-" + page.replace("/", "-"),
+        )

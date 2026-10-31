@@ -175,9 +175,10 @@ class WorkforceRepository:
         return row
 
     def revoke_links(self, employee_id):
+        # Wall-clock corrections must never prevent security revocation. Keep the existing CHECK.
         self.profile(employee_id)
         rows = self.conn.execute(
-            "UPDATE employee_account_links SET revoked_at=clock_timestamp() "
+            "UPDATE employee_account_links SET revoked_at=GREATEST(clock_timestamp(),created_at) "
             "WHERE employee_id=%s AND revoked_at IS NULL RETURNING *",
             (employee_id,),
         ).fetchall()

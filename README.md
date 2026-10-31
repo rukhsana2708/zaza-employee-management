@@ -49,7 +49,9 @@ Full design: [PROJECT_PLAN.md](PROJECT_PLAN.md) (scope & phased roadmap),
 Phase A workforce identity/authorization foundation is approved locally, **not deployed**.
 See [implementation and compatibility record](docs/zaza/WORKFORCE_PHASE_A.md). Phase B adds the local
 [read-only tenant-aware SaaS dashboard](docs/zaza/WORKFORCE_PHASE_B.md), also **not deployed**.
-The employee task workspace, tasks, messaging, declarations and reporting expansion remain future phases. Production remains
+Phase C adds the local [My Work self-service workspace](docs/zaza/WORKFORCE_PHASE_C.md), also **not deployed**.
+Tasks/projects, the required future [Files / Deliverables module](docs/zaza/FILES_DELIVERABLES_DESIGN.md),
+messaging, declarations and reporting expansion remain future phases. Production remains
 shadow/shadow with HSTS disabled; no further production change is approved.
 
 **Under development.** See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md)

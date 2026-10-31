@@ -1,8 +1,32 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-31 (approved production shadow-observation baseline)
+**Last updated:** 2026-11-01 (Phase C local implementation; production baseline unchanged)
 
-## Phase B - read-only tenant-aware SaaS dashboard (local code/test; not deployed)
+## Phase C - employee self-service / My Work (local code/test; not deployed)
+
+- Four ID-free personal GET routes: My Work, My Activity, My Attendance and My Applications.
+  Identity derives only from current explicit account linkage, not query/form/name/email selectors.
+- Self-only scope and lifecycle checks apply equally to linked EMPLOYEE/MANAGER/ADMIN/OWNER;
+  organization-wide reporting does not bypass INACTIVE/TERMINATED self-service denial. LEAVE is read-only.
+- Personal navigation is separate from company reporting. No automatic employee creation for unlinked
+  administrators; no self access for VIEWER merely because a link exists. Manager self/history survives
+  reporting-responsibility and role changes according to explicit capability/lifecycle rules.
+- Reuses Phase B SQL adapter, read-only snapshots, filters, formatting, status and deterministic attendance.
+  Personal templates omit coworker selectors/management controls and explain collection/privacy accurately.
+- Required future Phase D Files / Deliverables module documented: requirements, submissions, immutable
+  versions/review, tenant metadata/private object storage, scanning/limits/access/retention, safe exports,
+  later entitlements and explicitly invoked AI only. NO files/upload/storage implementation exists.
+- Heads unchanged: tenant `0005_workforce_foundation`, control `c0005_employee_membership`.
+- Validation on disposable PostgreSQL 16: targeted suite **192 passed**; complete ZaZa suite
+  **1849 passed, 12 skipped** (two dependency deprecation warnings). Includes 28 Phase C cases.
+  Changed-source lint and whitespace checks passed; synthetic My Work screenshot reviewed locally.
+- Backwards database clock steps discovered during testing cannot prevent link revocation: clamp its
+  timestamp to creation time while preserving the existing CHECK/history; deterministic regression passes.
+- Implementation and roadmap: docs/zaza/WORKFORCE_PHASE_C.md and FILES_DELIVERABLES_DESIGN.md.
+- No production build/deploy/migration, Terraform, limiter, HSTS, Cloud Armor, DNS or agent change.
+  Approved production shadow-observation baseline and protected user-work items remain unchanged.
+
+## Phase B - read-only tenant-aware SaaS dashboard (approved local implementation; not deployed)
 
 - Separate HTML sign-in, organization selector, overview/workforce/detail/attendance/applications/analytics
   and safe sign-out. Existing /app JSON contracts preserved; legacy /manager remains separate.

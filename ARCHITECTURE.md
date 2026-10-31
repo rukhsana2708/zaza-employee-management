@@ -1,5 +1,13 @@
 # ZaZa Employee Management System — Architecture
 
+## Phase C My Work (local code/test, 2026-10-31)
+
+[Phase C](docs/zaza/WORKFORCE_PHASE_C.md) adds employee-facing personal reports derived exclusively
+from explicit account linkage, independent of management authority. No schema or production changes.
+Future Phase D Tasks/Projects must include the first-class [Files / Deliverables module](docs/zaza/FILES_DELIVERABLES_DESIGN.md):
+private object content, tenant metadata, versioned submissions and manager review. It is design-only here;
+no uploads, storage resources, billing or AI processing are implemented.
+
 ## Phase B read-only SaaS dashboard (local code/test, 2026-10-31)
 
 [Phase B implementation](docs/zaza/WORKFORCE_PHASE_B.md) documents separate HTML routes,

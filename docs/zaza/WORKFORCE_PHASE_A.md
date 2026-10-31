@@ -152,3 +152,11 @@ The 55 new tests include 28 real PostgreSQL cases. Two existing dependency depre
 Syntax/diff checks pass; no new lint findings (seven pre-existing findings left unchanged). Tests use disposable PostgreSQL 16, real tenant databases,
 existing monitoring clients, transactional migration failures, duplicate links, scope/date denial, lifecycle,
 role independence, audit rollback and downgrade refusal. No production database or agent is exercised.
+
+## Roadmap update after Phase A
+
+Phase B reporting and Phase C My Work are now implemented locally (not deployed); their implementation
+records supersede the earlier future-phase labels for those delivered read-only surfaces. Phase D must
+include first-class Files / Deliverables alongside Tasks/Projects: see FILES_DELIVERABLES_DESIGN.md.
+This requirement is design-only, with no upload/schema/storage implementation in Phase C. Monitoring,
+task timer selection, declared progress, delivered outputs and manager review remain separate evidence.

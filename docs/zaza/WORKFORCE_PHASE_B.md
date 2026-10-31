@@ -1,6 +1,6 @@
 # Phase B - read-only tenant-aware SaaS workforce dashboard
 
-Status: local code/test implementation for review. NOT built/deployed/migrated in production.
+Status: approved local code/test implementation. NOT built/deployed/migrated in production.
 Phase A is approved locally. Tenant head remains `0005_workforce_foundation`; control head remains
 `c0005_employee_membership`. No migration was created or historical migration changed.
 
@@ -131,3 +131,10 @@ workforce reads while migration is pending; existing compatible monitoring remai
 Production remains zaza-server-00006-7tw / privacy-hotfix image, control c0004, device/IP shadow, HSTS 0,
 Cloud Armor disabled. No production image, migration, Terraform, Cloud Run, DNS/Cloudflare, agent or enrollment
 operation is performed. The separate shadow observation/review gate remains authoritative.
+
+## Subsequent Phase C navigation
+
+Phase C adds linkage-derived My Work personal navigation while retaining these read-only report routes,
+SQL/history protection and JSON contracts. Ordinary employees primarily enter their personal workspace;
+linked managers/admins/owners retain both dimensions. See WORKFORCE_PHASE_C.md. Files / Deliverables is a
+required future Phase D module, documented in FILES_DELIVERABLES_DESIGN.md and not implemented here.

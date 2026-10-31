@@ -213,3 +213,26 @@ class WorkforceService:
                 self._scope(fresh, membership, store, eid) for eid in dict.fromkeys(candidates)
             )
             yield store.conn, AuthorizedWorkforceScope(subjects)
+
+    @contextmanager
+    def self_dashboard(self, context):
+        """Resolve the acting employee exclusively from the current explicit link.
+
+        Organization-wide reporting authority never bypasses self lifecycle checks.
+        No employee selector is accepted at this boundary.
+        """
+        with self._access(context, Permission.EMPLOYEES_VIEW_SELF, read_only=True) as (
+            fresh,
+            membership,
+            store,
+        ):
+            link = store.link_for_user(fresh.user_id, membership.membership_id)
+            if link is None:
+                raise PermissionDenied("employee self-service is unavailable")
+            profile = store.profile(link["employee_id"])
+            if not profile["is_active"] or profile["employment_status"] not in {"ACTIVE", "LEAVE"}:
+                raise PermissionDenied("employee self-service is unavailable")
+            yield (
+                store.conn,
+                AuthorizedWorkforceScope((SubjectScope(profile["employee_id"], "self"),)),
+            )
