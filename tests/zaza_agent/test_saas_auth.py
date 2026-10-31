@@ -299,7 +299,8 @@ def test_role_permissions_are_explicit_sets():
     assert set(perms) == set(MembershipRole)
     assert Permission.EMPLOYEES_VIEW_ALL in perms[MembershipRole.OWNER] | perms[MembershipRole.ADMIN]
     assert Permission.EMPLOYEES_VIEW_ALL not in perms[MembershipRole.MANAGER]   # team scopes come later
-    assert perms[MembershipRole.MANAGER] == {Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_SCOPED}
+    assert perms[MembershipRole.MANAGER] == {Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_SCOPED,
+                                             Permission.EMPLOYEES_VIEW_SELF}
     assert perms[MembershipRole.VIEWER] == {Permission.ORG_VIEW}
     assert Permission.ORG_SETTINGS_MANAGE not in perms[MembershipRole.ADMIN]
 

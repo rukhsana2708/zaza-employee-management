@@ -72,7 +72,7 @@ def test_control_schema_reaches_its_own_head(control_settings):
 
     with psycopg.connect(**control_settings.connect_kwargs()) as conn:
         status = control.schema_status(conn)
-        assert status.up_to_date and status.current == control.head_revision() == "c0004_sync_rate_limits"
+        assert status.up_to_date and status.current == control.head_revision() == "c0005_employee_membership"
         assert conn.execute("SELECT to_regclass('alembic_version')::text").fetchone()[0] is None  # no tenant chain
 
 
@@ -101,9 +101,8 @@ def test_membership_roles_are_enforced_by_the_database(control, control_settings
     org = control.create_organization("acme-call-center", "Acme Call Center")
     user = control.create_user("Owner@Acme.example", "Acme Owner")
     assert user.email == "owner@acme.example"
-    with pytest.raises(TenancyError):
-        control.add_membership(org.organization_id, user.user_id, "EMPLOYEE")
-    for bad in ("EMPLOYEE", "PLATFORM_SUPERADMIN", "owner"):
+    assert MembershipRole.EMPLOYEE.value == "EMPLOYEE"
+    for bad in ("PLATFORM_SUPERADMIN", "owner"):
         with pytest.raises(psycopg.errors.CheckViolation):
             _raw(control_settings, "INSERT INTO organization_memberships (membership_id, organization_id, user_id, "
                                    "role) VALUES (%s, %s, %s, %s)", (uuid.uuid4(), org.organization_id, user.user_id,

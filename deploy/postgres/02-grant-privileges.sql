@@ -39,7 +39,9 @@ GRANT SELECT, INSERT, UPDATE ON
     employees, devices, device_tokens, work_schedules,
     work_sessions, activity_periods, idle_periods, application_usage_daily,
     daily_summaries, weekly_summaries, monthly_summaries,
-    manager_users, manager_sessions
+    manager_users, manager_sessions,
+    designations, departments, teams, employee_profiles, employee_team_memberships,
+    employee_account_links, employee_reporting_relationships
     TO zaza_employee_app;
 GRANT DELETE ON work_schedules TO zaza_employee_app;
 GRANT SELECT, INSERT ON audit_logs TO zaza_employee_app;

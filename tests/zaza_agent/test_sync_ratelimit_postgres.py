@@ -86,9 +86,9 @@ def _limiter(store, **overrides):  # noqa: ANN001, ANN003, ANN202
 
 
 def test_c0004_allows_the_sync_device_bucket_and_keeps_the_others(control):
-    assert control_migrate.head_revision() == "c0004_sync_rate_limits"
+    assert control_migrate.head_revision() == "c0005_employee_membership"
     with psycopg.connect(**control.settings.connect_kwargs()) as conn:
-        assert control_migrate.current_revision(conn) == "c0004_sync_rate_limits"
+        assert control_migrate.current_revision(conn) == "c0005_employee_membership"
     key = "a" * 64
     for bucket in ("identity", "global", "enrollment_code", "enrollment_global", DEVICE_BUCKET):
         assert control.store.count_attempt(bucket, key, 60)[0] == 1

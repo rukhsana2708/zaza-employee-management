@@ -2,6 +2,25 @@
 
 **Last updated:** 2026-10-31 (approved production shadow-observation baseline)
 
+## Phase A - workforce identity and authorization (local code/test only; not deployed)
+
+- Discovered heads: tenant `0004_manager_dashboard_auth`; control `c0004_sync_rate_limits`.
+- New heads: tenant `0005_workforce_foundation`; control `c0005_employee_membership`.
+- Implemented tenant profiles/catalogs/teams, explicit employee-account links, effective-dated
+  direct reporting, self/report/organization scope, lifecycle gate and transactional workforce audit.
+- EMPLOYEE membership added; OWNER/ADMIN/MANAGER presets are explicit, without enum wildcard grants.
+- Legacy employee role, agent, monitoring authentication, attendance and Sheets behavior preserved.
+- Monitoring runtime explicitly supports reviewed predecessor schemas; workforce service requires
+  both new schemas. Operators remain strict. Rollback refuses data loss or role reclassification.
+- Implementation, lifecycle details, compatibility matrix, limitations and deferred B-K modules:
+  docs/zaza/WORKFORCE_PHASE_A.md. No task/dashboard/messaging/declaration implementation exists yet.
+- Targeted validation: 203 passed (including 55 new workforce/compatibility tests on disposable PostgreSQL).
+- Complete PostgreSQL-enabled ZaZa suite: **1791 passed, 12 skipped**, two existing dependency
+  deprecation warnings. New foundation/compatibility coverage: 55 tests, including 28 PostgreSQL cases.
+- Syntax/diff checks passed; lint introduces no new findings (seven existing findings retained).
+- No deployment, production migration, Terraform/configuration or production-agent change performed.
+  Approved production baseline and the separate seven-day observation/review gate below remain unchanged.
+
 ## Approved production baseline - shadow observation in progress (2026-10-31)
 
 - Sequence B rollout Stages A-D completed successfully: migration-job image, compatible server/header,

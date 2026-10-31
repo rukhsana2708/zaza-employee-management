@@ -175,7 +175,7 @@ class _Entry:
 
 
 def open_tenant_repository(settings: DatabaseSettings, *, actor_type: str = "SYSTEM",  # noqa: ANN201
-                           actor_id: str = "saas"):
+                           actor_id: str = "saas", runtime_monitoring_compatibility: bool = True):
     """Default factory: the existing production repository on the tenant
     database, refusing an out-of-date schema, then checking that the server
     really connected to the database the context names. ``actor_*`` label
@@ -183,7 +183,8 @@ def open_tenant_repository(settings: DatabaseSettings, *, actor_type: str = "SYS
     from ..postgres import PostgresRepository  # noqa: PLC0415 — optional dependency
 
     repo = PostgresRepository(settings, actor_type=actor_type, actor_id=actor_id, require_current_schema=True,
-                              pool_name="zaza-tenant", check_connections=True, pool_workers=1)
+                              pool_name="zaza-tenant", check_connections=True, pool_workers=1,
+                              runtime_monitoring_compatibility=runtime_monitoring_compatibility)
     try:
         with repo.connection() as conn:
             actual = conn.execute("SELECT current_database() AS db").fetchone()["db"]

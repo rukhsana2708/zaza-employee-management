@@ -173,6 +173,7 @@ class PostgresRepository:
         pool_name: str = "zaza-db",
         check_connections: bool = False,
         pool_workers: int = 3,
+        runtime_monitoring_compatibility: bool = False,
     ) -> None:
         self.settings = settings
         self.actor_type = actor_type
@@ -200,7 +201,8 @@ class PostgresRepository:
         except BaseException:
             self._pool.close()
             raise
-        if require_current_schema and not status.up_to_date:
+        if require_current_schema and not (migrate.runtime_compatible(status)
+                if runtime_monitoring_compatibility else status.up_to_date):
             self._pool.close()
             raise RepositoryUnavailable(
                 f"database schema is at {status.current or 'nothing (empty database)'}, "

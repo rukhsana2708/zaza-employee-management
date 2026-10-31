@@ -49,7 +49,8 @@ OPERATOR_ACTOR = ("CLI", "saas-operator")  # tenant audit_logs actor of these co
 def operator_repository_factory(settings):  # noqa: ANN001, ANN201
     """The default tenant repository factory (current schema required,
     ``current_database()`` verified), with the operator as the audit actor."""
-    return open_tenant_repository(settings, actor_type=OPERATOR_ACTOR[0], actor_id=OPERATOR_ACTOR[1])
+    return open_tenant_repository(settings, actor_type=OPERATOR_ACTOR[0], actor_id=OPERATOR_ACTOR[1],
+                                  runtime_monitoring_compatibility=False)
 
 
 class SaasEmployeeOperator:

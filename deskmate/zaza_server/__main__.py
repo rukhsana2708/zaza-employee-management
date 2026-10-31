@@ -841,7 +841,7 @@ def main(argv: list[str] | None = None) -> int:
     ma = sub.add_parser("saas-membership-add", help="(SaaS) give a SaaS user a role in an organization")
     ma.add_argument("--email", required=True)
     ma.add_argument("--slug", required=True)
-    ma.add_argument("--role", required=True, choices=("OWNER", "ADMIN", "MANAGER", "VIEWER"))
+    ma.add_argument("--role", required=True, choices=("OWNER", "ADMIN", "MANAGER", "VIEWER", "EMPLOYEE"))
     ec = sub.add_parser("enrollment-code-create", help="(SaaS) one-time device enrollment code; printed ONCE, to an interactive terminal only")
     ec.add_argument("--slug", required=True)
     ec.add_argument("--employee-id", required=True)

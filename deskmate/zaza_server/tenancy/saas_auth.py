@@ -414,16 +414,23 @@ class Permission(str, Enum):
     DEVICES_MANAGE = "devices.manage"              # enroll / disable devices (future phase)
     MEMBERS_MANAGE = "members.manage"              # invite / change SaaS members (future phase)
     ORG_SETTINGS_MANAGE = "org.settings.manage"
+    EMPLOYEES_VIEW_SELF = "employees.view_self"
+    EMPLOYEES_MANAGE = "employees.manage"
 
 
 # Explicit sets, not a numeric hierarchy. MANAGER deliberately does NOT get
 # company-wide employee access: it gets the scoped permission, which grants
-# nothing until team scopes exist.
+# direct-report access only through workforce subject-scope validation.
 ROLE_PERMISSIONS: dict[MembershipRole, frozenset[Permission]] = {
-    MembershipRole.OWNER: frozenset(Permission),
+    MembershipRole.OWNER: frozenset({Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_ALL,
+        Permission.EMPLOYEES_VIEW_SCOPED, Permission.DEVICES_MANAGE, Permission.MEMBERS_MANAGE,
+        Permission.ORG_SETTINGS_MANAGE, Permission.EMPLOYEES_VIEW_SELF, Permission.EMPLOYEES_MANAGE}),
     MembershipRole.ADMIN: frozenset({Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_ALL, Permission.DEVICES_MANAGE,
-                                     Permission.MEMBERS_MANAGE}),
-    MembershipRole.MANAGER: frozenset({Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_SCOPED}),
+                                     Permission.MEMBERS_MANAGE, Permission.EMPLOYEES_VIEW_SELF,
+                                     Permission.EMPLOYEES_MANAGE}),
+    MembershipRole.MANAGER: frozenset({Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_SCOPED,
+                                      Permission.EMPLOYEES_VIEW_SELF}),
+    MembershipRole.EMPLOYEE: frozenset({Permission.ORG_VIEW, Permission.EMPLOYEES_VIEW_SELF}),
     MembershipRole.VIEWER: frozenset({Permission.ORG_VIEW}),
 }
 

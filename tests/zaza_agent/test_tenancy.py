@@ -105,10 +105,10 @@ def test_bad_slugs_are_rejected(bad):
 
 
 def test_membership_roles_are_only_the_saas_roles():
-    assert {r.value for r in MembershipRole} == {"OWNER", "ADMIN", "MANAGER", "VIEWER"}
+    assert {r.value for r in MembershipRole} == {"OWNER", "ADMIN", "MANAGER", "VIEWER", "EMPLOYEE"}
     for ok in ("OWNER", "ADMIN", "MANAGER", "VIEWER"):
         assert domain.membership_role(ok).value == ok
-    for bad in ("EMPLOYEE", "PLATFORM_SUPERADMIN", "SUPERADMIN", "owner", "", None):
+    for bad in ("PLATFORM_SUPERADMIN", "SUPERADMIN", "owner", "", None):
         with pytest.raises(TenancyError):
             domain.membership_role(bad)
 
@@ -419,8 +419,7 @@ def test_employee_role_values_do_not_become_saas_roles():
     from deskmate.zaza_server.repository import check_employee_fields
 
     check_employee_fields("Alice", "ADMIN", "UTC")  # a valid employee classification ...
-    with pytest.raises(TenancyError):
-        domain.membership_role("EMPLOYEE")          # ... and EMPLOYEE is no SaaS role
+    assert domain.membership_role("EMPLOYEE") is MembershipRole.EMPLOYEE  # explicit membership only
     directory = FakeDirectory()
     org = directory.org("tenant-a")
     no_membership_user = directory.user()
@@ -462,10 +461,10 @@ TENANT_REVISION_SHA256 = {  # the approved tenant schema template; Phase 10C mus
 }
 
 
-def test_tenant_migrations_are_unchanged_and_still_four():
+def test_historical_tenant_migrations_unchanged_and_phase_a_is_additive():
     versions = SERVER / "postgres" / "migrations" / "versions"
     files = sorted(p.name for p in versions.glob("*.py"))
-    assert files == sorted(TENANT_REVISION_SHA256)
+    assert files == sorted([*TENANT_REVISION_SHA256, "0005_workforce_foundation.py"])
     for name, digest in TENANT_REVISION_SHA256.items():
         data = (versions / name).read_bytes().replace(b"\r\n", b"\n")
         assert hashlib.sha256(data).hexdigest() == digest, f"{name} was modified"
@@ -492,8 +491,8 @@ def test_control_and_tenant_chains_are_separate():
 
     assert control.MIGRATIONS_DIR != tenant.MIGRATIONS_DIR
     assert control.VERSION_TABLE == "zaza_control_version" != tenant.VERSION_TABLE
-    assert control.head_revision() == "c0004_sync_rate_limits"
-    assert tenant.head_revision() == "0004_manager_dashboard_auth"
+    assert control.head_revision() == "c0005_employee_membership"
+    assert tenant.head_revision() == "0005_workforce_foundation"
     control_revs = {p.stem for p in (control.MIGRATIONS_DIR / "versions").glob("*.py")}
     assert all(r.startswith("c") for r in control_revs)
     tenant_sql, control_sql = tenant.render_sql(), control.render_sql()

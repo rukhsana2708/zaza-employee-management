@@ -46,6 +46,11 @@ Full design: [PROJECT_PLAN.md](PROJECT_PLAN.md) (scope & phased roadmap),
 
 ## Project status
 
+Phase A workforce identity/authorization foundation is implemented locally for review, **not deployed**.
+See [implementation and compatibility record](docs/zaza/WORKFORCE_PHASE_A.md). New SaaS dashboards,
+tasks, messaging, declarations and reporting expansion remain future phases. Production remains
+shadow/shadow with HSTS disabled; no further production change is approved.
+
 **Under development.** See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md)
 for the current phase and what's implemented so far. As of this writing:
 - **Approved:**

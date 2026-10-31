@@ -1,5 +1,12 @@
 # ZaZa Employee Management System — Architecture
 
+## Phase A workforce foundation (local implementation, 2026-10-31)
+
+See [WORKFORCE_PHASE_A.md](docs/zaza/WORKFORCE_PHASE_A.md) for inspected schema heads,
+implemented identity/profile/hierarchy/authorization boundaries, explicit compatibility and rollback
+matrix, and future-only modules. This code is not deployed. Current production is the approved
+shadow-observation baseline in DEVELOPMENT_STATUS.md; historical specifications below remain context.
+
 **Status:** Specification (Phase 0). No component below is deployed yet.
 **Last updated:** 2026-10-06 (direction update 2026-10-27, below)
 

@@ -9,7 +9,7 @@ Two role vocabularies exist and must never be mixed:
 - ``employees.role`` (tenant database: EMPLOYEE / MANAGER / ADMIN) is a
   business classification of a *monitored employee* inside one customer.
   It grants nothing in the SaaS.
-- :class:`MembershipRole` (control plane: OWNER / ADMIN / MANAGER / VIEWER)
+- :class:`MembershipRole` (control plane: OWNER / ADMIN / MANAGER / VIEWER / EMPLOYEE)
   is a *SaaS user's* permission to administer or view one organization.
 
 There is no conversion between them. ``PLATFORM_SUPERADMIN`` is not a
@@ -48,11 +48,12 @@ class MembershipStatus(str, Enum):
 
 
 class MembershipRole(str, Enum):
-    """SaaS organization roles, strongest first. NOT ``employees.role``."""
+    """Explicit SaaS presets, without numeric hierarchy. NOT ``employees.role``."""
 
     OWNER = "OWNER"      # highest customer-level authority
     ADMIN = "ADMIN"      # organization configuration, employees and managers
-    MANAGER = "MANAGER"  # operational dashboard access (future: team scope)
+    MANAGER = "MANAGER"  # direct-report capability; requires workforce linkage and scope
+    EMPLOYEE = "EMPLOYEE"  # linked employee self-service; no management authority
     VIEWER = "VIEWER"    # read-only reporting
 
 
@@ -87,8 +88,7 @@ def membership_status(value: object) -> MembershipStatus:
 
 
 def membership_role(value: object) -> MembershipRole:
-    """Only OWNER / ADMIN / MANAGER / VIEWER. ``EMPLOYEE`` (an employee
-    classification) and ``PLATFORM_SUPERADMIN`` are refused."""
+    """Only explicit SaaS membership roles; never inferred from employee classification."""
     return _enum(MembershipRole, value, "membership role")
 
 

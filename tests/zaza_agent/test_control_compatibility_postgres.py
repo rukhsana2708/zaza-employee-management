@@ -13,7 +13,7 @@ from deskmate.zaza_server.repository import RepositoryUnavailable
 from deskmate.zaza_server.tenancy.control import migrate
 from deskmate.zaza_server.tenancy.saas_sync import SaasRuntime
 
-from .test_control_compatibility import C3, C4, REVISIONS
+from .test_control_compatibility import C3, C4, HEAD, REVISIONS
 from .test_enrollment_postgres import _enroll, _exec, env  # noqa: F401
 from .test_postgres_integration import usage
 from .test_sync_ratelimit_postgres import control  # noqa: F401
@@ -35,12 +35,14 @@ def test_real_startup_matrix(control, revision, mode, monkeypatch):  # noqa: F81
     settings = control.settings
     if revision == C3:
         command.downgrade(migrate.alembic_config(settings), C3)
-    elif revision != C4:
+    elif revision == C4:
+        command.downgrade(migrate.alembic_config(settings), C4)
+    elif revision != HEAD:
         if revision is None:
             _exec(settings, "DELETE FROM zaza_control_version")
         else:
             _exec(settings, "UPDATE zaza_control_version SET version_num = %s", (revision,))
-    allowed = revision == C4 or (revision == C3 and mode == "off")
+    allowed = revision in {C4, HEAD} or (revision == C3 and mode == "off")
     if allowed:
         runtime = _runtime(settings, mode, monkeypatch)
         runtime.close()
@@ -83,7 +85,7 @@ def test_failed_c0004_restores_revision_constraint_and_rows(control, monkeypatch
         _exec(settings, "INSERT INTO login_attempt_counters (bucket, key_hash, window_start) "
                         "VALUES ('sync_device', repeat('b', 64), now())")
     migrate.upgrade(settings)
-    assert _exec(settings, "SELECT version_num FROM zaza_control_version") == [(C4,)]
+    assert _exec(settings, "SELECT version_num FROM zaza_control_version") == [(HEAD,)]
     _exec(settings, "INSERT INTO login_attempt_counters (bucket, key_hash, window_start) "
                     "VALUES ('sync_device', repeat('b', 64), now())")
 

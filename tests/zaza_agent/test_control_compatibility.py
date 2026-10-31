@@ -13,7 +13,8 @@ from deskmate.zaza_server.tenancy.saas_sync import SaasRuntime
 
 C3 = "c0003_device_enrollment"
 C4 = "c0004_sync_rate_limits"
-REVISIONS = [C3, C4, "c0001_control_plane", "c0002_saas_auth_routing", None,
+HEAD = "c0005_employee_membership"
+REVISIONS = [C3, C4, HEAD, "c0001_control_plane", "c0002_saas_auth_routing", None,
              "unknown", "c0005_future", "0004_manager_dashboard_auth"]
 
 
@@ -26,10 +27,10 @@ def test_runtime_startup_matrix(revision, mode, monkeypatch):
 
     pool = MagicMock()
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", MagicMock(return_value=pool))
-    monkeypatch.setattr(migrate, "schema_status", lambda conn: migrate.SchemaStatus(revision, C4))
+    monkeypatch.setattr(migrate, "schema_status", lambda conn: migrate.SchemaStatus(revision, HEAD))
     monkeypatch.setattr(config, "control_database_settings_from_env", lambda env: DatabaseSettings())
     monkeypatch.setattr(connections, "TenantRepositoryManager", MagicMock())
-    allowed = revision == C4 or (revision == C3 and mode == "off")
+    allowed = revision in {HEAD, C4} or (revision == C3 and mode == "off")
     if allowed:
         runtime = SaasRuntime.from_env({"ZAZA_SYNC_LIMIT_MODE": mode})
         try:
@@ -40,7 +41,7 @@ def test_runtime_startup_matrix(revision, mode, monkeypatch):
         with pytest.raises(RepositoryUnavailable, match="incompatible with ZAZA_SYNC_LIMIT_MODE"):
             SaasRuntime.from_env({"ZAZA_SYNC_LIMIT_MODE": mode})
         pool.close.assert_called_once()
-    assert migrate.SchemaStatus(revision, C4).up_to_date == (revision == C4)
+    assert migrate.SchemaStatus(revision, HEAD).up_to_date == (revision == HEAD)
 
 
 def test_operator_repository_remains_strict(monkeypatch):
@@ -83,6 +84,6 @@ def test_connected_preflight_uses_runtime_compatibility(revision, mode, monkeypa
 
     monkeypatch.setattr(psycopg, "connect", MagicMock())
     monkeypatch.setattr(config, "control_database_settings_from_env", lambda env: DatabaseSettings())
-    monkeypatch.setattr(migrate, "schema_status", lambda conn: migrate.SchemaStatus(revision, C4))
-    expected = OK if revision == C4 or (revision == C3 and mode == "off") else FAIL
+    monkeypatch.setattr(migrate, "schema_status", lambda conn: migrate.SchemaStatus(revision, HEAD))
+    expected = OK if revision in {HEAD, C4} or (revision == C3 and mode == "off") else FAIL
     assert _control_schema_check({"ZAZA_SYNC_LIMIT_MODE": mode})[0] == expected

@@ -414,9 +414,10 @@ def test_grant_script_is_least_privilege_and_covers_every_table():
     assert app["work_schedules"] == {"SELECT", "INSERT", "UPDATE", "DELETE"}
     assert all(p <= {"SELECT", "INSERT", "UPDATE"} for t, p in app.items() if t != "work_schedules")
     assert "ALL TABLES IN SCHEMA public TO" not in text  # explicit tables only
-    created = set()
-    for migration in (ROOT / "deskmate" / "zaza_server" / "postgres" / "migrations" / "versions").glob("*.py"):
-        created |= set(re.findall(r"CREATE TABLE (\w+)", migration.read_text(encoding="utf-8")))
+    from deskmate.zaza_server.postgres import migrate
+
+    # Rendered DDL also covers catalog tables emitted by migration loops.
+    created = set(re.findall(r"CREATE TABLE (\w+)", migrate.render_sql()))
     assert created and created | {"alembic_version"} == set(app), "every migrated table needs an explicit grant"
     for word in ("TRUNCATE", "SUPERUSER", "CREATE", "ALTER", "DROP"):
         assert word not in text

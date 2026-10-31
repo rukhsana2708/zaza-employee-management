@@ -103,3 +103,12 @@ def render_sql(revision: str = "head") -> str:
     buffer = io.StringIO()
     command.upgrade(alembic_config(output=buffer), revision, sql=True)
     return buffer.getvalue()
+
+
+def runtime_compatible(status: SchemaStatus) -> bool:
+    """Monitoring runtime only; operator status remains strict and unknown heads fail closed."""
+    scripts = ScriptDirectory.from_config(alembic_config())
+    if status.head != scripts.get_current_head():
+        return False
+    return status.up_to_date or status.current in getattr(
+        scripts.get_revision(status.head).module, "compatible_previous_revisions", ())
