@@ -17,7 +17,10 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from deskmate.zaza_server.config import ConfigError, read_env_file  # noqa: E402
-from deskmate.zaza_server.dashboard.config import DashboardSettings, dashboard_settings_from_env  # noqa: E402
+from deskmate.zaza_server.dashboard.config import (  # noqa: E402
+    DashboardSettings,
+    dashboard_settings_from_env,
+)
 from deskmate.zaza_server.dashboard.ratelimit import LoginLimits, LoginRateLimiter  # noqa: E402
 from deskmate.zaza_server.dashboard.routes import mount_dashboard  # noqa: E402
 from deskmate.zaza_server.dashboard.security import COOKIE_NAME  # noqa: E402
@@ -344,7 +347,35 @@ def test_success_resets_and_passwords_are_never_logged(caplog):
         for _ in range(3):
             _login(client, "manager", secret)
     assert secret not in caplog.text and PASSWORD not in caplog.text
-    assert "reached the rate limit" in caplog.text  # the client address only
+    assert "reached the rate limit" in caplog.text
+    assert "client_ref=" in caplog.text
+    assert "testclient" not in caplog.text
+
+
+def test_dashboard_rate_limit_logs_reference_instead_of_public_ip(caplog):
+    from deskmate.zaza_server.logs import log_reference
+
+    d = standard()
+    d.manager()
+    client = _client(_app(d), peer="127.0.0.1")
+    address = "203.0.113.87"
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert _login(client, "manager", "wrong-private-password", {"X-Forwarded-For": address}).status_code == 401
+    assert address not in caplog.text and "wrong-private-password" not in caplog.text
+    assert f"client_ref={log_reference(address)}" in caplog.text
+
+
+def test_csrf_warning_logs_route_template_not_private_path(caplog):
+    d = standard()
+    d.manager()
+    client = _client(_app(d))
+    assert _login(client, "manager", PASSWORD).status_code == 303
+    private = "employee-private-zzd_private-path-value"
+    with caplog.at_level(logging.WARNING):
+        assert client.post(f"/manager/schedules/{private}/remove", data={"csrf_token": "invalid"}).status_code == 403
+    assert private not in caplog.text
+    assert "route=/manager/schedules/{schedule_id}/remove" in caplog.text
 
 
 # ─── HTTPS through the proxy: same-origin checks and Secure cookies ────────

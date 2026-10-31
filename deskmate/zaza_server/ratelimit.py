@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .config import ConfigError
+from .logs import log_reference as digest
 
 logger = logging.getLogger("zaza_server.ratelimit")
 
@@ -160,11 +161,6 @@ def sync_limit_settings_from_env(env: dict | None = None) -> SyncLimitSettings:
             except ValueError:
                 raise ConfigError(f"{name} must be an integer") from None
     return SyncLimitSettings(**kwargs)
-
-
-def digest(text: str) -> str:
-    """A short, non-reversible label for logs (never the identifier itself)."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
 
 
 def device_key(organization_id: object, device_id: str | None, route_digest: str) -> str:

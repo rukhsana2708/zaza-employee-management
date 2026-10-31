@@ -1,6 +1,6 @@
 # Sync API rate limiting and HSTS: design (revision 2, approved with corrections)
 
-**Status (2026-10-31): limiter/HSTS and Sequence B compatibility implemented in source and tests; NOT deployed or migrated in production.**
+**Status (2026-10-31): Sequence B Stages A-D completed; c0004, device/IP shadow, HSTS 0. Enforcement is not approved. The privacy logging hotfix is NOT deployed.**
 Cloud Armor stays unavailable (project quota 0), so protection lives in the application.
 
 Revision 2 changes: the authenticated limit is one deterministic shared counter (no local watermark); the client IP
@@ -130,8 +130,10 @@ exactly one header value that parses as a single IPv4 or IPv6 literal. Anything 
 Behaviour when the client IP is unverified: the per-IP limiters are skipped (never collapsing everyone into one shared
 bucket), a counter and warning are logged, and the device limiter still works because it does not use the IP.
 
-**Verification gate (the IP limiter stays in `shadow` until this passes).** In shadow mode the application logs a short
-digest of the derived IP, never the address. Compare it with Cloud Logging's `httpRequest.remoteIp` for:
+**Verification gate (the IP limiter stays in `shadow` until this passes).** Normal traffic currently emits no derived-IP
+diagnostic. Limiter event subjects use private process-scoped references, which cannot be independently reproduced from
+Cloud Logging's `httpRequest.remoteIp`. A separately reviewed, non-enforcing privacy-safe diagnostic is required for the
+full live gate; do not export the process key or raw client addresses to make a comparison. The gate must verify:
 1. normal requests;
 2. requests with a deliberately forged `X-Forwarded-For`;
 3. requests with a deliberately forged `X-Zaza-Client-IP` (this proves the load balancer overwrites a client-sent value);
@@ -309,7 +311,7 @@ Implemented in the repository as specified above:
   Read-only plan: 0 to add, 2 to change, 0 to destroy.
 - Agent: **no change** (a 429 is already a retryable, non-auth failure that honours `Retry-After`; a test proves it).
 
-## 13. Sequence B production rollout (NOT executed)
+## 13. Sequence B production rollout
 
 Use a NEW immutable image built from the compatibility-fix commit. The prior image from `e0a3372`,
 `sha256:093b4fde20b315af951159c54d614781eddc59f671c76315ea65d42eb6e7c246`, is superseded for deployment
@@ -333,7 +335,7 @@ terraform plan -target='google_cloud_run_v2_job.migrate[0]'
 terraform apply -target='google_cloud_run_v2_job.migrate[0]'
 ```
 
-These are future operator instructions, not actions performed by this change. Run `control-db-status` through
+These are rollout reference instructions; Stages A-D were completed before the privacy hotfix. Run `control-db-status` through
 the new job: production must still be c0003. **Do NOT run control-migrate yet.** Do not update the job with
 `gcloud run jobs update`: Terraform configuration, state and actual image must stay aligned.
 
@@ -402,3 +404,16 @@ the old CHECK is dropped and prove the old revision, all counter constraints and
 The downgrade deletes only `sync_device` rows before restoring the prior CHECK, preserving other counter buckets.
 Tests exercise the same compatible server across c0003 -> c0004 -> c0003 and a fresh c0003 cold start. No production
 migration or rollback is performed by these tests.
+
+## 15. Stage D observations and privacy hotfix
+
+Production revision `zaza-server-00005-gxm` serves the compatibility image with schema c0004, device/IP shadow
+and HSTS 0. Stage D is operationally approved; enforcement is not approved.
+
+The successful-batch logger emitted raw device IDs in both the baseline and Stage D logs. The focused code-only
+hotfix and audit are documented in [PRIVACY_LOGGING_HOTFIX.md](PRIVACY_LOGGING_HOTFIX.md). Its image requires
+separate deployment approval; production settings and existing logs are unchanged by this work.
+
+Latency samples: baseline median **68.7 ms from 10 requests**; shadow median **136.9 ms from 5 requests**, shadow
+maximum **236.8 ms**. These samples are too small to establish a reliable regression. Gather a larger normal
+shadow-mode sample before considering optimization. Keep the shared PostgreSQL write and existing thresholds.

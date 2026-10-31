@@ -53,6 +53,7 @@ from deskmate.zaza.sync.protocol import (
 
 from .auth import AuthError, authenticate_request
 from .http_security import trusted_client_ip
+from .logs import log_reference
 from .ratelimit import RATE_LIMIT_ERROR, RateLimitExceeded
 from .repository import CentralRepository, DeviceRecord, RepositoryUnavailable
 from .service import SyncService, validation_message
@@ -103,8 +104,9 @@ def _new_app() -> FastAPI:
 
     @app.exception_handler(RepositoryUnavailable)
     async def _unavailable(request: Request, exc: RepositoryUnavailable) -> JSONResponse:
-        # The message is already free of credentials; keep details server-side.
-        logger.error("storage unavailable: %s", exc)
+        # Driver exception text can include connection details or input values.
+        # Keep severity/category and process-local correlation without forwarding it.
+        logger.error("storage unavailable (%s; error_ref=%s)", type(exc).__name__, log_reference(str(exc)))
         return _error(503, "storage unavailable", headers={"Retry-After": "30"})
 
     @app.get(HEALTH_PATH)
@@ -139,8 +141,8 @@ def _install_sync_api(app: FastAPI, access: DeviceAccess, max_body_bytes: int) -
             except RateLimitExceeded as exc:
                 return _rate_limited(exc)
             except AuthError as exc:
-                logger.warning("sync rejected: %s (device header %r)", exc.error,
-                               (request.headers.get(DEVICE_ID_HEADER) or "")[:64])
+                logger.warning("sync rejected: %s (device_ref=%s)", exc.error,
+                               log_reference(request.headers.get(DEVICE_ID_HEADER)))
                 return _error(exc.status_code, exc.error, headers={"WWW-Authenticate": "Bearer"})
             try:
                 body = await _read_body(request, max_body_bytes)
@@ -176,7 +178,7 @@ def _single_repository_access(repo: CentralRepository) -> DeviceAccess:
         except RepositoryUnavailable:
             raise
         except Exception:  # noqa: BLE001 — bookkeeping must not fail an authenticated request
-            logger.warning("could not update last_seen_at for %s", ctx.device.device_id)
+            logger.warning("could not update last_seen_at (device_ref=%s)", log_reference(ctx.device.device_id))
         yield ctx.device, service
 
     return access

@@ -206,6 +206,48 @@ def test_auth_failures_and_successes_never_log_tokens(srv, caplog):
     assert "Bearer" not in caplog.text
 
 
+def test_successful_batch_logs_only_safe_device_reference(srv, caplog):
+    from deskmate.zaza_server.logs import log_reference
+
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    body = batch(period())
+    response = post(srv, body)
+    assert response.status_code == 200 and statuses(response) == ["accepted"]
+    messages = [r for r in caplog.records if r.name == "zaza_server.sync"]
+    assert len(messages) == 1
+    assert messages[0].getMessage() == (
+        f"batch {body['batch_id']} device_ref={log_reference('device-1')} records=1 accepted=1")
+    for sensitive in ("device-1", "emp-1", srv.token, hash_token(srv.token), "Bearer"):
+        assert sensitive not in caplog.text
+        assert sensitive not in repr(messages[0].args)
+
+
+def test_rejected_untrusted_device_header_is_never_logged(srv, caplog):
+    from deskmate.zaza_server.logs import log_reference
+
+    caplog.set_level(logging.WARNING)
+    attempted = "zzd_credential_like_value_in_untrusted_device_header"
+    response = post(srv, batch(period()), headers=srv.headers(device_id=attempted))
+    assert response.status_code == 401
+    assert attempted not in caplog.text and srv.token not in caplog.text
+    assert f"device_ref={log_reference(attempted)}" in caplog.text
+
+
+def test_connectivity_warning_does_not_log_device_or_exception(srv, caplog, monkeypatch):
+    from deskmate.zaza_server.logs import log_reference
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("employee-private token=zzd_never_log_this")
+
+    monkeypatch.setattr(srv.repo, "touch_device", fail)
+    with caplog.at_level(logging.WARNING):
+        assert srv.client.get(DEVICE_PATH, headers=srv.headers()).status_code == 200
+    assert f"device_ref={log_reference('device-1')}" in caplog.text
+    for sensitive in ("device-1", "emp-1", "employee-private", "zzd_never_log_this", srv.token):
+        assert sensitive not in caplog.text
+
+
 # ─── idempotency & versions ────────────────────────────────────────────────
 
 

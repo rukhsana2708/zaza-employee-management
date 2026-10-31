@@ -21,10 +21,13 @@ Environment:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import logging.handlers
 import os
 import re
+import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +38,25 @@ MiB = 1024 * 1024
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 MASK = "***"
+
+# A log reference is deliberately scoped to this process. A public unkeyed
+# hash of a predictable device ID/IP can be recovered by guessing candidates.
+# This key is never configured, persisted or logged; no managed secret/configuration is needed.
+_LOG_REFERENCE_KEY = secrets.token_bytes(32)
+
+
+def log_reference(value: str | None) -> str:
+    """Opaque 16-hex HMAC reference, stable only within this process.
+
+    For operational correlation, not authentication or database keys. References
+    change on process restart and differ across workers/instances. Missing values
+    use a fixed sentinel. The input (including untrusted headers) is never emitted.
+    """
+    if not value:
+        return "-"
+    return hmac.new(_LOG_REFERENCE_KEY, b"zaza-log-ref-v1\x00" + value.encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:16]
+
 
 _PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.DOTALL), MASK),

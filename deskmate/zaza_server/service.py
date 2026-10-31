@@ -21,6 +21,7 @@ from deskmate.zaza.sync.protocol import (
     SyncBatchResponse,
 )
 
+from .logs import log_reference
 from .repository import CentralRepository, DeviceRecord, IncomingRecord, UpsertOutcome
 
 logger = logging.getLogger("zaza_server.sync")
@@ -107,8 +108,8 @@ class SyncService:
         counts = Counter(r.status for r in final)
         summary = BatchSummary(**{status: counts.get(status, 0) for status in BatchSummary.model_fields})
         logger.info(
-            "batch %s device=%s records=%d %s",
-            batch.batch_id, device.device_id, len(final),
+            "batch %s device_ref=%s records=%d %s",
+            batch.batch_id, log_reference(device.device_id), len(final),
             " ".join(f"{k}={v}" for k, v in summary.model_dump().items() if v),
         )
         return SyncBatchResponse(

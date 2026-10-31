@@ -1,6 +1,22 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-31 (Sequence B control schema compatibility; not deployed)
+**Last updated:** 2026-10-31 (privacy logging hotfix; code/tests/image only, not deployed)
+
+## Privacy logging hotfix (2026-10-31; NOT deployed)
+
+- Fixed raw device ID in successful batches, rejected untrusted device headers and a legacy connectivity warning.
+  Hardened storage-error logging, legacy dashboard client-IP warnings and concrete CSRF paths.
+- Neutral `logs.log_reference`: private in-process HMAC key, 16-hex reference, stable within a process and rotated
+  on restart. Limiter log subjects reuse it; shared database counter keys and all limiter behavior remain unchanged.
+- Focused audit, reference limitations and regression scope: docs/zaza/PRIVACY_LOGGING_HOTFIX.md.
+- Approved production after Sequence B Stages A-D: revision `zaza-server-00005-gxm`, schema c0004,
+  image `sha256:2d35877e2706c7e8d351a18558a68caf9b21ec1a1f725ed46cb6163297302b24`;
+  device/IP modes shadow, HSTS 0. Enforcement NOT approved. This hotfix does not change production.
+- Stage D observational latency: baseline median 68.7 ms (10 requests); shadow median 136.9 ms (5 requests),
+  shadow max 236.8 ms. Too small to establish a reliable regression. Keep the shared write; collect a larger sample.
+- Validation (disposable PostgreSQL 16): targeted logging/sync/limiter suite 276 passed; complete
+  PostgreSQL-enabled ZaZa suite 1730 passed, 12 skipped. Changed-file lint and diff checks passed.
+- All six protected user-work items remain untouched and uncommitted.
 
 ## Sequence B - control schema compatibility (2026-10-31; code/tests only)
 

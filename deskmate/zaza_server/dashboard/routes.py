@@ -28,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import http_security
 from ..attendance.labels import FLAG_NOTES, QUALITY_LABELS, STATUS_LABELS, STATUS_NOTES
+from ..logs import log_reference
 from .analysis import Analysis
 from .auth import LOGIN_FAILED, ManagerAuth, SessionContext
 from .charts import render as render_chart
@@ -220,7 +221,8 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
         except ValueError as exc:
             return ctx, None, render("error.html", ctx, 400, message=str(exc).capitalize() + ".")
         if not same_origin(request) or not ctx.csrf_ok(one(data, "csrf_token")):
-            logger.warning("dashboard: rejected a request without a valid CSRF token (%s)", request.url.path)
+            logger.warning("dashboard: rejected a request without a valid CSRF token (route=%s)",
+                           getattr(request.scope.get("route"), "path", "unknown"))
             return ctx, None, render("error.html", ctx, 403,
                                      message="This form has expired or was not sent from the dashboard. "
                                              "Reload the page and try again.")
@@ -264,7 +266,7 @@ def build_router(service: DashboardService, auth: ManagerAuth, settings: Dashboa
         result = await run_in_threadpool(auth.login, username, (data.get("password") or [""])[0])
         if result is None:
             if reached:
-                logger.warning("dashboard: sign-in attempts from %s reached the rate limit", client)
+                logger.warning("dashboard: sign-in attempts from client_ref=%s reached the rate limit", log_reference(client))
             return login_page(request, LOGIN_FAILED, 401)
         limiter.success(client, username)
         token, ctx = result
