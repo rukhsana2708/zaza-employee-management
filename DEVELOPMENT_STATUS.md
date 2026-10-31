@@ -1,6 +1,23 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-29 (Phase 10G-E-A — tenant-aware SaaS employee operator, code only)
+**Last updated:** 2026-10-31 (Sequence B control schema compatibility; not deployed)
+
+## Sequence B - control schema compatibility (2026-10-31; code/tests only)
+
+- New server accepts c0003 ONLY with `ZAZA_SYNC_LIMIT_MODE=off`; shadow/enforce require c0004.
+  c0004 accepts all three modes. Compatibility is declared explicitly by c0004; no revision ordering or future acceptance.
+- Startup and connected runtime preflight share the rule. Exact migration status, operator and tenant checks stay strict.
+- Added startup/preflight matrix and disposable PostgreSQL tests for atomic migration failure, upgrade/downgrade,
+  restored constraints, deleted sync rows, continued authenticated serving and cold starts against c0003.
+- Rollout: new migration job image only (0/1/0); new compatible server/header with limiter off (0/2/0);
+  migrate only after health verification (no Terraform changes); enable device shadow (0/1/0). IP shadow; HSTS 0.
+- Rollback: compatible server stays serving, limiter off, downgrade to c0003, verify, THEN deploy old c0003-only image.
+- Previous `e0a3372` image `sha256:093b4fde20b315af951159c54d614781eddc59f671c76315ea65d42eb6e7c246`
+  is superseded and MUST NOT be deployed. Full procedure: docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md sections 13-14.
+- Validation: complete ZaZa suite with disposable PostgreSQL 16: 1710 passed, 12 skipped. Final targeted
+  compatibility/PostgreSQL/preflight rerun: 157 passed (including all 26 new PostgreSQL regressions).
+  Lint passed for all changed Python files.
+- Production not deployed/migrated/applied. Windows agent and existing user-work files unchanged.
 
 ## Phase 10H-B — edge apply (PARTIAL, 2026-10-30)
 

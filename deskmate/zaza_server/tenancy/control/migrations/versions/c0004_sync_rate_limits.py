@@ -23,6 +23,10 @@ down_revision = "c0003_device_enrollment"
 branch_labels = None
 depends_on = None
 
+# Runtime expand compatibility only; migration status remains an exact-head check.
+# c0003 lacks sync_device, so even shadow mode must wait for this migration.
+compatible_previous_revisions = {"c0003_device_enrollment": frozenset({"off"})}
+
 PREVIOUS_BUCKETS = ("identity", "global", "enrollment_code", "enrollment_global")
 NEW_BUCKETS = ("sync_device",)
 

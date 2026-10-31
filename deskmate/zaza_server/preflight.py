@@ -165,7 +165,11 @@ _ADMIN_USERS = ("postgres", "cloudsqlsuperuser", "cloudsqladmin")
 def _check_cloud_sql_database(add, env: dict, prefix: str, label: str):  # noqa: ANN001, ANN202
     """Shared rules for the activity/tenant base settings (``ZAZA_DB_*``) and
     the control database (``ZAZA_CONTROL_*``). Returns the settings or None."""
-    from .cloudsql import CloudSqlConfigError, instance_connection_name, is_cloudsql_socket  # noqa: PLC0415
+    from .cloudsql import (  # noqa: PLC0415
+        CloudSqlConfigError,
+        instance_connection_name,
+        is_cloudsql_socket,
+    )
 
     instance = (env.get(f"{prefix}CLOUDSQL_INSTANCE_CONNECTION_NAME") or "").strip()
     if not instance:
@@ -235,7 +239,7 @@ def check_cloud_run_config(env: dict | None = None, *, connect: bool = False) ->
         add(OK, "PORT", f"{port or '8080 (default)'} on 0.0.0.0 (set by Cloud Run)")
 
     db = _check_cloud_sql_database(add, env, "ZAZA_", "database")
-    control = _check_cloud_sql_database(add, env, "ZAZA_CONTROL_", "control database")
+    _check_cloud_sql_database(add, env, "ZAZA_CONTROL_", "control database")
 
     from .tenancy.connections import connection_budget, tenant_pool_limits_from_env  # noqa: PLC0415
 
@@ -325,6 +329,14 @@ def _control_schema_check(env: dict) -> tuple[str, str, str]:
             status = control_migrate.schema_status(conn)
     except psycopg.Error as exc:
         return FAIL, "control schema", f"cannot connect: {settings.scrub(str(exc)).strip()[:200]}"
-    return (OK if status.up_to_date else FAIL, "control schema",
-            f"{status.current or '(empty)'}; latest {status.head}"
-            + ("" if status.up_to_date else " (run the control-migrate job)"))
+    from .ratelimit import sync_limit_settings_from_env  # noqa: PLC0415
+
+    try:
+        mode = sync_limit_settings_from_env(env).mode
+        compatible = control_migrate.runtime_compatible(status, sync_limit_mode=mode)
+    except ConfigError as exc:
+        return FAIL, "control schema", str(exc)
+    return (OK if compatible else FAIL, "control schema",
+            f"{status.current or '(empty)'}; latest {status.head}; ZAZA_SYNC_LIMIT_MODE={mode}"
+            + (" (runtime compatible; migration still pending)" if compatible and not status.up_to_date else "")
+            + ("" if compatible else " (incompatible schema/configuration; follow the approved rollout order)"))

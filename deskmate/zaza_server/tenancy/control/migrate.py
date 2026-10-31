@@ -35,6 +35,24 @@ class SchemaStatus:
         return self.current == self.head
 
 
+def runtime_compatible(status: SchemaStatus, *, sync_limit_mode: str) -> bool:
+    """Accept only the exact head or a configuration allowed by THAT head's declaration.
+
+    No ordering, ancestry inference or transitive compatibility. Operators and
+    tenant migrations keep using SchemaStatus.up_to_date (exact equality).
+    """
+    from ...ratelimit import SyncLimitSettings  # noqa: PLC0415
+
+    SyncLimitSettings(mode=sync_limit_mode)  # invalid modes must never become a bypass
+    if status.up_to_date:
+        return True
+    scripts = ScriptDirectory.from_config(alembic_config())
+    if status.head != scripts.get_current_head():
+        return False
+    declaration = getattr(scripts.get_revision(status.head).module, "compatible_previous_revisions", {})
+    return sync_limit_mode in declaration.get(status.current, ())
+
+
 def alembic_config(settings: DatabaseSettings | None = None, *, connection=None, output=None) -> Config:  # noqa: ANN001
     cfg = Config(output_buffer=output) if output is not None else Config()
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))

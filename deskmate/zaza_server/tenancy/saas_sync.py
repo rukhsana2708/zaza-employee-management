@@ -140,28 +140,36 @@ class SaasRuntime:
     @classmethod
     def from_env(cls, env: dict | None = None) -> SaasRuntime:
         from ..config import database_settings_from_env  # noqa: PLC0415
+        from ..ratelimit import sync_limit_settings_from_env  # noqa: PLC0415
         from .config import control_database_settings_from_env  # noqa: PLC0415
         from .connections import tenant_pool_limits_from_env  # noqa: PLC0415
         from .control_repository import PostgresControlRepository  # noqa: PLC0415
         from .device_routes import PostgresDeviceRoutes  # noqa: PLC0415
-        from .saas_auth import PostgresAuthStore, SaasAuthService, saas_auth_settings_from_env  # noqa: PLC0415
+        from .saas_auth import (  # noqa: PLC0415
+            PostgresAuthStore,
+            SaasAuthService,
+            saas_auth_settings_from_env,
+        )
 
         env = dict(os.environ if env is None else env)
+        limit_settings = sync_limit_settings_from_env(env)
         control = PostgresControlRepository(control_database_settings_from_env(env), actor_type="SYSTEM",
-                                            actor_id="saas")
+                                            actor_id="saas", runtime_sync_limit_mode=limit_settings.mode)
         try:
             manager = TenantRepositoryManager(database_settings_from_env(env), tenant_pool_limits_from_env(env))
             manager.start_reaper()
-            from .enrollment import EnrollmentService, PostgresEnrollmentStore, enrollment_settings_from_env  # noqa: PLC0415
-
-            from ..ratelimit import SyncRateLimiter, sync_limit_settings_from_env  # noqa: PLC0415
+            from .enrollment import (  # noqa: PLC0415
+                EnrollmentService,
+                PostgresEnrollmentStore,
+                enrollment_settings_from_env,
+            )
 
             resolver, store = TenantResolver(control), PostgresAuthStore(control)
             return cls(control=control, resolver=resolver, manager=manager, routes=PostgresDeviceRoutes(control),
                        auth=SaasAuthService(store, saas_auth_settings_from_env(env)),
                        enrollment=EnrollmentService(PostgresEnrollmentStore(control), resolver, manager, store,
                                                     enrollment_settings_from_env(env)),
-                       limiter=SyncRateLimiter(sync_limit_settings_from_env(env), store))
+                       limiter=SyncRateLimiter(limit_settings, store))
         except BaseException:
             control.close()
             raise

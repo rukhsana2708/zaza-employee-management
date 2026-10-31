@@ -117,7 +117,7 @@ class PostgresControlRepository:
     pool (the control plane is not on the hot path of every query)."""
 
     def __init__(self, settings: DatabaseSettings, *, actor_type: str = "SYSTEM", actor_id: str | None = None,
-                 require_current_schema: bool = True) -> None:
+                 require_current_schema: bool = True, runtime_sync_limit_mode: str | None = None) -> None:
         from psycopg.rows import dict_row  # noqa: PLC0415
         from psycopg_pool import ConnectionPool, PoolTimeout  # noqa: PLC0415
 
@@ -141,14 +141,19 @@ class PostgresControlRepository:
                     status = migrate.schema_status(conn)
             except PoolTimeout:
                 raise RepositoryUnavailable(f"cannot connect to the control database {settings.display()}") from None
+            compatible = (status.up_to_date if runtime_sync_limit_mode is None else
+                          migrate.runtime_compatible(status, sync_limit_mode=runtime_sync_limit_mode))
         except BaseException:
             self._pool.close()
             raise
-        if require_current_schema and not status.up_to_date:
+        if require_current_schema and not compatible:
             self._pool.close()
             raise RepositoryUnavailable(
                 f"control schema is at {status.current or 'nothing (empty database)'}, this server needs "
-                f"{status.head}; run `python -m deskmate.zaza_server control-migrate` first")
+                f"{status.head}; "
+                + (f"incompatible with ZAZA_SYNC_LIMIT_MODE={runtime_sync_limit_mode}; "
+                   "c0003 requires off; shadow/enforce require c0004. " if runtime_sync_limit_mode is not None else "")
+                + "run `python -m deskmate.zaza_server control-migrate` only in the approved rollout order")
 
     def close(self) -> None:
         self._pool.close()

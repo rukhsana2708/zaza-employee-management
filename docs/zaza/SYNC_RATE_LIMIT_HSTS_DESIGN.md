@@ -1,6 +1,6 @@
 # Sync API rate limiting and HSTS: design (revision 2, approved with corrections)
 
-**Status: DESIGN ONLY (2026-10-31). Nothing here is implemented, applied or deployed.**
+**Status (2026-10-31): limiter/HSTS and Sequence B compatibility implemented in source and tests; NOT deployed or migrated in production.**
 Cloud Armor stays unavailable (project quota 0), so protection lives in the application.
 
 Revision 2 changes: the authenticated limit is one deterministic shared counter (no local watermark); the client IP
@@ -216,7 +216,8 @@ unless explicitly approved later.
 
 **Database:** one control migration, **`c0004`**, required. It follows the precedent of `c0003`: drop and re-add the CHECK
 `login_attempt_counters_bucket_valid` to allow the new bucket `sync_device` as well as the existing ones. Additive, on a tiny
-table, run with the `zaza-migrate` job (`control-migrate`) *before* the new image serves traffic. **No new table.**
+table. Follow Sequence B below: deploy the compatible server with the limiter off BEFORE running
+`control-migrate`. **No new table.**
 
 **Terraform (production):**
 - `edge.tf`: `google_compute_backend_service.edge[0]` gets `custom_request_headers = ["X-Zaza-Client-IP: {client_ip_address}"]`
@@ -230,9 +231,9 @@ table, run with the `zaza-migrate` job (`control-migrate`) *before* the new imag
 
 **Agent:** none required, so no installer rebuild.
 
-**Deployment order:** build the image, run `control-migrate` (c0004), apply Terraform with the header and `sync_limit_mode=shadow`
-and HSTS off, run the verification gate in section 3, observe a week, move the device limiter to `enforce`, then the IP
-limiter, then start HSTS at 300 s and ramp.
+**Deployment order:** follow the staged Sequence B in section 13. Deploy the compatible server with the limiter off
+against c0003, migrate to c0004 only after health verification, then enable shadow mode. Never use the original
+migration-first sequence with the old c0003-only server.
 
 ## 9. Tests
 
@@ -308,63 +309,96 @@ Implemented in the repository as specified above:
   Read-only plan: 0 to add, 2 to change, 0 to destroy.
 - Agent: **no change** (a 429 is already a retryable, non-auth failure that honours `Retry-After`; a test proves it).
 
-## 13. Future production deployment plan (NOT executed)
+## 13. Sequence B production rollout (NOT executed)
 
-1. Commit and push; build the image from that commit on Cloud Build and record the digest.
-2. Update ONLY the `zaza-migrate` job to the new image (targeted), run `control-migrate`, and confirm the control schema is at
-   `c0004_sync_rate_limits` (`control-db-status`). The old service keeps running: the migration is additive.
-3. Set the new image digest in the local `terraform.tfvars`; `terraform plan` must show exactly 0 to add, 2 to change, 0 to
-   destroy (the Cloud Run service, and the load-balancer backend for the header). Apply.
-   Settings for the first deployment: `sync_limit_mode = "shadow"`, `sync_limit_ip_mode = "shadow"`, `hsts_max_age_seconds = 0`.
-4. Run the client-IP verification gate (section 3) and watch the shadow telemetry for at least a week.
-5. `sync_limit_mode = "enforce"` (device limiter). Re-check.
-6. `sync_limit_ip_mode = "enforce"` only after the gate passed.
-7. `hsts_max_age_seconds = 300`, then ramp 86,400, 604,800, 2,592,000, 31,536,000, each after a clean observation period.
+Use a NEW immutable image built from the compatibility-fix commit. The prior image from `e0a3372`,
+`sha256:093b4fde20b315af951159c54d614781eddc59f671c76315ea65d42eb6e7c246`, is superseded for deployment
+and MUST NOT be deployed. Its Cloud Build was `7c6dba04-3755-470d-91f6-ec439ad3be55`.
 
-## 14. Deployment sequencing finding (2026-10-31, before any production change)
+The control migration head declares `c0003_device_enrollment` as an explicit compatible previous revision, ONLY
+for `ZAZA_SYNC_LIMIT_MODE=off`. Shadow writes counters too, so shadow and enforce require c0004. At c0004 all
+three modes work. Empty, unrelated older, unknown and future revisions are rejected. Compatibility is neither
+numeric ordering nor inferred ancestry. `SchemaStatus.up_to_date`, operator repository checks, tenant schema
+checks and `control-db-status` remain exact-head checks; a c0003 database still reports migration pending.
+The connected runtime preflight uses the same configuration-aware compatibility rule as server startup.
 
-**Image built, not deployed:** commit `e0a3372`, Cloud Build `7c6dba04-3755-470d-91f6-ec439ad3be55` (SUCCESS), digest
-`sha256:093b4fde20b315af951159c54d614781eddc59f671c76315ea65d42eb6e7c246`. The image carries `c0004_sync_rate_limits` as its
-control head; defaults are limiter `off`, IP mode `shadow`, HSTS `0`. No service or job uses it yet.
+### Stage A - migration job image only
 
-**Finding (proven on a disposable PostgreSQL with the deployed code from `a2b6f79`):** the server requires the control schema to
-equal its own head at start-up (`SchemaStatus.up_to_date` is `current == head`, checked when the control repository opens). So
-the match is strict in BOTH directions:
+Set the NEW digest in local `terraform.tfvars` (`container_image` is shared by service and job). Keep device mode
+`off`, IP mode `shadow`, HSTS `0`. Use Terraform itself to move only the job:
 
-| Schema | Deployed code (head c0003) | New code (head c0004) |
-|---|---|---|
-| c0003 | starts | **refuses to start** ("this server needs c0004") |
-| c0004 | **refuses to start** ("this server needs c0003") | starts |
+```sh
+terraform plan -target='google_cloud_run_v2_job.migrate[0]'
+# Review: 0 add / 1 change / 0 destroy; migration-job image ONLY.
+terraform apply -target='google_cloud_run_v2_job.migrate[0]'
+```
 
-The migration is data-compatible (the CHECK only gets wider; every old bucket still works against it), and already-running
-instances keep serving (the check happens once, at start). But **any new instance of the old revision started after the
-migration fails**, and Cloud Run runs with `min_instances = 0`, so a cold start or scale-out in the window between
-`control-migrate` and the new revision would not come up. Agents would queue and retry (no data loss), but sync would be
-degraded until the new revision serves.
+These are future operator instructions, not actions performed by this change. Run `control-db-status` through
+the new job: production must still be c0003. **Do NOT run control-migrate yet.** Do not update the job with
+`gcloud run jobs update`: Terraform configuration, state and actual image must stay aligned.
 
-**Recommended fix (needs approval; code, tests, a new image):** make additive migrations expand/contract-safe. The control
-schema check accepts the head OR a declared compatible previous revision (`c0004` declares `c0003`). Then the order is safe with
-no window: new server first, migration second. The job (`control-migrate`, `control-db-status`) is unaffected: it never uses the
-strict check.
+### Stage B - compatible server first
 
-**Terraform drift:** `container_image` is ONE variable used by both the `zaza-server` service and the `zaza-migrate` job. Move the
-job through Terraform itself, not `gcloud`: set the new digest in the local `terraform.tfvars`, then
-`terraform apply -target='google_cloud_run_v2_job.migrate[0]'` (read-only plan: 0 to add, 1 to change, 0 to destroy, the image only).
-State, configuration and reality then agree for the job, and the service shows a normal pending change. An out-of-band
-`gcloud run jobs update` would also drop Terraform's `client`/`client_version` metadata and show a spurious job change.
+With the database STILL c0003, apply the new service image plus trusted-IP backend header. Settings:
+`sync_limit_mode=off`, `sync_limit_ip_mode=shadow`, `hsts_max_age_seconds=0`.
+After Stage A the full reviewed plan must show **0 add / 2 change / 0 destroy**, only `zaza-server` and the
+load-balancer backend. Verify health and authenticated pilot sync, including a cold start of the new revision.
+Retire traffic from the old revision before migrating. Do not proceed until the compatible server is healthy.
 
-**Expected plans (read-only, verified):** all three changes at once, job still old: 0/3/0 (job image; service image and
-environment; backend header). With the job already on the new image: **0 to add, 2 to change, 0 to destroy**, only the service and
-the load-balancer backend. After that apply a plain `terraform plan` must report no changes.
+### Stage C - migrate only after Stage B is healthy
 
-**Sequence A (as originally planned; short exposure window):** job through Terraform, `control-db-status`, `control-migrate`,
-immediately apply the service/backend (0/2/0), verify. Risk: cold starts of the old revision between migrate and apply.
+Run `control-migrate` through the NEW job: c0003 -> c0004. Confirm `control-db-status` is c0004 and healthy sync
+continues. This is a job execution, **no Terraform resource change** (expected plan 0/0/0).
+The limiter remains off throughout this stage.
 
-**Sequence B (recommended, after the compatibility fix; zero window):** job through Terraform; `control-db-status` (still c0003);
-apply service + backend with `sync_limit_mode=off` (0/2/0); verify the pilot syncs; `control-migrate` (c0004); apply
-`sync_limit_mode=shadow` (0/1/0, environment only); verify.
+### Stage D - device limiter shadow
 
-**Migration safety, proven:** `c0004` only drops and re-adds one CHECK to include `sync_device`, in a single transaction together
-with the revision bump (`transaction_per_migration`). Failure injection (a broken second statement) left the old constraint and
-the old revision intact. Existing rows are only validated by the new CHECK, not rewritten. Downgrade deletes the new bucket's
-rows and restores the c0003 constraint; because the new server is strict, roll back by redeploying the old image first.
+Only after c0004 is confirmed, set `sync_limit_mode=shadow`. Keep IP mode `shadow` and HSTS `0`.
+Expected plan: **0 add / 1 change / 0 destroy**, service environment only. Verify pilot sync and shadow telemetry.
+A final ordinary plan must show no changes after each applied stage.
+
+Later, separately approved steps: verify the trusted-IP gate in section 3 and observe at least a week before device
+enforcement; enable IP enforcement only after the gate; start HSTS at 300 seconds and ramp as in section 7.
+
+## 14. Rollback and migration safety
+
+**Never deploy the old c0003-only server while the database is c0004.** It refuses cold starts. Existing instances
+of that revision continuing to serve are not evidence that rollback is safe.
+
+1. Keep the NEW compatible server and migration image in place.
+2. Set `sync_limit_mode=off` using Terraform; keep IP shadow and HSTS 0. Review the service-only plan and apply.
+3. Verify health and authenticated sync. Ensure all traffic/revisions that can serve are limiter-off before downgrade.
+4. Use the NEW migration image to run the explicit Alembic downgrade to `c0003_device_enrollment` through the trusted
+   migration/operator path (the CLI has no downgrade subcommand; `control-migrate` only upgrades). For example, the
+   new migration job image can execute this Python with a temporary, reviewed Terraform job command
+   of `["python", "-E", "-s", "-u", "-c", "<script below>"]` and empty args. Target only
+   `google_cloud_run_v2_job.migrate[0]`, review that only command/args change, then execute that job.
+   Cloud Run execution args overrides alone cannot replace the existing `python -m deskmate.zaza_server` command:
+
+   ```python
+   from alembic import command
+   from deskmate.zaza_server.tenancy.config import control_database_settings_from_env
+   from deskmate.zaza_server.tenancy.control import migrate
+   command.downgrade(migrate.alembic_config(control_database_settings_from_env()), "c0003_device_enrollment")
+   ```
+
+5. Restore the job's normal command/args through a reviewed job-only Terraform change, retaining the NEW image.
+   Confirm `control-db-status` reports current revision c0003 (latest remains c0004, so migration pending is expected).
+6. Confirm no `sync_device` rows remain and `login_attempt_counters_bucket_valid` accepts exactly the four c0003 buckets.
+7. Verify the compatible limiter-off server still authenticates/syncs; verify a cold start against c0003 too.
+8. Only now, if necessary, deploy the OLD c0003-only service image.
+
+Image sequencing for step 8: keep `container_image` set to the NEW image while downgrading. After downgrade and
+verification, set it to the old digest locally, then use a reviewed Terraform target for
+`google_cloud_run_v2_service.server[0]` only. Keep the
+migration job on the NEW image until rollback is validated. During this targeted interval a full plan intentionally
+shows the job image pending; do not apply it prematurely. Finally move the job to the old image through Terraform
+if no further new-image migrations are needed, or restore `container_image` to the new image for a forward rollout.
+Never change job images out of band; reconcile local configuration, state and actual images before declaring no drift.
+The trusted-IP backend header may remain; the old service does not use it.
+
+Migration safety: c0004 widens one CHECK and bumps the revision in the same transaction. Tests inject failure after
+the old CHECK is dropped and prove the old revision, all counter constraints and existing rows survive unchanged.
+The downgrade deletes only `sync_device` rows before restoring the prior CHECK, preserving other counter buckets.
+Tests exercise the same compatible server across c0003 -> c0004 -> c0003 and a fresh c0003 cold start. No production
+migration or rollback is performed by these tests.

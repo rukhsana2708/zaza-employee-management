@@ -79,7 +79,10 @@ for the current phase and what's implemented so far. As of this writing:
   - **Pending review:** 10G-E-A (tenant-aware employee operator) and 10H-A (gated
     public edge definition). Remaining production steps are in
     [docs/zaza/ROLLOUT_RUNBOOK.md](docs/zaza/ROLLOUT_RUNBOOK.md).
-  - Production has no web service, users, employees or devices yet.
+  - The internal pilot is running (see current development status). Sync limiter/HSTS code and the Sequence B
+    schema compatibility fix are implemented but not deployed. New code permits c0003 only with the limiter off;
+    migrate to c0004 before shadow/enforce. Follow the staged rollout and rollback in
+    [the sync limiter design](docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md#13-sequence-b-production-rollout-not-executed).
 - **Historical:** the earlier single Windows VPS deployment (ARCHITECTURE.md
   §9, runbook [docs/zaza/PRODUCTION_SERVER.md](docs/zaza/PRODUCTION_SERVER.md))
   was abandoned for the SaaS direction. Its files in `deploy/windows/` are
