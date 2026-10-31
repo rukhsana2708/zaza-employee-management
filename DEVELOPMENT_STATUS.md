@@ -1,24 +1,76 @@
 # ZaZa Employee Management System — Development Status
 
-**Last updated:** 2026-10-31 (privacy logging hotfix; code/tests/image only, not deployed)
+**Last updated:** 2026-10-31 (approved production shadow-observation baseline)
 
-## Privacy logging hotfix (2026-10-31; NOT deployed)
+## Approved production baseline - shadow observation in progress (2026-10-31)
+
+- Sequence B rollout Stages A-D completed successfully: migration-job image, compatible server/header,
+  c0003 -> c0004 migration, then device shadow mode. Privacy logging hotfix subsequently deployed and approved.
+- Server revision: `zaza-server-00006-7tw`, Ready, serving 100%; previous revision serves 0%.
+- Server and migration-job image:
+  `sha256:fe0a05f7f67345660cca8f5f4c6e93a8d16da6224d858ca1157f0d2e31778d12`.
+  Source commit `3fc8e4724029782bc6decb3604961a947c5df640`;
+  Cloud Build `f91960c5-3420-40c4-bb5f-6e26edc981e2`.
+- Control schema current/head: `c0004_sync_rate_limits`.
+- Device limiter: **shadow only**. IP limiter: **shadow only**. **Enforcement is NOT approved.**
+- HSTS remains disabled (`0`); Cloud Armor remains disabled. DNS/Cloudflare/certificate and Windows agent unchanged.
+- Trusted client-IP enforcement gate remains **pending**; the full forged-header/two-public-IP gate has not run.
+- Terraform: **No changes.** Privacy verification passed on NEW-revision application logs; historical logs retained.
+- Pilot healthy: normal sync and existing-credential `/devices/me` return 200, same identity/credential,
+  exactly one ACTIVE device, telemetry confirming normally, no re-enrollment. Shared counters advance in shadow.
+- Latest passive latency observation: 10 normal requests, median 97.8 ms, maximum 176.5 ms;
+  p95 not estimated from this small sample. These observations do not establish a performance regression/improvement.
+- **No further production deployment or configuration change is currently approved.** Do not enable device/IP
+  enforcement, HSTS or Cloud Armor; change DNS/Cloudflare, schema, thresholds or agent; optimize the shared counter;
+  create enrollment codes; or run production load/flood tests under this approval.
+
+### Shadow observation and separate review gate
+
+Allow ordinary agent traffic to generate operating data for **at least 7 full days of normal production use**
+from this approved baseline (starting 2026-10-31, Asia/Dhaka). The earliest review is 2026-11-07 after seven full
+days have elapsed; extend the window if normal-use coverage is insufficient. Elapsed time does not authorize
+any change. The next production decision requires a **separate review and explicit approval**.
+
+At that later review, collect only aggregate metrics and approved safe references:
+
+1. Total authenticated sync-request count, with the denominator/window defined.
+2. Number and percentage of `device_shared_would_limit` observations.
+3. Local burst `would_limit` observations.
+4. Shared-counter failures and fail-open events.
+5. Unexpected 401/403/429/5xx on normal pilot traffic, separated from deliberate verification probes.
+6. Sync latency: count, median, p95, p99 only if sample size supports it, and maximum.
+7. Control-DB errors and query timeouts.
+8. Control connection-pool exhaustion.
+9. Cloud Run errors/restarts relevant to sync.
+10. Normal `sync_device` counter/window/cleanup behavior.
+11. Pilot queue/backlog health and successful telemetry confirmations.
+12. Privacy leakage checks restricted to NEW application logs.
+
+Record coverage, gaps and counter resets. Limiter event logs are rate-limited and process counters reset on
+restart: distinguish logged observations from exact request/event totals, and do not report an exact percentage
+without a supported numerator and denominator. Do not expose raw device, employee or organization IDs,
+credentials/tokens, or public client IPs. No new collection infrastructure or automation is authorized here.
+
+## Privacy logging hotfix (2026-10-31; deployed successfully and approved)
 
 - Fixed raw device ID in successful batches, rejected untrusted device headers and a legacy connectivity warning.
   Hardened storage-error logging, legacy dashboard client-IP warnings and concrete CSRF paths.
 - Neutral `logs.log_reference`: private in-process HMAC key, 16-hex reference, stable within a process and rotated
   on restart. Limiter log subjects reuse it; shared database counter keys and all limiter behavior remain unchanged.
 - Focused audit, reference limitations and regression scope: docs/zaza/PRIVACY_LOGGING_HOTFIX.md.
-- Approved production after Sequence B Stages A-D: revision `zaza-server-00005-gxm`, schema c0004,
-  image `sha256:2d35877e2706c7e8d351a18558a68caf9b21ec1a1f725ed46cb6163297302b24`;
-  device/IP modes shadow, HSTS 0. Enforcement NOT approved. This hotfix does not change production.
+- Hotfix deployed by an image-only Terraform apply (0 add / 2 change / 0 destroy) to server and migration job.
+  The approved current revision/image and unchanged shadow/shadow/HSTS-0 settings are recorded above.
+- Live verification: 82 new-revision log entries reviewed, including 10 successful batch messages using only safe
+  `device_ref` correlation; no raw sensitive-value leakage detected in application messages. A harmless rejection
+  probe logged only a safe reference. Connectivity/storage checks ran offline; legacy dashboard loggers inspected.
+- Final Terraform plan: No changes. No migration ran during hotfix deployment.
 - Stage D observational latency: baseline median 68.7 ms (10 requests); shadow median 136.9 ms (5 requests),
   shadow max 236.8 ms. Too small to establish a reliable regression. Keep the shared write; collect a larger sample.
 - Validation (disposable PostgreSQL 16): targeted logging/sync/limiter suite 276 passed; complete
   PostgreSQL-enabled ZaZa suite 1730 passed, 12 skipped. Changed-file lint and diff checks passed.
 - All six protected user-work items remain untouched and uncommitted.
 
-## Sequence B - control schema compatibility (2026-10-31; code/tests only)
+## Sequence B - control schema compatibility (implementation record; rollout completed above)
 
 - New server accepts c0003 ONLY with `ZAZA_SYNC_LIMIT_MODE=off`; shadow/enforce require c0004.
   c0004 accepts all three modes. Compatibility is declared explicitly by c0004; no revision ordering or future acceptance.
@@ -33,7 +85,8 @@
 - Validation: complete ZaZa suite with disposable PostgreSQL 16: 1710 passed, 12 skipped. Final targeted
   compatibility/PostgreSQL/preflight rerun: 157 passed (including all 26 new PostgreSQL regressions).
   Lint passed for all changed Python files.
-- Production not deployed/migrated/applied. Windows agent and existing user-work files unchanged.
+- At implementation time, production was not deployed/migrated/applied. The subsequent approved rollout is
+  recorded in the current baseline above. Windows agent and protected user-work files remain unchanged.
 
 ## Phase 10H-B — edge apply (PARTIAL, 2026-10-30)
 
