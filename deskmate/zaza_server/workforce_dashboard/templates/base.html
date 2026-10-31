@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Workforce{% endblock %} | ZaZa</title>
+<link rel="stylesheet" href="/app/report-assets/dashboard.css">
+<link rel="stylesheet" href="/app/assets/workforce.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+<a class="brand" href="/app/organizations">ZaZa <span>Workforce Operations</span>
+</a>
+{% if user %}<div class="account">
+<span>{{ user.display_name }}</span>
+<a href="/app/organizations">Switch organization</a>
+<form method="post" action="/app/sign-out">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<button class="link-button" type="submit">Sign out</button>
+</form>
+</div>{% endif %}</header>
+{% if tenant %}<div class="organization">
+<strong>{{ tenant.slug }}</strong>
+<span>{{ tenant.role.value|title }} access</span>
+</div>
+{% if nav %}<nav class="product-nav" aria-label="Organization navigation">{% for key,label in nav %}<a href="/app/orgs/{{ tenant.slug|urlencode }}/{{ key }}"{% if page is defined and page==key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>{% endif %}{% endif %}
+<main id="main">{% block content %}{% endblock %}</main>
+<footer class="footer">Computer activity is supplementary evidence, not proof of work or a productivity score. Source: tenant PostgreSQL. Read-only reporting.</footer>
+</body>
+</html>

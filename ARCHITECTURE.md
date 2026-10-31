@@ -1,5 +1,11 @@
 # ZaZa Employee Management System — Architecture
 
+## Phase B read-only SaaS dashboard (local code/test, 2026-10-31)
+
+[Phase B implementation](docs/zaza/WORKFORCE_PHASE_B.md) documents separate HTML routes,
+shared SaaS authentication, Phase A-derived SQL scope, complete historical bucket policy,
+read-only snapshots and reusable reporting presentation. No migration or production change.
+
 ## Phase A workforce foundation (local implementation, 2026-10-31)
 
 See [WORKFORCE_PHASE_A.md](docs/zaza/WORKFORCE_PHASE_A.md) for inspected schema heads,

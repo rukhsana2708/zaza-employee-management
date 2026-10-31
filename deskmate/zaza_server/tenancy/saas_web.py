@@ -1,6 +1,6 @@
 """SaaS user session API (Phase 10F-B), mounted by ``create_saas_app``.
 
-JSON endpoints under ``/app`` (the browser UI comes later):
+JSON endpoints under ``/app`` (separate HTML routes are installed alongside):
 
 - ``GET  /app/login``   issue the pre-session double-submit login token
   (cookie + body).
@@ -34,28 +34,22 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import http_security
-from ..dashboard.security import SECURITY_HEADERS, new_token, same
-from . import domain
-from .domain import TenancyError
+from ..dashboard.security import SECURITY_HEADERS, new_token
 from .resolver import TenantAccessDenied
 from .saas_auth import (
-    LOGIN_COOKIE,
     LOGIN_PATH,
     SESSION_COOKIE,
     SESSION_PATH,
-    LoginRateLimited,
     Permission,
     PermissionDenied,
-    SaasSessionContext,
     permissions,
     require,
 )
+from .web_access import LOGIN_FAILED as LOGIN_FAILED
+from .web_access import MAX_FORM_BYTES as MAX_FORM_BYTES
 
-LOGIN_FAILED = "invalid email or password"
 ENROLL_PATH = "/api/v1/enroll"
 MAX_ENROLL_BYTES = 4096
-MAX_FORM_BYTES = 8 * 1024
 
 
 def _json(status: int, body: dict, headers: dict | None = None) -> JSONResponse:
@@ -69,34 +63,12 @@ def _error(status: int, error: str, headers: dict | None = None) -> JSONResponse
     return _json(status, {"error": error}, headers)
 
 
-async def _form(request: Request) -> dict[str, str]:
-    from urllib.parse import parse_qs  # noqa: PLC0415
-
-    if not request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
-        raise ValueError("unsupported form encoding")
-    body = await request.body()
-    if len(body) > MAX_FORM_BYTES:
-        raise ValueError("form too large")
-    parsed = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=10)
-    return {k: v[0] for k, v in parsed.items() if len(v) == 1}
-
 
 def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — SaasRuntime
-    auth = runtime.auth
+    from .web_access import SaasWebAccess, WebAuthError
 
-
-    def session(request: Request) -> SaasSessionContext | None:
-        return auth.validate_session(request.cookies.get(SESSION_COOKIE))
-
-    def member_context(ctx: SaasSessionContext, slug: str):  # noqa: ANN202
-        """Slug -> organization_id -> membership. Any miss is the same 404."""
-        try:
-            org_id = runtime.control.find_organization_id_by_slug(domain.normalize_slug(slug))
-        except TenancyError:
-            org_id = None
-        if org_id is None:
-            raise TenantAccessDenied()
-        return runtime.resolver.for_member(ctx.user_id, org_id)
+    access = SaasWebAccess(runtime)
+    session, member_context = access.session, access.member_context
 
     if getattr(runtime, "enrollment", None) is not None:
         _install_enrollment(app, runtime.enrollment)
@@ -105,32 +77,17 @@ def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — S
     def login_form():  # noqa: ANN202
         token = new_token()
         response = _json(200, {"login_token": token})
-        response.set_cookie(LOGIN_COOKIE, token, max_age=900, path=LOGIN_PATH, httponly=True, samesite="strict",
-                            secure=auth.settings.cookie_secure)
+        access.challenge(response, token=token)
         return response
 
     @app.post(LOGIN_PATH)
-    async def login(request: Request):  # noqa: ANN202
+    async def login(request: Request):
         try:
-            data = await _form(request)
-        except ValueError:
-            return _error(400, LOGIN_FAILED)
-        cookie = request.cookies.get(LOGIN_COOKIE) or ""
-        if not http_security.same_origin(request) or not cookie or not same(cookie, data.get("login_token", "")):
-            return _error(403, "the login form expired; reload and try again")
-        from starlette.concurrency import run_in_threadpool  # noqa: PLC0415
-
-        try:
-            result = await run_in_threadpool(auth.login, data.get("email", ""), data.get("password", ""))
-        except LoginRateLimited as exc:
-            return _error(429, "too many sign-in attempts; try again later", {"Retry-After": str(exc.retry_after)})
-        if result is None:
-            return _error(401, LOGIN_FAILED)
-        token, ctx = result
+            token, ctx = await access.login(request)
+        except WebAuthError as exc:
+            return _error(exc.status, exc.message, exc.headers)
         response = _json(200, {"user_id": str(ctx.user_id), "csrf_token": ctx.csrf_token})
-        response.set_cookie(SESSION_COOKIE, token, max_age=auth.settings.session_hours * 3600, path=SESSION_PATH,
-                            httponly=True, samesite="strict", secure=auth.settings.cookie_secure)
-        response.delete_cookie(LOGIN_COOKIE, path=LOGIN_PATH)
+        access.accept_session(response, token)
         return response
 
     @app.get(f"{SESSION_PATH}/session")
@@ -151,19 +108,10 @@ def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — S
 
     @app.post(f"{SESSION_PATH}/logout")
     async def logout(request: Request):  # noqa: ANN202
-        from starlette.concurrency import run_in_threadpool  # noqa: PLC0415
-
-        ctx = await run_in_threadpool(session, request)
-        if ctx is None:
-            return _error(401, "not signed in")
         try:
-            data = await _form(request)
-        except ValueError:
-            data = {}
-        submitted = data.get("csrf_token") or request.headers.get("x-csrf-token")
-        if not http_security.same_origin(request) or not ctx.csrf_ok(submitted):
-            return _error(403, "forbidden")
-        await run_in_threadpool(auth.logout, ctx)
+            await access.logout(request)
+        except WebAuthError as exc:
+            return _error(exc.status, exc.message, exc.headers)
         response = _json(200, {"signed_out": True})
         response.delete_cookie(SESSION_COOKIE, path=SESSION_PATH)
         return response
@@ -197,6 +145,10 @@ def install_saas_web(app: FastAPI, runtime) -> None:  # noqa: ANN001, C901 — S
             rows = repo.list_employees()
         return _json(200, {"employees": [{"employee_id": e.employee_id, "display_name": e.display_name,
                                           "is_active": e.is_active} for e in rows]})
+
+    from ..workforce_dashboard.routes import install_browser
+
+    install_browser(app, runtime, access)
 
 
 def _install_enrollment(app: FastAPI, enrollment) -> None:  # noqa: ANN001 — EnrollmentService

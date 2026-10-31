@@ -1,0 +1,82 @@
+{% macro bounds(view) %}{% if view.limited %}<aside class="scope-note" aria-label="Reporting access limits">
+<strong>Your reporting access is time-limited.</strong>
+<p>Activity intervals are clipped to your authorized window. Daily attendance and application buckets that cross its boundaries are omitted, not prorated. Today may therefore have no complete report bucket.</p>
+<ul>{% for limit in view.limits %}<li>{{ limit.name }}: {{ limit.start|local(limit.timezone) }} through {{ limit.end|local(limit.timezone) }} ({{ limit.timezone }})</li>{% endfor %}</ul>
+</aside>{% endif %}{% endmacro %}
+{% macro totals(t) %}<div class="metric-grid">{% for label,value in [('Scheduled Hours',t.scheduled),('Tracked Hours',t.tracked),('Active Computer Time',t.active),('Idle Hours',t.idle),('Locked Hours',t.locked),('Unknown Hours',t.unknown),('Overtime',t.overtime)] %}<article class="metric">
+<span>{{ label }}</span>
+<strong>{{ value|hours if t.days else 'Not available' }}</strong>
+</article>{% endfor %}<article class="metric">
+<span>Attendance</span>
+<strong>{{ t.attendance_fraction|pct(fraction=True) }}</strong>
+</article>
+</div>
+<p class="note">{{ t.days }} complete authorized daily summaries. Attendance is total credit / total basis; not an average of percentages. Overtime is recorded activity, not automatically payroll entitlement.</p>
+<p>Late: {{ t.late_employees|join(', ') or 'None recorded' }} | Absent: {{ t.absent_employees|join(', ') or 'None recorded' }} | Data incomplete: {{ t.incomplete_employees|join(', ') or 'None recorded' }}</p>{% endmacro %}
+{% macro days(rows) %}<div class="table-wrap">
+<table>
+<caption>Stored daily attendance and activity summaries</caption>
+<thead>
+<tr>
+<th scope="col">Employee</th>
+<th scope="col">Local date</th>
+<th scope="col">Scheduled</th>
+<th scope="col">Tracked</th>
+<th scope="col">Active</th>
+<th scope="col">Idle</th>
+<th scope="col">Locked</th>
+<th scope="col">Unknown</th>
+<th scope="col">Attendance</th>
+<th scope="col">Status</th>
+<th scope="col">Quality</th>
+<th scope="col">Late / Early</th>
+<th scope="col">Overtime</th>
+</tr>
+</thead>
+<tbody>
+{% for row in rows %}{% set s=row.summary %}<tr>
+<th scope="row">{{ row.employee.display_name }}</th>
+<td>{{ s.local_date }}</td>
+<td>{{ s.scheduled_seconds|hours }}</td>
+<td>{{ s.tracked_seconds|hours }}</td>
+<td>{{ s.active_seconds|hours }}</td>
+<td>{{ s.idle_seconds|hours }}</td>
+<td>{{ s.locked_seconds|hours }}</td>
+<td>{{ s.unknown_seconds|hours }}</td>
+<td>{{ s.attendance_percentage|pct }}</td>
+<td>{{ STATUS_LABELS[s.attendance_status] }}</td>
+<td>{{ QUALITY_LABELS[s.data_quality] }}{% for flag in s.quality_flags %}<span class="note">{{ FLAG_NOTES.get(flag,flag) }}</span>{% endfor %}</td>
+<td>{{ s.late_seconds|minutes }} / {{ s.early_leave_seconds|minutes }}</td>
+<td>{{ s.overtime_seconds|hours }}</td>
+</tr>
+{% else %}<tr>
+<td colspan="13">No complete authorized summary buckets for this period.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>{% endmacro %}
+{% macro apps(rows) %}<div class="table-wrap">
+<table>
+<caption>Application usage: supplementary activity evidence</caption>
+<thead>
+<tr>
+<th scope="col">Application</th>
+<th scope="col">Employee</th>
+<th scope="col">Active Computer Time</th>
+<th scope="col">Idle</th>
+<th scope="col">Unknown</th>
+<th scope="col">Days</th>
+</tr>
+</thead>
+<tbody>
+{% for row in rows %}<tr>
+<th scope="row">{{ row.app }}</th>
+<td>{{ row.employee.display_name if row.employee else 'Authorized selection' }}</td>
+<td>{{ row.active|hours }}</td>
+<td>{{ row.idle|hours }}</td>
+<td>{{ row.unknown|hours }}</td>
+<td>{{ row.usage_days }}</td>
+</tr>{% else %}<tr>
+<td colspan="6">No complete authorized application buckets for this period.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>{% endmacro %}

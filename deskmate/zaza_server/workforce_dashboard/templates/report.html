@@ -1,0 +1,47 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% import "_report.html" as r %}{% import "_charts.html" as charts %}
+{% block title %}{{ {'workspace':'Overview','workforce':'Workforce','attendance':'Attendance','applications':'Applications','analytics':'Analytics'}[page] }}{% endblock %}
+{% block content %}<h1>{{ {'workspace':'Overview','workforce':'Workforce','attendance':'Attendance','applications':'Applications','analytics':'Analytics'}[page] }}</h1>
+<p class="muted">Read-only reports for employees your current membership permits you to see.</p>
+{{ m.filters(f,view.employees,'/app/orgs/'~tenant.slug~'/'~page) }}{{ m.period_note(view.period) }}{{ r.bounds(view) }}
+{% if page in ['workspace','workforce'] %}
+{% if page=='workspace' %}<h2>Authorized workforce</h2>
+<p>{{ view.profiles|length }} employees available to you. Connectivity is not proof of working.</p>
+<div class="status-strip">{% for state,count in view.report.status_counts.items() %}{% if state!='OFFLINE_TOTAL' %}<span>{{ CURRENT_LABELS[CurrentStatus(state)] }}: <strong>{{ count }}</strong>
+</span>{% endif %}{% endfor %}</div>{{ r.totals(view.report.totals) }}{% endif %}
+<div class="table-wrap">
+<table>
+<caption>Workforce profile and current computer status</caption>
+<thead>
+<tr>
+<th scope="col">Employee</th>
+<th scope="col">Designation</th>
+<th scope="col">Department / Teams</th>
+<th scope="col">Employment</th>
+<th scope="col">Monitoring policy</th>
+<th scope="col">Timezone</th>
+<th scope="col">Current computer status</th>
+<th scope="col">Last seen</th>
+</tr>
+</thead>
+<tbody>
+{% for p in view.profiles %}{% set status=view.statuses[p.employee_id] %}<tr>
+<th scope="row">
+<a href="/app/orgs/{{ tenant.slug|urlencode }}/workforce/{{ p.employee_id|urlencode }}">{{ p.display_name }}</a>
+</th>
+<td>{{ p.designation or 'Not set' }}</td>
+<td>{{ p.department or 'Not set' }}{% if p.teams %}<br>{{ p.teams|join(', ') }}{% endif %}</td>
+<td>{{ p.employment_status|title }}</td>
+<td>{{ 'Monitored' if p.monitoring_enabled else 'Not monitored (configured)' }}</td>
+<td>{{ p.timezone }}</td>
+<td>{{ status.label }}</td>
+<td>{{ status.last_seen_at|local(p.timezone) }}</td>
+</tr>{% else %}<tr>
+<td colspan="8">No authorized employees.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>
+<p class="note">Monitoring policy is configuration, separate from role. Computer states describe the latest available observation; stale/unreliable data is not assumed idle.</p>
+{% elif page=='attendance' %}{{ r.totals(view.report.totals) }}{{ r.days(view.report.rows) }}
+{% elif page=='applications' %}<p>Application usage is not a task-completion measure or productivity score.</p>{{ r.apps(view.report.rows) }}
+{% elif page=='analytics' %}<p>Charts and their Show the numbers tables use the same authorized reporting dataset. Missing or omitted days are not treated as absence.</p>
+<div class="chart-grid">{% for chart in view.charts %}{{ charts.chart(chart) }}{% endfor %}</div>{% endif %}{% endblock %}

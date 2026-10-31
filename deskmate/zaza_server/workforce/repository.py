@@ -33,6 +33,41 @@ class WorkforceRepository:
             except (IntegrityError, DataError):
                 raise TenancyError("the change violates a workforce constraint") from None
 
+    @classmethod
+    @contextmanager
+    def read_transaction(cls, repo, actor_id):
+        """Lock before snapshot so completed scope revocations cannot be read from an old snapshot."""
+        with repo.connection() as conn:
+            conn.execute("SELECT pg_advisory_lock_shared(1514234449)")
+            try:
+                with conn.transaction():
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                    if not migrate.schema_status(conn).up_to_date:
+                        raise TenancyError("workforce schema migration is pending")
+                    yield cls(conn, actor_id)
+            finally:
+                try:
+                    conn.execute("SELECT pg_advisory_unlock_shared(1514234449)")
+                except BaseException:
+                    conn.close()  # never return a pooled connection with a leaked session lock
+                    raise
+
+    def employee_ids(self):
+        return [
+            r["employee_id"]
+            for r in self.conn.execute("SELECT employee_id FROM employees ORDER BY employee_id")
+        ]
+
+    def direct_report_ids(self, manager_id, now):
+        return [
+            r["employee_id"]
+            for r in self.conn.execute(
+                "SELECT employee_id FROM employee_reporting_relationships WHERE manager_employee_id=%s "
+                "AND effective_from<=%s AND (effective_to IS NULL OR effective_to>%s)",
+                (manager_id, now, now),
+            )
+        ]
+
     def audit(self, action, entity, identity, old=None, new=None):
         self.conn.execute(
             "INSERT INTO audit_logs "

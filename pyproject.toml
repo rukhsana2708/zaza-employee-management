@@ -97,6 +97,7 @@ deskmate = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 "deskmate.apps" = ["*.md", "*/app.py", "*/pipe.md", "*/*.md"]
 "deskmate.zaza_server.postgres" = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 "deskmate.zaza_server.dashboard" = ["templates/*.html", "static/*.css", "static/*.js"]
+"deskmate.zaza_server.workforce_dashboard" = ["templates/*.html", "static/*.css"]
 
 [tool.ruff]
 line-length = 100

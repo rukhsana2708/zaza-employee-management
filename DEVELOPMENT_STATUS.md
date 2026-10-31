@@ -2,7 +2,27 @@
 
 **Last updated:** 2026-10-31 (approved production shadow-observation baseline)
 
-## Phase A - workforce identity and authorization (local code/test only; not deployed)
+## Phase B - read-only tenant-aware SaaS dashboard (local code/test; not deployed)
+
+- Separate HTML sign-in, organization selector, overview/workforce/detail/attendance/applications/analytics
+  and safe sign-out. Existing /app JSON contracts preserved; legacy /manager remains separate.
+- Phase A subject decisions constrain all dashboard SQL, including filters, totals, status and charts.
+  Reads use a repeatable-read READ ONLY snapshot and release scope locks on success/error.
+- Historical intervals are clipped; daily/app buckets crossing authorized boundaries are omitted.
+  No attendance prorating/recalculation; no stored weekly/monthly queries or fabricated boundary zeros.
+- Neutral legacy presentation reuse, escaped local templates/assets, existing SaaS sessions/Argon2id,
+  shared limiter and CSRF/origin/cookie/security-header rules. No workforce writes or later modules.
+- Corrected stale SaaS identity wording and README privacy-hotfix production status before UI work.
+- Heads unchanged: tenant `0005_workforce_foundation`, control `c0005_employee_membership`; no migration created.
+- Validation: final targeted suite **164 passed**; logging/privacy/PostgreSQL-unit checks **37 passed**,
+  plus a strengthened lazy-pool logging regression passed. Complete PostgreSQL-enabled ZaZa suite:
+  **1821 passed, 12 skipped**, two existing dependency deprecation warnings.
+- Synthetic desktop/narrow-layout captures reviewed; header-link contrast improved. New/changed code
+  introduces no lint findings (three existing findings retained); syntax/diff/package-data checks passed.
+- Routes, policy, page inventory and limitations: docs/zaza/WORKFORCE_PHASE_B.md.
+- Production baseline below remains unchanged. No build/deploy/migration/production/agent action.
+
+## Phase A - workforce identity and authorization (approved local implementation; not deployed)
 
 - Discovered heads: tenant `0004_manager_dashboard_auth`; control `c0004_sync_rate_limits`.
 - New heads: tenant `0005_workforce_foundation`; control `c0005_employee_membership`.

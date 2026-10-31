@@ -46,9 +46,10 @@ Full design: [PROJECT_PLAN.md](PROJECT_PLAN.md) (scope & phased roadmap),
 
 ## Project status
 
-Phase A workforce identity/authorization foundation is implemented locally for review, **not deployed**.
-See [implementation and compatibility record](docs/zaza/WORKFORCE_PHASE_A.md). New SaaS dashboards,
-tasks, messaging, declarations and reporting expansion remain future phases. Production remains
+Phase A workforce identity/authorization foundation is approved locally, **not deployed**.
+See [implementation and compatibility record](docs/zaza/WORKFORCE_PHASE_A.md). Phase B adds the local
+[read-only tenant-aware SaaS dashboard](docs/zaza/WORKFORCE_PHASE_B.md), also **not deployed**.
+The employee task workspace, tasks, messaging, declarations and reporting expansion remain future phases. Production remains
 shadow/shadow with HSTS disabled; no further production change is approved.
 
 **Under development.** See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md)
@@ -86,7 +87,10 @@ for the current phase and what's implemented so far. As of this writing:
     [docs/zaza/ROLLOUT_RUNBOOK.md](docs/zaza/ROLLOUT_RUNBOOK.md).
   - The internal pilot is running (see current development status). Sync limiter/HSTS code and the Sequence B
     schema compatibility fix completed Sequence B Stages A-D: control schema c0004, device/IP shadow, HSTS off.
-    The privacy logging hotfix is code/tests/image only and is not deployed; enforcement is not approved.
+    The privacy logging hotfix is deployed as `zaza-server-00006-7tw`, image
+    `sha256:fe0a05f7f67345660cca8f5f4c6e93a8d16da6224d858ca1157f0d2e31778d12`.
+    Production control schema remains `c0004_sync_rate_limits`; device/IP limiters are shadow,
+    HSTS is 0, and Cloud Armor is disabled. Phase A remains local/not deployed; enforcement is not approved.
     See [the focused logging audit](docs/zaza/PRIVACY_LOGGING_HOTFIX.md) and the rollout/rollback in
     [the sync limiter design](docs/zaza/SYNC_RATE_LIMIT_HSTS_DESIGN.md#13-sequence-b-production-rollout).
 - **Historical:** the earlier single Windows VPS deployment (ARCHITECTURE.md
@@ -124,12 +128,12 @@ deskmate/zaza_server/ # central sync API (FastAPI) + repositories: in-memory,
                       # cloudsql.py = Cloud SQL socket settings (Phase 10D)
 deploy/gcp/           # Cloud Run image (Phase 10B); terraform/ = infrastructure
                       # definition (Phase 10D), applied in 10E
-deskmate/zaza/      # ZaZa activity agent (Phases 1-3) — the only code this
-                     # project currently runs; see deskmate/zaza/README
+deskmate/zaza/      # ZaZa Windows activity agent (Phases 1-3), local queue and sync;
+                     # see deskmate/zaza/README
                      # docstrings and the Phase 1 section of DEVELOPMENT_STATUS.md
 deskmate/            # upstream DeskMate source, left in place for comparison
                      # (NOT used by, or part of, ZaZa Employee Management)
-deploy/gcp/          # Phase 10B Cloud Run container of the central server (not deployed)
+deploy/gcp/          # Cloud Run server deployment (current baseline: DEVELOPMENT_STATUS.md)
 deploy/windows/      # earlier Windows VPS deployment scripts (historical reference)
 deploy/postgres/     # Phase 10 database/role SQL (for review)
 docs/                # upstream DeskMate technical docs + UPSTREAM_DESKMATE_README.md

@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}Sign in{% endblock %}{% block content %}
+<section class="signin">
+<p class="eyebrow">ZaZa Workforce</p>
+<h1>Sign in to your workspace</h1>
+<p class="muted">Use your ZaZa account to access your organizations.</p>
+{% if error %}<p role="alert" class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/app/sign-in">
+<input type="hidden" name="login_token" value="{{ login_token }}">
+<div class="field">
+<label for="email">Email</label>
+<input id="email" name="email" type="email" autocomplete="username" maxlength="320" required>
+</div>
+<div class="field">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+</div>
+<button type="submit">Sign in</button>
+</form>
+</section>{% endblock %}

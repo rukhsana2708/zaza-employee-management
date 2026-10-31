@@ -43,6 +43,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 from deskmate.zaza.sync.protocol import SYNC_RECORD_ADAPTER
 
 from ..config import DatabaseSettings
+from ..logs import log_reference
 from ..repository import (
     ORPHAN_PERIOD_ERROR,
     DeviceRecord,
@@ -208,7 +209,8 @@ class PostgresRepository:
                 f"database schema is at {status.current or 'nothing (empty database)'}, "
                 f"this server needs {status.head}; run `python -m deskmate.zaza_server migrate` first"
             )
-        logger.info("connected to %s (pool %d..%d)", settings.display(), settings.pool_min, settings.pool_max)
+        logger.info("database connected db_ref=%s (pool %d..%d)", log_reference(settings.dbname),
+                    settings.pool_min, settings.pool_max)
 
     def close(self) -> None:
         self._pool.close()

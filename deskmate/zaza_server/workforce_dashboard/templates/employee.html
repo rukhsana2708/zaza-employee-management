@@ -1,0 +1,52 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% import "_report.html" as r %}{% block title %}Employee report{% endblock %}{% block content %}
+<h1>{{ view.profile.display_name }}</h1>
+<dl class="profile-grid">
+<dt>Designation</dt>
+<dd>{{ view.profile.designation or 'Not set' }}</dd>
+<dt>Department</dt>
+<dd>{{ view.profile.department or 'Not set' }}</dd>
+<dt>Teams</dt>
+<dd>{{ view.profile.teams|join(', ') or 'Not set' }}</dd>
+<dt>Reporting manager</dt>
+<dd>{{ view.profile.reporting_manager or 'Not set' }}</dd>
+<dt>Employment</dt>
+<dd>{{ view.profile.employment_status|title }}</dd>
+<dt>Monitoring policy</dt>
+<dd>{{ 'Monitored' if view.profile.monitoring_enabled else 'Not monitored (configured)' }}</dd>
+<dt>Timezone</dt>
+<dd>{{ view.profile.timezone }}</dd>
+<dt>Current computer status</dt>
+<dd>{{ view.detail.status.label }}</dd>
+<dt>Last seen</dt>
+<dd>{{ view.detail.status.last_seen_at|local(view.profile.timezone) }}</dd>
+<dt>Today's schedule</dt>
+<dd>{{ view.detail.schedule.text }}</dd>
+</dl>
+{{ m.filters(f,view.employees,'/app/orgs/'~tenant.slug~'/workforce/'~view.profile.employee_id,show_employee=False) }}{{ m.period_note(view.period) }}{{ r.bounds(view) }}{{ r.totals(view.detail.totals) }}
+<h2>Attendance history</h2>{{ r.days(view.detail.days) }}<h2>Application usage</h2>{{ r.apps(view.detail.apps) }}
+<h2>Recent activity periods</h2>
+<p class="note">Intervals are clipped to your authorized window and selected dates. Active means observed computer activity, not proof of productivity.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Start</th>
+<th scope="col">End</th>
+<th scope="col">Computer state</th>
+<th scope="col">Duration</th>
+<th scope="col">Application</th>
+<th scope="col">Window / Domain</th>
+</tr>
+</thead>
+<tbody>{% for p in view.detail.activity %}<tr>
+<td>{{ p.started_at|local(view.profile.timezone) }}</td>
+<td>{{ p.ended_at|local(view.profile.timezone) }}</td>
+<td>{{ p.status|title }}</td>
+<td>{{ p.duration_seconds|duration }}</td>
+<td>{{ p.app_name or 'Not available' }}</td>
+<td>{{ p.window_title or '' }} {{ p.domain or '' }}{% if p.privacy_excluded %}Privacy excluded{% endif %}</td>
+</tr>{% else %}<tr>
+<td colspan="6">No authorized activity periods in this selection.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>{% if view.detail.activity_truncated %}<p>Showing the latest {{ view.detail.activity_limit }} periods. Narrow the period for more detail.</p>{% endif %}{% endblock %}

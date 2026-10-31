@@ -32,6 +32,13 @@ class SubjectScope:
         return lo, hi
 
 
+@dataclass(frozen=True)
+class AuthorizedWorkforceScope:
+    """Request-local Phase A decisions; never a transferable or client-supplied grant."""
+
+    subjects: tuple[SubjectScope, ...]
+
+
 def _instant(value):
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise TenancyError("an aware timestamp is required")
@@ -48,7 +55,7 @@ class WorkforceService:
         )
 
     @contextmanager
-    def _access(self, context, capability=None):
+    def _access(self, context, capability=None, *, read_only=False):
         if not isinstance(context, TenantContext) or context.kind is not ContextKind.MEMBER:
             raise PermissionDenied("a resolved member context is required")
         fresh = self.resolver.for_member(context.user_id, context.organization_id)
@@ -63,7 +70,12 @@ class WorkforceService:
                 raise TenancyError("control workforce migration is pending")
         membership = self.directory.get_membership(fresh.organization_id, fresh.user_id)
         with self.manager.repository(fresh) as repo:
-            with WorkforceRepository.transaction(repo, fresh.user_id) as store:
+            transaction = (
+                WorkforceRepository.read_transaction
+                if read_only
+                else WorkforceRepository.transaction
+            )
+            with transaction(repo, fresh.user_id) as store:
                 # Revalidate after waiting on an administrative transaction lock.
                 fresh = self.resolver.for_member(fresh.user_id, fresh.organization_id)
                 if capability:
@@ -171,3 +183,33 @@ class WorkforceService:
             row = store.profile(employee_id)
             row["team_ids"] = store.team_ids(employee_id)
             return row
+
+    @contextmanager
+    def dashboard(self, context, employee_id=None):
+        """Authorize IDs before any dashboard/profile query, using the same Phase A rules."""
+        with self._access(context, read_only=True) as (fresh, membership, store):
+            perms = permissions(fresh)
+            if Permission.EMPLOYEES_VIEW_ALL in perms:
+                candidates = store.employee_ids()
+            else:
+                if not ({Permission.EMPLOYEES_VIEW_SELF, Permission.EMPLOYEES_VIEW_SCOPED} & perms):
+                    raise PermissionDenied("workforce reporting is not permitted")
+                link = store.link_for_user(fresh.user_id, membership.membership_id)
+                if link is None:
+                    raise PermissionDenied("a valid employee linkage is required")
+                actor_id = link["employee_id"]
+                self._scope(fresh, membership, store, actor_id)
+                candidates = [actor_id]
+                if (
+                    Permission.EMPLOYEES_VIEW_SCOPED in perms
+                    and store.profile(actor_id)["employment_status"] == "ACTIVE"
+                ):
+                    candidates += store.direct_report_ids(actor_id, self.clock())
+            if employee_id is not None:
+                if employee_id not in candidates:
+                    raise PermissionDenied("employee is outside authorized scope")
+                candidates = [employee_id]
+            subjects = tuple(
+                self._scope(fresh, membership, store, eid) for eid in dict.fromkeys(candidates)
+            )
+            yield store.conn, AuthorizedWorkforceScope(subjects)

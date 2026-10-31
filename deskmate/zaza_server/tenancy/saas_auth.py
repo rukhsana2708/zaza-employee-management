@@ -2,8 +2,10 @@
 passwords, server-side sessions and a SHARED login rate limiter.
 
 - **Identity:** the control-plane ``users`` row (one identity system). A SaaS
-  user is never a monitored employee, and nothing here reads or writes
-  tenant databases.
+  user identity is distinct from employee identity. A user may be explicitly
+  linked to an employee in one organization, and that employee may be monitored.
+  Matching identities alone grants no authorization. This authentication module
+  does not read or write tenant databases.
 - **Passwords:** Argon2id PHC hashes only (``user_password_credentials``),
   via the maintained ``argon2-cffi`` helpers in ``dashboard/security.py``.
   No plaintext, no reversible storage, no hints. An unknown or invalid email

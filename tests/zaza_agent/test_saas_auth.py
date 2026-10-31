@@ -469,7 +469,7 @@ def test_no_self_signup_routes(web):
         assert not [p for p in paths if forbidden in p]
     methods = {(m, getattr(r, "path", "")) for r in web.client.app.routes for m in getattr(r, "methods", set())}
     posts = {p for m, p in methods if m == "POST"}
-    assert posts == {"/app/login", "/app/logout", "/api/v1/sync/batch"}
+    assert posts == {"/app/login", "/app/logout", "/app/sign-in", "/app/sign-out", "/api/v1/sync/batch"}
 
 
 def test_saas_web_has_no_private_origin_logic_or_sql():
@@ -477,7 +477,9 @@ def test_saas_web_has_no_private_origin_logic_or_sql():
 
     source = (Path(__file__).resolve().parents[2] / "deskmate" / "zaza_server" / "tenancy" / "saas_web.py").read_text(
         encoding="utf-8")
-    assert "http_security.same_origin(request)" in source
+    shared = (Path(__file__).resolve().parents[2] / "deskmate" / "zaza_server" / "tenancy" / "web_access.py").read_text(encoding="utf-8")
+    assert "SaasWebAccess(runtime)" in source
+    assert "http_security.same_origin(request)" in shared
     assert "request.url" not in source and "x-forwarded" not in source.lower()
     assert not re.search(r"\b(SELECT|INSERT|UPDATE|DELETE)\s", source)
 
